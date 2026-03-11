@@ -5,6 +5,7 @@
 #include "Factories/BlueprintFactory.h"
 #include "EdGraphSchema_K2.h"
 #include "K2Node_Event.h"
+#include "K2Node_CallFunction.h"
 #include "K2Node_VariableGet.h"
 #include "K2Node_VariableSet.h"
 #include "Components/StaticMeshComponent.h"
@@ -62,6 +63,14 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleCommand(const FString
     else if (CommandType == TEXT("set_pawn_properties"))
     {
         return HandleSetPawnProperties(Params);
+    }
+    else if (CommandType == TEXT("read_blueprint"))
+    {
+        return HandleReadBlueprint(Params);
+    }
+    else if (CommandType == TEXT("list_blueprints"))
+    {
+        return HandleListBlueprints(Params);
     }
     
     return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown blueprint command: %s"), *CommandType));
@@ -194,26 +203,26 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleAddComponentToBluepri
     UClass* ComponentClass = nullptr;
 
     // Try to find the class with exact name first
-    ComponentClass = FindObject<UClass>(ANY_PACKAGE, *ComponentType);
+    ComponentClass = FindFirstObject<UClass>(*ComponentType, EFindFirstObjectOptions::NativeFirst);
     
     // If not found, try with "Component" suffix
     if (!ComponentClass && !ComponentType.EndsWith(TEXT("Component")))
     {
         FString ComponentTypeWithSuffix = ComponentType + TEXT("Component");
-        ComponentClass = FindObject<UClass>(ANY_PACKAGE, *ComponentTypeWithSuffix);
+        ComponentClass = FindFirstObject<UClass>(*ComponentTypeWithSuffix, EFindFirstObjectOptions::NativeFirst);
     }
     
     // If still not found, try with "U" prefix
     if (!ComponentClass && !ComponentType.StartsWith(TEXT("U")))
     {
         FString ComponentTypeWithPrefix = TEXT("U") + ComponentType;
-        ComponentClass = FindObject<UClass>(ANY_PACKAGE, *ComponentTypeWithPrefix);
+        ComponentClass = FindFirstObject<UClass>(*ComponentTypeWithPrefix, EFindFirstObjectOptions::NativeFirst);
         
         // Try with both prefix and suffix
         if (!ComponentClass && !ComponentType.EndsWith(TEXT("Component")))
         {
             FString ComponentTypeWithBoth = TEXT("U") + ComponentType + TEXT("Component");
-            ComponentClass = FindObject<UClass>(ANY_PACKAGE, *ComponentTypeWithBoth);
+            ComponentClass = FindFirstObject<UClass>(*ComponentTypeWithBoth, EFindFirstObjectOptions::NativeFirst);
         }
     }
     
@@ -1157,4 +1166,379 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetPawnProperties(con
     ResponseObj->SetBoolField(TEXT("success"), bAnyPropertiesSet);
     ResponseObj->SetObjectField(TEXT("results"), ResultsObj);
     return ResponseObj;
-} 
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleReadBlueprint(const TSharedPtr<FJsonObject>& Params)
+{
+    // Get required parameters
+    FString BlueprintName;
+    if (!Params->TryGetStringField(TEXT("blueprint_name"), BlueprintName))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
+    }
+
+    // Check if a full asset path was provided
+    UBlueprint* Blueprint = nullptr;
+    FString AssetPath;
+
+    if (BlueprintName.StartsWith(TEXT("/Game/")) || BlueprintName.StartsWith(TEXT("/Script/")))
+    {
+        // Full path provided - load directly
+        AssetPath = BlueprintName;
+        Blueprint = LoadObject<UBlueprint>(nullptr, *AssetPath);
+    }
+    else
+    {
+        // Try default path first
+        Blueprint = FUnrealMCPCommonUtils::FindBlueprint(BlueprintName);
+        AssetPath = TEXT("/Game/Blueprints/") + BlueprintName;
+
+        // If not found, try searching the asset registry
+        if (!Blueprint)
+        {
+            FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+            IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
+
+            FARFilter Filter;
+            Filter.ClassPaths.Add(UBlueprint::StaticClass()->GetClassPathName());
+            Filter.bRecursiveClasses = true;
+            Filter.bRecursivePaths = true;
+            Filter.PackagePaths.Add(FName(TEXT("/Game")));
+
+            TArray<FAssetData> AssetDataList;
+            AssetRegistry.GetAssets(Filter, AssetDataList);
+
+            for (const FAssetData& AssetData : AssetDataList)
+            {
+                if (AssetData.AssetName.ToString() == BlueprintName)
+                {
+                    Blueprint = Cast<UBlueprint>(AssetData.GetAsset());
+                    AssetPath = AssetData.GetObjectPathString();
+                    break;
+                }
+            }
+        }
+    }
+
+    if (!Blueprint)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintName));
+    }
+
+    // Build result
+    TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+    ResultObj->SetStringField(TEXT("name"), Blueprint->GetName());
+    ResultObj->SetStringField(TEXT("path"), AssetPath);
+
+    // Parent class info
+    if (Blueprint->ParentClass)
+    {
+        ResultObj->SetStringField(TEXT("parent_class"), Blueprint->ParentClass->GetName());
+        ResultObj->SetStringField(TEXT("parent_class_path"), Blueprint->ParentClass->GetPathName());
+    }
+
+    // Blueprint type
+    ResultObj->SetStringField(TEXT("blueprint_type"), 
+        Blueprint->BlueprintType == BPTYPE_Normal ? TEXT("Normal") :
+        Blueprint->BlueprintType == BPTYPE_MacroLibrary ? TEXT("MacroLibrary") :
+        Blueprint->BlueprintType == BPTYPE_Interface ? TEXT("Interface") :
+        Blueprint->BlueprintType == BPTYPE_FunctionLibrary ? TEXT("FunctionLibrary") :
+        TEXT("Other"));
+
+    // ===== Components =====
+    TArray<TSharedPtr<FJsonValue>> ComponentsArray;
+    if (Blueprint->SimpleConstructionScript)
+    {
+        for (USCS_Node* Node : Blueprint->SimpleConstructionScript->GetAllNodes())
+        {
+            if (!Node) continue;
+
+            TSharedPtr<FJsonObject> CompObj = MakeShared<FJsonObject>();
+            CompObj->SetStringField(TEXT("name"), Node->GetVariableName().ToString());
+
+            if (Node->ComponentTemplate)
+            {
+                CompObj->SetStringField(TEXT("class"), Node->ComponentTemplate->GetClass()->GetName());
+
+                // If it's a scene component, include transform info
+                USceneComponent* SceneComp = Cast<USceneComponent>(Node->ComponentTemplate);
+                if (SceneComp)
+                {
+                    FVector Loc = SceneComp->GetRelativeLocation();
+                    FRotator Rot = SceneComp->GetRelativeRotation();
+                    FVector Scale = SceneComp->GetRelativeScale3D();
+
+                    TArray<TSharedPtr<FJsonValue>> LocArr;
+                    LocArr.Add(MakeShared<FJsonValueNumber>(Loc.X));
+                    LocArr.Add(MakeShared<FJsonValueNumber>(Loc.Y));
+                    LocArr.Add(MakeShared<FJsonValueNumber>(Loc.Z));
+                    CompObj->SetArrayField(TEXT("location"), LocArr);
+
+                    TArray<TSharedPtr<FJsonValue>> RotArr;
+                    RotArr.Add(MakeShared<FJsonValueNumber>(Rot.Pitch));
+                    RotArr.Add(MakeShared<FJsonValueNumber>(Rot.Yaw));
+                    RotArr.Add(MakeShared<FJsonValueNumber>(Rot.Roll));
+                    CompObj->SetArrayField(TEXT("rotation"), RotArr);
+
+                    TArray<TSharedPtr<FJsonValue>> ScaleArr;
+                    ScaleArr.Add(MakeShared<FJsonValueNumber>(Scale.X));
+                    ScaleArr.Add(MakeShared<FJsonValueNumber>(Scale.Y));
+                    ScaleArr.Add(MakeShared<FJsonValueNumber>(Scale.Z));
+                    CompObj->SetArrayField(TEXT("scale"), ScaleArr);
+                }
+
+                // Include key properties of the component template
+                TSharedPtr<FJsonObject> PropsObj = MakeShared<FJsonObject>();
+                for (TFieldIterator<FProperty> PropIt(Node->ComponentTemplate->GetClass()); PropIt; ++PropIt)
+                {
+                    FProperty* Prop = *PropIt;
+                    // Only include properties that belong directly to this class (not inherited from UObject/UActorComponent)
+                    if (Prop->GetOwnerClass() == UObject::StaticClass() || 
+                        Prop->GetOwnerClass() == UActorComponent::StaticClass())
+                    {
+                        continue;
+                    }
+
+                    FString ValueStr;
+                    const void* ValuePtr = Prop->ContainerPtrToValuePtr<void>(Node->ComponentTemplate);
+                    Prop->ExportTextItem_Direct(ValueStr, ValuePtr, nullptr, nullptr, PPF_None);
+                    
+                    if (!ValueStr.IsEmpty())
+                    {
+                        PropsObj->SetStringField(Prop->GetName(), ValueStr);
+                    }
+                }
+                CompObj->SetObjectField(TEXT("properties"), PropsObj);
+
+                // Parent component info
+                if (Node->ParentComponentOrVariableName != NAME_None)
+                {
+                    CompObj->SetStringField(TEXT("parent"), Node->ParentComponentOrVariableName.ToString());
+                }
+            }
+
+            ComponentsArray.Add(MakeShared<FJsonValueObject>(CompObj));
+        }
+    }
+    ResultObj->SetArrayField(TEXT("components"), ComponentsArray);
+
+    // ===== Variables =====
+    TArray<TSharedPtr<FJsonValue>> VariablesArray;
+    for (const FBPVariableDescription& Var : Blueprint->NewVariables)
+    {
+        TSharedPtr<FJsonObject> VarObj = MakeShared<FJsonObject>();
+        VarObj->SetStringField(TEXT("name"), Var.VarName.ToString());
+        VarObj->SetStringField(TEXT("type"), Var.VarType.PinCategory.ToString());
+        
+        if (Var.VarType.PinSubCategoryObject.IsValid())
+        {
+            VarObj->SetStringField(TEXT("sub_type"), Var.VarType.PinSubCategoryObject->GetName());
+        }
+        if (!Var.VarType.PinSubCategory.IsNone())
+        {
+            VarObj->SetStringField(TEXT("sub_category"), Var.VarType.PinSubCategory.ToString());
+        }
+        
+        VarObj->SetBoolField(TEXT("is_array"), Var.VarType.IsArray());
+        VarObj->SetBoolField(TEXT("is_set"), Var.VarType.IsSet());
+        VarObj->SetBoolField(TEXT("is_map"), Var.VarType.IsMap());
+
+        if (!Var.DefaultValue.IsEmpty())
+        {
+            VarObj->SetStringField(TEXT("default_value"), Var.DefaultValue);
+        }
+
+        // Replication info
+        VarObj->SetBoolField(TEXT("is_instance_editable"), 
+            Var.PropertyFlags & CPF_Edit ? true : false);
+        VarObj->SetBoolField(TEXT("is_blueprint_read_only"), 
+            Var.PropertyFlags & CPF_BlueprintReadOnly ? true : false);
+
+        if (!Var.Category.IsEmpty())
+        {
+            VarObj->SetStringField(TEXT("category"), Var.Category.ToString());
+        }
+        if (Var.HasMetaData(FName(TEXT("tooltip"))))
+        {
+            VarObj->SetStringField(TEXT("tooltip"), Var.GetMetaData(FName(TEXT("tooltip"))));
+        }
+
+        VariablesArray.Add(MakeShared<FJsonValueObject>(VarObj));
+    }
+    ResultObj->SetArrayField(TEXT("variables"), VariablesArray);
+
+    // ===== Event Graphs =====
+    TArray<TSharedPtr<FJsonValue>> GraphsArray;
+    for (UEdGraph* Graph : Blueprint->UbergraphPages)
+    {
+        if (!Graph) continue;
+
+        TSharedPtr<FJsonObject> GraphObj = MakeShared<FJsonObject>();
+        GraphObj->SetStringField(TEXT("name"), Graph->GetName());
+        GraphObj->SetNumberField(TEXT("node_count"), Graph->Nodes.Num());
+
+        TArray<TSharedPtr<FJsonValue>> NodesArray;
+        for (UEdGraphNode* Node : Graph->Nodes)
+        {
+            if (!Node) continue;
+
+            TSharedPtr<FJsonObject> NodeObj = MakeShared<FJsonObject>();
+            NodeObj->SetStringField(TEXT("node_id"), Node->NodeGuid.ToString());
+            NodeObj->SetStringField(TEXT("node_class"), Node->GetClass()->GetName());
+            NodeObj->SetStringField(TEXT("node_title"), Node->GetNodeTitle(ENodeTitleType::FullTitle).ToString());
+            NodeObj->SetNumberField(TEXT("pos_x"), Node->NodePosX);
+            NodeObj->SetNumberField(TEXT("pos_y"), Node->NodePosY);
+
+            if (!Node->NodeComment.IsEmpty())
+            {
+                NodeObj->SetStringField(TEXT("comment"), Node->NodeComment);
+            }
+
+            // Event node specifics
+            UK2Node_Event* EventNode = Cast<UK2Node_Event>(Node);
+            if (EventNode)
+            {
+                NodeObj->SetStringField(TEXT("event_name"), EventNode->EventReference.GetMemberName().ToString());
+            }
+
+            // Function call node specifics
+            UK2Node_CallFunction* FuncNode = Cast<UK2Node_CallFunction>(Node);
+            if (FuncNode)
+            {
+                NodeObj->SetStringField(TEXT("function_name"), FuncNode->FunctionReference.GetMemberName().ToString());
+                if (FuncNode->FunctionReference.GetMemberParentClass())
+                {
+                    NodeObj->SetStringField(TEXT("function_class"), FuncNode->FunctionReference.GetMemberParentClass()->GetName());
+                }
+            }
+
+            // Pins info
+            TArray<TSharedPtr<FJsonValue>> PinsArray;
+            for (UEdGraphPin* Pin : Node->Pins)
+            {
+                if (!Pin) continue;
+                TSharedPtr<FJsonObject> PinObj = MakeShared<FJsonObject>();
+                PinObj->SetStringField(TEXT("name"), Pin->PinName.ToString());
+                PinObj->SetStringField(TEXT("type"), Pin->PinType.PinCategory.ToString());
+                PinObj->SetStringField(TEXT("direction"), Pin->Direction == EGPD_Input ? TEXT("Input") : TEXT("Output"));
+                PinObj->SetBoolField(TEXT("is_connected"), Pin->LinkedTo.Num() > 0);
+                
+                // Add linked node IDs
+                if (Pin->LinkedTo.Num() > 0)
+                {
+                    TArray<TSharedPtr<FJsonValue>> LinkedArray;
+                    for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
+                    {
+                        if (LinkedPin && LinkedPin->GetOwningNode())
+                        {
+                            TSharedPtr<FJsonObject> LinkObj = MakeShared<FJsonObject>();
+                            LinkObj->SetStringField(TEXT("node_id"), LinkedPin->GetOwningNode()->NodeGuid.ToString());
+                            LinkObj->SetStringField(TEXT("pin_name"), LinkedPin->PinName.ToString());
+                            LinkedArray.Add(MakeShared<FJsonValueObject>(LinkObj));
+                        }
+                    }
+                    PinObj->SetArrayField(TEXT("linked_to"), LinkedArray);
+                }
+
+                PinsArray.Add(MakeShared<FJsonValueObject>(PinObj));
+            }
+            NodeObj->SetArrayField(TEXT("pins"), PinsArray);
+
+            NodesArray.Add(MakeShared<FJsonValueObject>(NodeObj));
+        }
+        GraphObj->SetArrayField(TEXT("nodes"), NodesArray);
+        GraphsArray.Add(MakeShared<FJsonValueObject>(GraphObj));
+    }
+    ResultObj->SetArrayField(TEXT("event_graphs"), GraphsArray);
+
+    // ===== Functions =====
+    TArray<TSharedPtr<FJsonValue>> FunctionsArray;
+    for (UEdGraph* FuncGraph : Blueprint->FunctionGraphs)
+    {
+        if (!FuncGraph) continue;
+
+        TSharedPtr<FJsonObject> FuncObj = MakeShared<FJsonObject>();
+        FuncObj->SetStringField(TEXT("name"), FuncGraph->GetName());
+        FuncObj->SetNumberField(TEXT("node_count"), FuncGraph->Nodes.Num());
+        FunctionsArray.Add(MakeShared<FJsonValueObject>(FuncObj));
+    }
+    ResultObj->SetArrayField(TEXT("functions"), FunctionsArray);
+
+    // ===== Interfaces =====
+    TArray<TSharedPtr<FJsonValue>> InterfacesArray;
+    for (const FBPInterfaceDescription& Interface : Blueprint->ImplementedInterfaces)
+    {
+        if (Interface.Interface)
+        {
+            InterfacesArray.Add(MakeShared<FJsonValueString>(Interface.Interface->GetName()));
+        }
+    }
+    ResultObj->SetArrayField(TEXT("interfaces"), InterfacesArray);
+
+    return ResultObj;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleListBlueprints(const TSharedPtr<FJsonObject>& Params)
+{
+    FString SearchPath = TEXT("/Game");
+    if (Params->HasField(TEXT("path")))
+    {
+        Params->TryGetStringField(TEXT("path"), SearchPath);
+    }
+
+    bool bRecursive = true;
+    if (Params->HasField(TEXT("recursive")))
+    {
+        bRecursive = Params->GetBoolField(TEXT("recursive"));
+    }
+
+    FString NameFilter;
+    if (Params->HasField(TEXT("name_filter")))
+    {
+        Params->TryGetStringField(TEXT("name_filter"), NameFilter);
+    }
+
+    FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+    IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
+
+    FARFilter Filter;
+    Filter.ClassPaths.Add(UBlueprint::StaticClass()->GetClassPathName());
+    Filter.bRecursiveClasses = true;
+    Filter.bRecursivePaths = bRecursive;
+    Filter.PackagePaths.Add(FName(*SearchPath));
+
+    TArray<FAssetData> AssetDataList;
+    AssetRegistry.GetAssets(Filter, AssetDataList);
+
+    TArray<TSharedPtr<FJsonValue>> BlueprintsArray;
+    for (const FAssetData& AssetData : AssetDataList)
+    {
+        // Apply name filter if specified
+        if (!NameFilter.IsEmpty())
+        {
+            if (!AssetData.AssetName.ToString().Contains(NameFilter))
+            {
+                continue;
+            }
+        }
+
+        TSharedPtr<FJsonObject> BPObj = MakeShared<FJsonObject>();
+        BPObj->SetStringField(TEXT("name"), AssetData.AssetName.ToString());
+        BPObj->SetStringField(TEXT("path"), AssetData.GetObjectPathString());
+        BPObj->SetStringField(TEXT("package_path"), AssetData.PackagePath.ToString());
+
+        // Try to get parent class from asset data tags
+        FString ParentClassPath;
+        if (AssetData.GetTagValue(FName(TEXT("ParentClass")), ParentClassPath))
+        {
+            BPObj->SetStringField(TEXT("parent_class"), ParentClassPath);
+        }
+
+        BlueprintsArray.Add(MakeShared<FJsonValueObject>(BPObj));
+    }
+
+    TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+    ResultObj->SetNumberField(TEXT("count"), BlueprintsArray.Num());
+    ResultObj->SetArrayField(TEXT("blueprints"), BlueprintsArray);
+    return ResultObj;
+}

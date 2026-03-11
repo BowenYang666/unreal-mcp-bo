@@ -417,4 +417,122 @@ def register_blueprint_tools(mcp: FastMCP):
             logger.error(error_msg)
             return {"success": False, "message": error_msg}
     
-    logger.info("Blueprint tools registered successfully") 
+    @mcp.tool()
+    def read_blueprint(
+        ctx: Context,
+        blueprint_name: str,
+        include_nodes: bool = True,
+        include_properties: bool = True
+    ) -> Dict[str, str]:
+        """
+        Read and return the full structure of a Blueprint asset, including its parent class,
+        components (with transforms and properties), variables, event graph nodes (with connections),
+        functions, and implemented interfaces.
+
+        This tool is useful for understanding the structure of an existing Blueprint in your
+        Unreal Engine project.
+
+        Args:
+            blueprint_name: Name of the Blueprint to read. Can be a simple name like "MyBlueprint"
+                          (will search in /Game/Blueprints/), or a full asset path like
+                          "/Game/MyFolder/MyBlueprint".
+                          Examples: "BP_Player", "BP_Enemy", "/Game/Characters/BP_Hero"
+            include_nodes: Whether to include detailed event graph node info (default True).
+                          Set to False to reduce response size for large Blueprints.
+            include_properties: Whether to include component property details (default True).
+                               Set to False to get a lighter overview of the Blueprint.
+
+        Returns:
+            A dict containing detailed Blueprint information:
+            - name: Blueprint asset name
+            - path: Full asset path
+            - parent_class: Parent class name (e.g. "Actor", "Pawn", "Character")
+            - components: List of components with class, transform, and properties
+            - variables: List of Blueprint variables with types and defaults
+            - event_graphs: List of event graphs with nodes, pins, and connections
+            - functions: List of Blueprint functions
+            - interfaces: List of implemented interfaces
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                logger.error("Failed to connect to Unreal Engine")
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            params = {
+                "blueprint_name": blueprint_name,
+            }
+
+            logger.info(f"Reading blueprint: {blueprint_name}")
+            response = unreal.send_command("read_blueprint", params)
+
+            if not response:
+                logger.error("No response from Unreal Engine")
+                return {"success": False, "message": "No response from Unreal Engine"}
+
+            logger.info(f"Read blueprint response received")
+            return response
+
+        except Exception as e:
+            error_msg = f"Error reading blueprint: {e}"
+            logger.error(error_msg)
+            return {"success": False, "message": error_msg}
+
+    @mcp.tool()
+    def list_blueprints(
+        ctx: Context,
+        path: str = "/Game",
+        recursive: bool = True,
+        name_filter: str = ""
+    ) -> Dict[str, str]:
+        """
+        List all Blueprint assets in the project, optionally filtered by path and name.
+
+        This tool is useful for discovering what Blueprints exist in the project before
+        reading their details with read_blueprint.
+
+        Args:
+            path: Asset path to search in. Defaults to "/Game" which searches the entire project.
+                  Examples: "/Game", "/Game/Blueprints", "/Game/Characters"
+            recursive: Whether to search subdirectories recursively (default True).
+            name_filter: Optional substring filter to match Blueprint names.
+                        Examples: "BP_", "Player", "Enemy"
+
+        Returns:
+            A dict containing:
+            - count: Number of Blueprints found
+            - blueprints: List of Blueprint summaries with name, path, and parent class
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                logger.error("Failed to connect to Unreal Engine")
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            params = {
+                "path": path,
+                "recursive": recursive,
+            }
+            if name_filter:
+                params["name_filter"] = name_filter
+
+            logger.info(f"Listing blueprints in path: {path}")
+            response = unreal.send_command("list_blueprints", params)
+
+            if not response:
+                logger.error("No response from Unreal Engine")
+                return {"success": False, "message": "No response from Unreal Engine"}
+
+            logger.info(f"List blueprints response received")
+            return response
+
+        except Exception as e:
+            error_msg = f"Error listing blueprints: {e}"
+            logger.error(error_msg)
+            return {"success": False, "message": error_msg}
+
+    logger.info("Blueprint tools registered successfully")

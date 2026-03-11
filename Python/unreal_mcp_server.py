@@ -321,6 +321,8 @@ def info():
     - `set_blueprint_property(blueprint_name, property_name, property_value)` - Set properties
     - `set_pawn_properties(blueprint_name)` - Configure Pawn settings
     - `spawn_blueprint_actor(blueprint_name, actor_name)` - Spawn Blueprint actors
+    - `read_blueprint(blueprint_name)` - Read full Blueprint structure (components, variables, graphs, etc.)
+    - `list_blueprints(path, recursive, name_filter)` - List all Blueprints in the project
     
     ## Blueprint Node Management
     - `add_blueprint_event_node(blueprint_name, event_type)` - Add event nodes

@@ -257,6 +257,62 @@ All command responses include a "success" field indicating whether the operation
 }
 ```
 
+### read_blueprint
+
+Read the full structure of a Blueprint asset, including its parent class, components, variables, event graph nodes, functions, and implemented interfaces. This tool is useful for understanding the structure of an existing Blueprint in your project.
+
+**Parameters:**
+- `blueprint_name` (string) - Name of the Blueprint to read. Can be a simple name (will search in /Game/Blueprints/) or a full asset path.
+- `include_nodes` (bool, optional) - Whether to include detailed event graph node info. Defaults to true.
+- `include_properties` (bool, optional) - Whether to include component property details. Defaults to true.
+
+**Returns:**
+- Detailed Blueprint information including:
+  - `name` - Blueprint asset name
+  - `path` - Full asset path
+  - `parent_class` - Parent class name
+  - `blueprint_type` - Type of Blueprint (Normal, MacroLibrary, Interface, etc.)
+  - `components` - List of components with class, transform, parent, and properties
+  - `variables` - List of variables with types, defaults, and metadata
+  - `event_graphs` - List of event graphs with nodes, pins, and connections
+  - `functions` - List of Blueprint functions
+  - `interfaces` - List of implemented interfaces
+
+**Example:**
+```json
+{
+  "command": "read_blueprint",
+  "params": {
+    "blueprint_name": "BP_Player"
+  }
+}
+```
+
+### list_blueprints
+
+List all Blueprint assets in the project, optionally filtered by path and name.
+
+**Parameters:**
+- `path` (string, optional) - Asset path to search in. Defaults to "/Game".
+- `recursive` (bool, optional) - Whether to search subdirectories. Defaults to true.
+- `name_filter` (string, optional) - Substring filter for Blueprint names.
+
+**Returns:**
+- `count` - Number of Blueprints found
+- `blueprints` - List of Blueprint summaries with name, path, and parent class
+
+**Example:**
+```json
+{
+  "command": "list_blueprints",
+  "params": {
+    "path": "/Game/Blueprints",
+    "recursive": true,
+    "name_filter": "BP_"
+  }
+}
+```
+
 ## Implementation Notes
 
 - All transform arrays (location, rotation, scale) must contain exactly 3 float values
