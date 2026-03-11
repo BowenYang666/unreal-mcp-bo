@@ -266,18 +266,51 @@ mcp = FastMCP(
 )
 
 # Import and register tools
+import os
+
 from tools.editor_tools import register_editor_tools
 from tools.blueprint_tools import register_blueprint_tools
 from tools.node_tools import register_blueprint_node_tools
 from tools.project_tools import register_project_tools
 from tools.umg_tools import register_umg_tools
 
-# Register tools
+# Register all tools first
 register_editor_tools(mcp)
 register_blueprint_tools(mcp)
 register_blueprint_node_tools(mcp)
 register_project_tools(mcp)
-register_umg_tools(mcp)  
+register_umg_tools(mcp)
+
+# Read-only mode: if UNREAL_MCP_READ_ONLY=1, remove all write/modify tools
+# and keep only read/query tools. This is useful when you want the AI to
+# understand your project without making any changes.
+#
+# Usage in mcp.json:
+#   "env": { "UNREAL_MCP_READ_ONLY": "1" }
+_read_only = os.environ.get("UNREAL_MCP_READ_ONLY", "").strip() in ("1", "true", "yes")
+
+if _read_only:
+    # Tools that are safe in read-only mode (query/inspect only, no side effects)
+    _READ_ONLY_TOOLS = {
+        # Editor: query actors and their properties
+        "get_actors_in_level",
+        "find_actors_by_name",
+        "get_actor_properties",
+        # Blueprint: read structure and list assets
+        "read_blueprint",
+        "list_blueprints",
+        # Node: inspect existing graph nodes
+        "find_blueprint_nodes",
+    }
+
+    all_tool_names = list(mcp._tool_manager._tools.keys())
+    removed = []
+    for tool_name in all_tool_names:
+        if tool_name not in _READ_ONLY_TOOLS:
+            del mcp._tool_manager._tools[tool_name]
+            removed.append(tool_name)
+
+    logger.info(f"READ-ONLY mode enabled. Kept {len(_READ_ONLY_TOOLS)} tools, removed {len(removed)}: {removed}")
 
 @mcp.prompt()
 def info():
