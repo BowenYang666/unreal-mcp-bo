@@ -676,10 +676,10 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleGetEditorLogs(const TSha
     TArray<TSharedPtr<FJsonValue>> LogArray;
     for (const FMCPLogCapture::FLogEntry& Entry : Logs)
     {
-        TSharedPtr<FJsonObject> LogObj = MakeShareable(new FJsonObject);
-        LogObj->SetNumberField(TEXT("timestamp"), Entry.Timestamp);
-        LogObj->SetStringField(TEXT("category"), Entry.Category.ToString());
-        LogObj->SetStringField(TEXT("message"), Entry.Message);
+        TSharedPtr<FJsonObject> LogEntryJson = MakeShareable(new FJsonObject);
+        LogEntryJson->SetNumberField(TEXT("timestamp"), Entry.Timestamp);
+        LogEntryJson->SetStringField(TEXT("category"), Entry.Category.ToString());
+        LogEntryJson->SetStringField(TEXT("message"), Entry.Message);
 
         // Convert verbosity to string
         FString VerbStr;
@@ -694,9 +694,9 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleGetEditorLogs(const TSha
         case ELogVerbosity::VeryVerbose: VerbStr = TEXT("VeryVerbose"); break;
         default:                         VerbStr = TEXT("Unknown"); break;
         }
-        LogObj->SetStringField(TEXT("verbosity"), VerbStr);
+        LogEntryJson->SetStringField(TEXT("verbosity"), VerbStr);
 
-        LogArray.Add(MakeShareable(new FJsonValueObject(LogObj)));
+        LogArray.Add(MakeShareable(new FJsonValueObject(LogEntryJson)));
     }
 
     ResultJson->SetArrayField(TEXT("logs"), LogArray);
