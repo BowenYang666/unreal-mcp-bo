@@ -301,6 +301,8 @@ if _read_only:
         "list_blueprints",
         # Node: inspect existing graph nodes
         "find_blueprint_nodes",
+        # Editor logs: read output log
+        "get_editor_logs",
     }
 
     all_tool_names = list(mcp._tool_manager._tools.keys())

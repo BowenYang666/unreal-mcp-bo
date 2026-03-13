@@ -366,4 +366,67 @@ def register_editor_tools(mcp: FastMCP):
             logger.error(error_msg)
             return {"success": False, "message": error_msg}
 
+    @mcp.tool()
+    def get_editor_logs(
+        ctx: Context,
+        count: int = 100,
+        verbosity: str = "all",
+        category: str = "",
+        search: str = ""
+    ) -> Dict[str, Any]:
+        """Read recent Unreal Editor output log entries.
+
+        Captures all UE_LOG output, Blueprint Print String, and engine messages.
+        The log buffer holds up to 2000 entries in a ring buffer.
+
+        Args:
+            ctx: The MCP context
+            count: Maximum number of log entries to return (default: 100)
+            verbosity: Minimum verbosity level - "fatal", "error", "warning", "display", "log", "verbose", or "all" (default: "all")
+            category: Filter by log category name, e.g. "LogTemp", "LogBlueprintUserMessages" (default: "" = all categories)
+            search: Case-insensitive substring search within log messages (default: "" = no filter)
+
+        Returns:
+            Dict with "total_captured" (int), "returned" (int), and "logs" (list of dicts with timestamp, category, verbosity, message)
+
+        Examples:
+            get_editor_logs(count=50)
+            get_editor_logs(verbosity="error")
+            get_editor_logs(category="LogTemp", count=20)
+            get_editor_logs(search="NullPtr")
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                logger.error("Failed to connect to Unreal Engine")
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            params = {"count": count}
+            if verbosity and verbosity.lower() != "all":
+                params["verbosity"] = verbosity
+            if category:
+                params["category"] = category
+            if search:
+                params["search"] = search
+
+            response = unreal.send_command("get_editor_logs", params)
+
+            if not response:
+                logger.error("No response from Unreal Engine")
+                return {"success": False, "message": "No response from Unreal Engine"}
+
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+
+            result = response.get("result", response)
+            logger.info(f"Got {result.get('returned', 0)} log entries (total captured: {result.get('total_captured', 0)})")
+            return result
+
+        except Exception as e:
+            error_msg = f"Error getting editor logs: {e}"
+            logger.error(error_msg)
+            return {"success": False, "message": error_msg}
+
     logger.info("Editor tools registered successfully")

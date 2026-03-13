@@ -3,6 +3,8 @@
 #include "CoreMinimal.h"
 #include "Modules/ModuleManager.h"
 
+class FMCPLogCapture;
+
 class FUnrealMCPModule : public IModuleInterface
 {
 public:
@@ -19,4 +21,7 @@ public:
 	{
 		return FModuleManager::Get().IsModuleLoaded("UnrealMCP");
 	}
+
+private:
+	FMCPLogCapture* LogCapture = nullptr;
 }; 

@@ -1,5 +1,6 @@
 #include "Commands/UnrealMCPEditorCommands.h"
 #include "Commands/UnrealMCPCommonUtils.h"
+#include "MCPLogCapture.h"
 #include "Editor.h"
 #include "EditorViewportClient.h"
 #include "LevelEditorViewport.h"
@@ -73,6 +74,11 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleCommand(const FString& C
     else if (CommandType == TEXT("take_screenshot"))
     {
         return HandleTakeScreenshot(Params);
+    }
+    // Log reading commands
+    else if (CommandType == TEXT("get_editor_logs"))
+    {
+        return HandleGetEditorLogs(Params);
     }
     
     return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown editor command: %s"), *CommandType));
@@ -597,4 +603,102 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleTakeScreenshot(const TSh
     }
     
     return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to take screenshot"));
-} 
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleGetEditorLogs(const TSharedPtr<FJsonObject>& Params)
+{
+    FMCPLogCapture* LogCapture = FMCPLogCapture::Get();
+    if (!LogCapture)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Log capture is not initialized"));
+    }
+
+    // Parse parameters
+    int32 Count = 100;
+    if (Params->HasField(TEXT("count")))
+    {
+        Count = static_cast<int32>(Params->GetNumberField(TEXT("count")));
+    }
+
+    FString VerbosityStr;
+    if (Params->HasField(TEXT("verbosity")))
+    {
+        VerbosityStr = Params->GetStringField(TEXT("verbosity"));
+    }
+
+    FString CategoryFilter;
+    if (Params->HasField(TEXT("category")))
+    {
+        CategoryFilter = Params->GetStringField(TEXT("category"));
+    }
+
+    FString SearchText;
+    if (Params->HasField(TEXT("search")))
+    {
+        SearchText = Params->GetStringField(TEXT("search"));
+    }
+
+    // Map verbosity string to enum
+    ELogVerbosity::Type MinVerbosity = ELogVerbosity::All;
+    if (VerbosityStr.Equals(TEXT("fatal"), ESearchCase::IgnoreCase))
+    {
+        MinVerbosity = ELogVerbosity::Fatal;
+    }
+    else if (VerbosityStr.Equals(TEXT("error"), ESearchCase::IgnoreCase))
+    {
+        MinVerbosity = ELogVerbosity::Error;
+    }
+    else if (VerbosityStr.Equals(TEXT("warning"), ESearchCase::IgnoreCase))
+    {
+        MinVerbosity = ELogVerbosity::Warning;
+    }
+    else if (VerbosityStr.Equals(TEXT("display"), ESearchCase::IgnoreCase))
+    {
+        MinVerbosity = ELogVerbosity::Display;
+    }
+    else if (VerbosityStr.Equals(TEXT("log"), ESearchCase::IgnoreCase))
+    {
+        MinVerbosity = ELogVerbosity::Log;
+    }
+    else if (VerbosityStr.Equals(TEXT("verbose"), ESearchCase::IgnoreCase))
+    {
+        MinVerbosity = ELogVerbosity::Verbose;
+    }
+
+    // Get filtered logs
+    TArray<FMCPLogCapture::FLogEntry> Logs = LogCapture->GetLogs(Count, MinVerbosity, CategoryFilter, SearchText);
+
+    // Build response
+    TSharedPtr<FJsonObject> ResultJson = MakeShareable(new FJsonObject);
+    ResultJson->SetNumberField(TEXT("total_captured"), LogCapture->GetCapturedCount());
+    ResultJson->SetNumberField(TEXT("returned"), Logs.Num());
+
+    TArray<TSharedPtr<FJsonValue>> LogArray;
+    for (const FMCPLogCapture::FLogEntry& Entry : Logs)
+    {
+        TSharedPtr<FJsonObject> LogObj = MakeShareable(new FJsonObject);
+        LogObj->SetNumberField(TEXT("timestamp"), Entry.Timestamp);
+        LogObj->SetStringField(TEXT("category"), Entry.Category.ToString());
+        LogObj->SetStringField(TEXT("message"), Entry.Message);
+
+        // Convert verbosity to string
+        FString VerbStr;
+        switch (Entry.Verbosity)
+        {
+        case ELogVerbosity::Fatal:       VerbStr = TEXT("Fatal"); break;
+        case ELogVerbosity::Error:       VerbStr = TEXT("Error"); break;
+        case ELogVerbosity::Warning:     VerbStr = TEXT("Warning"); break;
+        case ELogVerbosity::Display:     VerbStr = TEXT("Display"); break;
+        case ELogVerbosity::Log:         VerbStr = TEXT("Log"); break;
+        case ELogVerbosity::Verbose:     VerbStr = TEXT("Verbose"); break;
+        case ELogVerbosity::VeryVerbose: VerbStr = TEXT("VeryVerbose"); break;
+        default:                         VerbStr = TEXT("Unknown"); break;
+        }
+        LogObj->SetStringField(TEXT("verbosity"), VerbStr);
+
+        LogArray.Add(MakeShareable(new FJsonValueObject(LogObj)));
+    }
+
+    ResultJson->SetArrayField(TEXT("logs"), LogArray);
+    return ResultJson;
+}
