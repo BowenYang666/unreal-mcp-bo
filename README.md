@@ -1,155 +1,128 @@
-<div align="center">
+# Unreal MCP (Fork)
 
-# Model Context Protocol for Unreal Engine
-<span style="color: #555555">unreal-mcp</span>
+Fork of [chongdashu/unreal-mcp](https://github.com/chongdashu/unreal-mcp) with additional read/query tools for AI-assisted Unreal Engine development.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![Unreal Engine](https://img.shields.io/badge/Unreal%20Engine-5.5%2B-orange)](https://www.unrealengine.com)
-[![Python](https://img.shields.io/badge/Python-3.12%2B-yellow)](https://www.python.org)
-[![Status](https://img.shields.io/badge/Status-Experimental-red)](https://github.com/chongdashu/unreal-mcp)
+> **What's different from the original?** This fork adds read-only tools (blueprint reading, editor log capture, material inspection) and a read-only mode so AI can safely understand your project without modifying it.
 
-</div>
+## Supported Tools (36 total)
 
-This project enables AI assistant clients like Cursor, Windsurf and Claude Desktop to control Unreal Engine through natural language using the Model Context Protocol (MCP).
+### Actor Tools (Original)
 
-## ⚠️ Experimental Status
+| Tool | Description |
+|------|-------------|
+| `get_actors_in_level` | List all actors in the current level |
+| `find_actors_by_name` | Find actors by name pattern |
+| `get_actor_properties` | Get all properties of an actor |
+| `spawn_actor` | Create a new actor (cube, sphere, light, camera, etc.) |
+| `delete_actor` | Delete an actor by name |
+| `set_actor_transform` | Set position, rotation, scale of an actor |
+| `set_actor_property` | Set a specific property on an actor |
+| `spawn_blueprint_actor` | Spawn an instance of a Blueprint class |
 
-This project is currently in an **EXPERIMENTAL** state. The API, functionality, and implementation details are subject to significant changes. While we encourage testing and feedback, please be aware that:
+### Blueprint Tools (Original + Added)
 
-- Breaking changes may occur without notice
-- Features may be incomplete or unstable
-- Documentation may be outdated or missing
-- Production use is not recommended at this time
+| Tool | Description | Status |
+|------|-------------|--------|
+| `create_blueprint` | Create a new Blueprint class | Original |
+| `add_component_to_blueprint` | Add a component to a Blueprint | Original |
+| `set_component_property` | Set a property on a Blueprint component | Original |
+| `set_physics_properties` | Configure physics on a Blueprint component | Original |
+| `set_blueprint_property` | Set a Blueprint-level property | Original |
+| `set_static_mesh_properties` | Set static mesh and material on a component | Original |
+| `compile_blueprint` | Compile a Blueprint | Original |
+| **`read_blueprint`** | **Read Blueprint structure (components, variables, graphs, interfaces)** | **Added** |
+| **`list_blueprints`** | **List all Blueprint assets with filtering** | **Added** |
 
-## 🌟 Overview
+### Blueprint Node Graph Tools (Original)
 
-The Unreal MCP integration provides comprehensive tools for controlling Unreal Engine through natural language:
+| Tool | Description |
+|------|-------------|
+| `add_blueprint_event_node` | Add an event node (BeginPlay, Tick, etc.) |
+| `add_blueprint_function_node` | Add a function call node |
+| `connect_blueprint_nodes` | Connect two nodes in the graph |
+| `add_blueprint_variable` | Add a variable to a Blueprint |
+| `add_blueprint_get_self_component_reference` | Add a component reference node |
+| `add_blueprint_self_reference` | Add a self-reference node |
+| `add_blueprint_input_action_node` | Add an input action node |
+| `find_blueprint_nodes` | Find nodes in a Blueprint graph |
 
-| Category | Capabilities |
-|----------|-------------|
-| **Actor Management** | • Create and delete actors (cubes, spheres, lights, cameras, etc.)<br>• Set actor transforms (position, rotation, scale)<br>• Query actor properties and find actors by name<br>• List all actors in the current level |
-| **Blueprint Development** | • Create new Blueprint classes with custom components<br>• Add and configure components (mesh, camera, light, etc.)<br>• Set component properties and physics settings<br>• Compile Blueprints and spawn Blueprint actors<br>• Create input mappings for player controls<br>• **Read Blueprint structure** (components, variables, graphs, interfaces)<br>• **List all Blueprints** in the project with filtering |
-| **Blueprint Node Graph** | • Add event nodes (BeginPlay, Tick, etc.)<br>• Create function call nodes and connect them<br>• Add variables with custom types and default values<br>• Create component and self references<br>• Find and manage nodes in the graph |
-| **Editor Control** | • Focus viewport on specific actors or locations<br>• Control viewport camera orientation and distance |
+### Editor Tools (Original + Added)
 
-All these capabilities are accessible through natural language commands via AI assistants, making it easy to automate and control Unreal Engine workflows.
+| Tool | Description | Status |
+|------|-------------|--------|
+| `focus_viewport` | Focus viewport on an actor or location | Original |
+| `take_screenshot` | Capture a viewport screenshot | Original |
+| **`get_editor_logs`** | **Read UE output log (filter by verbosity, category, keyword)** | **Added** |
 
-## 🧩 Components
+### Material Tools (Added)
 
-### Sample Project (MCPGameProject) `MCPGameProject`
-- Based off the Blank Project, but with the UnrealMCP plugin added.
+| Tool | Description |
+|------|-------------|
+| **`list_materials`** | List all Material and MaterialInstance assets |
+| **`read_material`** | Read a Material's node graph, expressions, connections, and input pins |
+| **`get_material_instance_parameters`** | Read a MaterialInstance's scalar, vector, and texture parameter overrides |
 
-### Plugin (UnrealMCP) `MCPGameProject/Plugins/UnrealMCP`
-- Native TCP server for MCP communication
-- Integrates with Unreal Editor subsystems
-- Implements actor manipulation tools
-- Handles command execution and response handling
+### UMG / Widget Tools (Original)
 
-### Python MCP Server `Python/unreal_mcp_server.py`
-- Implemented in `unreal_mcp_server.py`
-- Manages TCP socket connections to the C++ plugin (port 55557)
-- Handles command serialization and response parsing
-- Provides error handling and connection management
-- Loads and registers tool modules from the `tools` directory
-- Uses the FastMCP library to implement the Model Context Protocol
+| Tool | Description |
+|------|-------------|
+| `create_umg_widget_blueprint` | Create a UMG Widget Blueprint |
+| `add_text_block_to_widget` | Add a text block to a widget |
+| `add_button_to_widget` | Add a button to a widget |
+| `bind_widget_event` | Bind an event to a widget element |
+| `set_text_block_binding` | Set text binding on a text block |
+| `add_widget_to_viewport` | Add a widget to the viewport |
 
-## 📂 Directory Structure
+### Project Tools (Original)
 
-- **MCPGameProject/** - Example Unreal project
-  - **Plugins/UnrealMCP/** - C++ plugin source
-    - **Source/UnrealMCP/** - Plugin source code
-    - **UnrealMCP.uplugin** - Plugin definition
+| Tool | Description |
+|------|-------------|
+| `create_input_mapping` | Create an input action mapping |
 
-- **Python/** - Python server and tools
-  - **tools/** - Tool modules for actor, editor, and blueprint operations
-  - **scripts/** - Example scripts and demos
+## Read-Only Mode
 
-- **Docs/** - Comprehensive documentation
-  - See [Docs/README.md](Docs/README.md) for documentation index
+Set the `UNREAL_MCP_READ_ONLY` environment variable to restrict the AI to query-only tools — no creation, deletion, or modification.
 
-## 🚀 Quick Start Guide
-
-### Prerequisites
-- Unreal Engine 5.5+
-- Python 3.12+
-- MCP Client (e.g., Claude Desktop, Cursor, Windsurf)
-
-### Sample project
-
-For getting started quickly, feel free to use the starter project in `MCPGameProject`. This is a UE 5.5 Blank Starter Project with the `UnrealMCP.uplugin` already configured. 
-
-1. **Prepare the project**
-   - Right-click your .uproject file
-   - Generate Visual Studio project files
-2. **Build the project (including the plugin)**
-   - Open solution (`.sln`)
-   - Choose `Development Editor` as your target.
-   - Build
-
-### Plugin
-Otherwise, if you want to use the plugin in your existing project:
-
-1. **Copy the plugin to your project**
-   - Copy `MCPGameProject/Plugins/UnrealMCP` to your project's Plugins folder
-
-2. **Enable the plugin**
-   - Edit > Plugins
-   - Find "UnrealMCP" in Editor category
-   - Enable the plugin
-   - Restart editor when prompted
-
-3. **Build the plugin**
-   - Right-click your .uproject file
-   - Generate Visual Studio project files
-   - Open solution (`.sln)
-   - Build with your target platform and output settings
-
-### Python Server Setup
-
-See [Python/README.md](Python/README.md) for detailed Python setup instructions, including:
-- Setting up your Python environment
-- Running the MCP server
-- Using direct or server-based connections
-
-### Configuring your MCP Client
-
-Use the following JSON for your mcp configuration based on your MCP client.
-
-```json
+```jsonc
+// mcp.json
 {
-  "mcpServers": {
-    "unrealMCP": {
-      "command": "uv",
-      "args": [
-        "--directory",
-        "<path/to/the/folder/PYTHON>",
-        "run",
-        "unreal_mcp_server.py"
-      ]
+    "servers": {
+        "unrealMCP": {
+            "command": "uv",
+            "args": ["--directory", "<path-to>/Python", "run", "unreal_mcp_server.py"],
+            "env": { "UNREAL_MCP_READ_ONLY": "1" }
+        }
     }
-  }
 }
 ```
 
-An example is found in `mcp.json`
+**Read-only tools (10):**
 
-### MCP Configuration Locations
+| Tool | Category |
+|------|----------|
+| `get_actors_in_level` | Actor |
+| `find_actors_by_name` | Actor |
+| `get_actor_properties` | Actor |
+| `list_blueprints` | Blueprint |
+| `read_blueprint` | Blueprint |
+| `find_blueprint_nodes` | Blueprint Node |
+| `get_editor_logs` | Editor |
+| `list_materials` | Material |
+| `read_material` | Material |
+| `get_material_instance_parameters` | Material |
 
-Depending on which MCP client you're using, the configuration file location will differ:
+Set `UNREAL_MCP_READ_ONLY=0` or remove the `env` block to enable all 36 tools.
 
-| MCP Client | Configuration File Location | Notes |
-|------------|------------------------------|-------|
-| Claude Desktop | `~/.config/claude-desktop/mcp.json` | On Windows: `%USERPROFILE%\.config\claude-desktop\mcp.json` |
-| Cursor | `.cursor/mcp.json` | Located in your project root directory |
-| Windsurf | `~/.config/windsurf/mcp.json` | On Windows: `%USERPROFILE%\.config\windsurf\mcp.json` |
+## Setup
 
-Each client uses the same JSON format as shown in the example above. 
-Simply place the configuration in the appropriate location for your MCP client.
+See the [original repo](https://github.com/chongdashu/unreal-mcp) for full setup instructions, or:
 
+1. Copy `MCPGameProject/Plugins/UnrealMCP` to your project's `Plugins/` folder
+2. Build the project (requires UE 5.5+, tested on UE 5.7)
+3. Configure your MCP client to point to the Python server
+
+Detailed deployment guide: [Docs/copy_plugin_to_project.md](Docs/copy_plugin_to_project.md)
 
 ## License
-MIT
 
-## Questions
-
-For questions, you can reach me on X/Twitter: [@chongdashu](https://www.x.com/chongdashu)
+MIT — same as the original project.
