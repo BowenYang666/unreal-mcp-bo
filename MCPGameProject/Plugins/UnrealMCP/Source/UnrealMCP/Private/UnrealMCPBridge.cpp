@@ -69,6 +69,7 @@ UUnrealMCPBridge::UUnrealMCPBridge()
     BlueprintNodeCommands = MakeShared<FUnrealMCPBlueprintNodeCommands>();
     ProjectCommands = MakeShared<FUnrealMCPProjectCommands>();
     UMGCommands = MakeShared<FUnrealMCPUMGCommands>();
+    MaterialCommands = MakeShared<FUnrealMCPMaterialCommands>();
 }
 
 UUnrealMCPBridge::~UUnrealMCPBridge()
@@ -78,6 +79,7 @@ UUnrealMCPBridge::~UUnrealMCPBridge()
     BlueprintNodeCommands.Reset();
     ProjectCommands.Reset();
     UMGCommands.Reset();
+    MaterialCommands.Reset();
 }
 
 // Initialize subsystem
@@ -280,6 +282,13 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("add_widget_to_viewport"))
             {
                 ResultJson = UMGCommands->HandleCommand(CommandType, Params);
+            }
+            // Material Commands
+            else if (CommandType == TEXT("list_materials") ||
+                     CommandType == TEXT("read_material") ||
+                     CommandType == TEXT("get_material_instance_parameters"))
+            {
+                ResultJson = MaterialCommands->HandleCommand(CommandType, Params);
             }
             else
             {

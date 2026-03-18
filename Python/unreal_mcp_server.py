@@ -273,6 +273,7 @@ from tools.blueprint_tools import register_blueprint_tools
 from tools.node_tools import register_blueprint_node_tools
 from tools.project_tools import register_project_tools
 from tools.umg_tools import register_umg_tools
+from tools.material_tools import register_material_tools
 
 # Register all tools first
 register_editor_tools(mcp)
@@ -280,6 +281,7 @@ register_blueprint_tools(mcp)
 register_blueprint_node_tools(mcp)
 register_project_tools(mcp)
 register_umg_tools(mcp)
+register_material_tools(mcp)
 
 # Read-only mode: if UNREAL_MCP_READ_ONLY=1, remove all write/modify tools
 # and keep only read/query tools. This is useful when you want the AI to
@@ -303,6 +305,10 @@ if _read_only:
         "find_blueprint_nodes",
         # Editor logs: read output log
         "get_editor_logs",
+        # Material: read material assets and properties
+        "list_materials",
+        "read_material",
+        "get_material_instance_parameters",
     }
 
     all_tool_names = list(mcp._tool_manager._tools.keys())
