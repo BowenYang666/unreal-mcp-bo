@@ -52,7 +52,7 @@ Fork of [chongdashu/unreal-mcp](https://github.com/chongdashu/unreal-mcp) with a
 |------|-------------|--------|
 | `focus_viewport` | Focus viewport on an actor or location | Original |
 | `take_screenshot` | Capture a viewport screenshot | Original |
-| **`get_editor_logs`** | **Read UE output log (filter by verbosity, category, keyword)** | **Added** |
+| **`get_editor_logs`** | **Read UE output log from file (filter by verbosity, category, keyword). Set `UNREAL_PROJECT_LOG` env var or pass `log_path`.** | **Added** |
 
 ### Material Tools (Added)
 
@@ -90,7 +90,10 @@ Set the `UNREAL_MCP_READ_ONLY` environment variable to restrict the AI to query-
         "unrealMCP": {
             "command": "uv",
             "args": ["--directory", "<path-to>/Python", "run", "unreal_mcp_server.py"],
-            "env": { "UNREAL_MCP_READ_ONLY": "1" }
+            "env": {
+                "UNREAL_MCP_READ_ONLY": "1",
+                "UNREAL_PROJECT_LOG": "D:/UnrealProjects/MyProject/Saved/Logs/MyProject.log"
+            }
         }
     }
 }

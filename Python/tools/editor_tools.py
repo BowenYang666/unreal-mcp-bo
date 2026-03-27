@@ -372,60 +372,125 @@ def register_editor_tools(mcp: FastMCP):
         count: int = 100,
         verbosity: str = "all",
         category: str = "",
-        search: str = ""
+        search: str = "",
+        log_path: str = ""
     ) -> Dict[str, Any]:
-        """Read recent Unreal Editor output log entries.
+        """Read recent Unreal Editor output log entries by reading the log file directly.
 
-        Captures all UE_LOG output, Blueprint Print String, and engine messages.
-        The log buffer holds up to 2000 entries in a ring buffer.
+        Reads from the UE project's log file at <ProjectDir>/Saved/Logs/<ProjectName>.log.
+        No need for UE editor to be running — works even after the editor has closed.
+
+        Set the UNREAL_PROJECT_LOG env var to the log file path, or pass log_path directly.
 
         Args:
             ctx: The MCP context
-            count: Maximum number of log entries to return (default: 100)
+            count: Maximum number of log entries to return from the end of the file (default: 100)
             verbosity: Minimum verbosity level - "fatal", "error", "warning", "display", "log", "verbose", or "all" (default: "all")
             category: Filter by log category name, e.g. "LogTemp", "LogBlueprintUserMessages" (default: "" = all categories)
             search: Case-insensitive substring search within log messages (default: "" = no filter)
+            log_path: Full path to the .log file. If empty, uses UNREAL_PROJECT_LOG env var.
 
         Returns:
-            Dict with "total_captured" (int), "returned" (int), and "logs" (list of dicts with timestamp, category, verbosity, message)
+            Dict with "total_lines" (int), "returned" (int), and "logs" (list of dicts with timestamp, category, verbosity, message)
 
         Examples:
             get_editor_logs(count=50)
             get_editor_logs(verbosity="error")
             get_editor_logs(category="LogTemp", count=20)
             get_editor_logs(search="NullPtr")
+            get_editor_logs(log_path="D:/UnrealProjects/MyProject/Saved/Logs/MyProject.log")
         """
-        from unreal_mcp_server import get_unreal_connection
+        import os
+        import re
+
+        # Resolve log file path
+        path = log_path or os.environ.get("UNREAL_PROJECT_LOG", "")
+        if not path:
+            return {
+                "success": False,
+                "message": "No log file path provided. Set UNREAL_PROJECT_LOG env var or pass log_path parameter. "
+                           "Example: log_path='D:/UnrealProjects/MyProject/Saved/Logs/MyProject.log'"
+            }
+
+        if not os.path.isfile(path):
+            return {"success": False, "message": f"Log file not found: {path}"}
 
         try:
-            unreal = get_unreal_connection()
-            if not unreal:
-                logger.error("Failed to connect to Unreal Engine")
-                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            # Read the file (handle UE's utf-8 with BOM or utf-16)
+            try:
+                with open(path, "r", encoding="utf-8-sig") as f:
+                    all_lines = f.readlines()
+            except UnicodeDecodeError:
+                with open(path, "r", encoding="utf-16") as f:
+                    all_lines = f.readlines()
 
-            params = {"count": count}
-            if verbosity and verbosity.lower() != "all":
-                params["verbosity"] = verbosity
-            if category:
-                params["category"] = category
-            if search:
-                params["search"] = search
+            total_lines = len(all_lines)
 
-            response = unreal.send_command("get_editor_logs", params)
+            # UE log line pattern: [YYYY.MM.DD-HH.MM.SS:mmm][frame]Category: Verbosity: Message
+            # or: [YYYY.MM.DD-HH.MM.SS:mmm][frame]Category: Message (for Display verbosity)
+            log_pattern = re.compile(
+                r"^\[([^\]]+)\]\[[\s\d]*\](\w+):\s*(?:(Fatal|Error|Warning|Display|Log|Verbose|VeryVerbose):\s*)?(.*)"
+            )
 
-            if not response:
-                logger.error("No response from Unreal Engine")
-                return {"success": False, "message": "No response from Unreal Engine"}
+            # Verbosity ranking (lower = more severe)
+            verbosity_rank = {
+                "fatal": 1, "error": 2, "warning": 3,
+                "display": 4, "log": 5, "verbose": 6, "veryverbose": 7, "all": 99
+            }
+            min_rank = verbosity_rank.get(verbosity.lower(), 99)
 
-            if response.get("status") == "error":
-                return {"success": False, "message": response.get("error", "Unknown error")}
+            category_lower = category.lower() if category else ""
+            search_lower = search.lower() if search else ""
 
-            result = response.get("result", response)
-            logger.info(f"Got {result.get('returned', 0)} log entries (total captured: {result.get('total_captured', 0)})")
-            return result
+            # Parse from end to start, collect up to count matching entries
+            results = []
+            for line in reversed(all_lines):
+                line = line.rstrip("\n\r")
+                m = log_pattern.match(line)
+                if not m:
+                    continue
+
+                timestamp = m.group(1)
+                cat = m.group(2)
+                verb = m.group(3) or "Display"
+                msg = m.group(4)
+
+                # Filter by verbosity
+                entry_rank = verbosity_rank.get(verb.lower(), 5)
+                if min_rank != 99 and entry_rank > min_rank:
+                    continue
+
+                # Filter by category
+                if category_lower and cat.lower() != category_lower:
+                    continue
+
+                # Filter by search text
+                if search_lower and search_lower not in msg.lower():
+                    continue
+
+                results.append({
+                    "timestamp": timestamp,
+                    "category": cat,
+                    "verbosity": verb,
+                    "message": msg
+                })
+
+                if len(results) >= count:
+                    break
+
+            # Reverse so oldest first, newest last
+            results.reverse()
+
+            logger.info(f"Read {len(results)} log entries from {path} (total lines: {total_lines})")
+            return {
+                "total_lines": total_lines,
+                "returned": len(results),
+                "log_file": path,
+                "logs": results
+            }
 
         except Exception as e:
-            error_msg = f"Error getting editor logs: {e}"
+            error_msg = f"Error reading log file: {e}"
             logger.error(error_msg)
             return {"success": False, "message": error_msg}
 
