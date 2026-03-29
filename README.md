@@ -4,7 +4,7 @@ Fork of [chongdashu/unreal-mcp](https://github.com/chongdashu/unreal-mcp) with a
 
 > **What's different from the original?** This fork adds read-only tools (blueprint reading, editor log capture, material inspection) and a read-only mode so AI can safely understand your project without modifying it.
 
-## Supported Tools (36 total)
+## Supported Tools (37 total)
 
 ### Actor Tools (Original)
 
@@ -53,6 +53,7 @@ Fork of [chongdashu/unreal-mcp](https://github.com/chongdashu/unreal-mcp) with a
 | `focus_viewport` | Focus viewport on an actor or location | Original |
 | `take_screenshot` | Capture a viewport screenshot | Original |
 | **`get_editor_logs`** | **Read UE output log from file (filter by verbosity, category, keyword). Set `UNREAL_PROJECT_LOG` env var or pass `log_path`.** | **Added** |
+| **`get_unsaved_changes`** | **List all unsaved (dirty) content packages and maps in the editor** | **Added** |
 
 ### Material Tools (Added)
 
@@ -99,7 +100,7 @@ Set the `UNREAL_MCP_READ_ONLY` environment variable to restrict the AI to query-
 }
 ```
 
-**Read-only tools (10):**
+**Read-only tools (11):**
 
 | Tool | Category |
 |------|----------|
@@ -110,11 +111,12 @@ Set the `UNREAL_MCP_READ_ONLY` environment variable to restrict the AI to query-
 | `read_blueprint` | Blueprint |
 | `find_blueprint_nodes` | Blueprint Node |
 | `get_editor_logs` | Editor |
+| `get_unsaved_changes` | Editor |
 | `list_materials` | Material |
 | `read_material` | Material |
 | `get_material_instance_parameters` | Material |
 
-Set `UNREAL_MCP_READ_ONLY=0` or remove the `env` block to enable all 36 tools.
+Set `UNREAL_MCP_READ_ONLY=0` or remove the `env` block to enable all 37 tools.
 
 ## Setup
 

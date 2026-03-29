@@ -60,7 +60,7 @@
 
 // Default settings
 #define MCP_SERVER_HOST "127.0.0.1"
-#define MCP_SERVER_PORT 55557
+#define MCP_SERVER_PORT 55556
 
 UUnrealMCPBridge::UUnrealMCPBridge()
 {
@@ -236,7 +236,8 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("set_actor_property") ||
                      CommandType == TEXT("spawn_blueprint_actor") ||
                      CommandType == TEXT("focus_viewport") || 
-                     CommandType == TEXT("take_screenshot"))
+                     CommandType == TEXT("take_screenshot") ||
+                     CommandType == TEXT("get_unsaved_changes"))
             {
                 ResultJson = EditorCommands->HandleCommand(CommandType, Params);
             }

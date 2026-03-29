@@ -25,7 +25,7 @@ logger = logging.getLogger("UnrealMCP")
 
 # Configuration
 UNREAL_HOST = "127.0.0.1"
-UNREAL_PORT = 55557
+UNREAL_PORT = 55556
 
 class UnrealConnection:
     """Connection to an Unreal Engine instance."""
@@ -48,7 +48,7 @@ class UnrealConnection:
             
             logger.info(f"Connecting to Unreal at {UNREAL_HOST}:{UNREAL_PORT}...")
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.socket.settimeout(5)  # 5 second timeout
+            self.socket.settimeout(30)  # 30 second timeout
             
             # Set socket options for better stability
             self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -81,7 +81,7 @@ class UnrealConnection:
     def receive_full_response(self, sock, buffer_size=4096) -> bytes:
         """Receive a complete response from Unreal, handling chunked data."""
         chunks = []
-        sock.settimeout(5)  # 5 second timeout
+        sock.settimeout(30)  # 30 second timeout
         try:
             while True:
                 chunk = sock.recv(buffer_size)
@@ -305,6 +305,8 @@ if _read_only:
         "find_blueprint_nodes",
         # Editor logs: read output log
         "get_editor_logs",
+        # Editor state: check unsaved changes
+        "get_unsaved_changes",
         # Material: read material assets and properties
         "list_materials",
         "read_material",

@@ -367,6 +367,44 @@ def register_editor_tools(mcp: FastMCP):
             return {"success": False, "message": error_msg}
 
     @mcp.tool()
+    def get_unsaved_changes(ctx: Context) -> Dict[str, Any]:
+        """Check for unsaved changes in the Unreal Editor.
+
+        Returns the count and names of all dirty (unsaved) content packages
+        and map/level packages. Useful before closing the editor to ensure
+        nothing is lost.
+
+        Returns:
+            Dict with total_unsaved (int), unsaved_content (list), unsaved_maps (list)
+
+        Examples:
+            get_unsaved_changes()
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                logger.error("Failed to connect to Unreal Engine")
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            response = unreal.send_command("get_unsaved_changes", {})
+
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+
+            result = response.get("result", response)
+            logger.info(f"Unsaved changes: {result.get('total_unsaved', 0)} total")
+            return result
+
+        except Exception as e:
+            logger.error(f"Error checking unsaved changes: {e}")
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
     def get_editor_logs(
         ctx: Context,
         count: int = 100,

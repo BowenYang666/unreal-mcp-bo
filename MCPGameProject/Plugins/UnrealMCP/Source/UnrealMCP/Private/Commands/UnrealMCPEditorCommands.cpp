@@ -7,6 +7,7 @@
 #include "HighResScreenshot.h"
 #include "Engine/GameViewportClient.h"
 #include "Misc/FileHelper.h"
+#include "FileHelpers.h"
 #include "GameFramework/Actor.h"
 #include "Engine/Selection.h"
 #include "Kismet/GameplayStatics.h"
@@ -73,6 +74,11 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleCommand(const FString& C
     else if (CommandType == TEXT("take_screenshot"))
     {
         return HandleTakeScreenshot(Params);
+    }
+    // Editor state commands
+    else if (CommandType == TEXT("get_unsaved_changes"))
+    {
+        return HandleGetUnsavedChanges(Params);
     }
     
     return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown editor command: %s"), *CommandType));
@@ -597,4 +603,49 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleTakeScreenshot(const TSh
     }
     
     return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to take screenshot"));
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleGetUnsavedChanges(const TSharedPtr<FJsonObject>& Params)
+{
+    TArray<UPackage*> DirtyContent;
+    TArray<UPackage*> DirtyMaps;
+    UEditorLoadingAndSavingUtils::GetDirtyContentPackages(DirtyContent);
+    UEditorLoadingAndSavingUtils::GetDirtyMapPackages(DirtyMaps);
+
+    TSharedPtr<FJsonObject> ResultJson = MakeShareable(new FJsonObject);
+
+    int32 TotalDirty = DirtyContent.Num() + DirtyMaps.Num();
+    ResultJson->SetNumberField(TEXT("total_unsaved"), TotalDirty);
+    ResultJson->SetNumberField(TEXT("unsaved_content_count"), DirtyContent.Num());
+    ResultJson->SetNumberField(TEXT("unsaved_map_count"), DirtyMaps.Num());
+
+    // Content packages (blueprints, materials, textures, etc.)
+    TArray<TSharedPtr<FJsonValue>> ContentArray;
+    for (UPackage* Package : DirtyContent)
+    {
+        if (Package)
+        {
+            TSharedPtr<FJsonObject> PkgObj = MakeShareable(new FJsonObject);
+            PkgObj->SetStringField(TEXT("name"), Package->GetName());
+            PkgObj->SetStringField(TEXT("path"), Package->GetPathName());
+            ContentArray.Add(MakeShareable(new FJsonValueObject(PkgObj)));
+        }
+    }
+    ResultJson->SetArrayField(TEXT("unsaved_content"), ContentArray);
+
+    // Map/level packages
+    TArray<TSharedPtr<FJsonValue>> MapArray;
+    for (UPackage* Package : DirtyMaps)
+    {
+        if (Package)
+        {
+            TSharedPtr<FJsonObject> PkgObj = MakeShareable(new FJsonObject);
+            PkgObj->SetStringField(TEXT("name"), Package->GetName());
+            PkgObj->SetStringField(TEXT("path"), Package->GetPathName());
+            MapArray.Add(MakeShareable(new FJsonValueObject(PkgObj)));
+        }
+    }
+    ResultJson->SetArrayField(TEXT("unsaved_maps"), MapArray);
+
+    return ResultJson;
 }
