@@ -4,7 +4,7 @@ Fork of [chongdashu/unreal-mcp](https://github.com/chongdashu/unreal-mcp) with a
 
 > **What's different from the original?** This fork adds read-only tools (blueprint reading, editor log capture, material inspection) and a read-only mode so AI can safely understand your project without modifying it.
 
-## Supported Tools (37 total)
+## Supported Tools (45 total)
 
 ### Actor Tools (Original)
 
@@ -73,16 +73,15 @@ Fork of [chongdashu/unreal-mcp](https://github.com/chongdashu/unreal-mcp) with a
 | `bind_widget_event` | Bind an event to a widget element | Original |
 | `set_text_block_binding` | Set text binding on a text block | Original |
 | `add_widget_to_viewport` | Add a widget to the viewport | Original |
-| **`add_progress_bar_to_widget`** | **Add a ProgressBar to a widget (percent, fill color, fill type). For health bars, loading bars, etc.** | **Planned** |
-| **`add_image_to_widget`** | **Add an Image widget (texture/brush, tint color, size). For backgrounds, icons, etc.** | **Planned** |
-| **`add_vertical_box_to_widget`** | **Add a VerticalBox layout container. Children stack top-to-bottom.** | **Planned** |
-| **`add_horizontal_box_to_widget`** | **Add a HorizontalBox layout container. Children stack left-to-right.** | **Planned** |
-| **`add_overlay_to_widget`** | **Add an Overlay container. Children stack on top of each other (z-order).** | **Planned** |
-| **`add_size_box_to_widget`** | **Add a SizeBox to constrain child width/height (e.g., fixed-size health bar wrapper).** | **Planned** |
-| **`add_border_to_widget`** | **Add a Border widget (background color/brush with one child slot).** | **Planned** |
-| **`add_spacer_to_widget`** | **Add a Spacer for padding/spacing between elements in layout containers.** | **Planned** |
-| **`set_widget_anchor`** | **Set anchor, alignment, offset, and size on any existing widget in a CanvasPanel.** | **Planned** |
-| **`add_widget_to_container`** | **Add an existing widget as a child of a layout container (VerticalBox, HorizontalBox, Overlay, etc.)** | **Planned** |
+| **`add_progress_bar_to_widget`** | **Add a ProgressBar to a widget (percent, fill color, fill type). For health bars, loading bars, etc.** | **Added** |
+| **`add_image_to_widget`** | **Add an Image widget (texture/brush, tint color, size). For backgrounds, icons, etc.** | **Added** |
+| **`add_vertical_box_to_widget`** | **Add a VerticalBox layout container. Children stack top-to-bottom.** | **Added** |
+| **`add_horizontal_box_to_widget`** | **Add a HorizontalBox layout container. Children stack left-to-right.** | **Added** |
+| **`add_overlay_to_widget`** | **Add an Overlay container. Children stack on top of each other (z-order).** | **Added** |
+| **`add_size_box_to_widget`** | **Add a SizeBox to constrain child width/height (e.g., fixed-size health bar wrapper).** | **Added** |
+| **`add_border_to_widget`** | **Add a Border widget (background color/brush with one child slot).** | **Added** |
+| **`add_spacer_to_widget`** | **Add a Spacer for padding/spacing between elements in layout containers.** | **Added** |
+| **`set_widget_anchor`** | **Set anchor, alignment, offset, and size on any existing widget in a CanvasPanel.** | **Added** |
 
 ### Project Tools (Original)
 
@@ -126,7 +125,7 @@ Set the `UNREAL_MCP_READ_ONLY` environment variable to restrict the AI to query-
 | `read_material` | Material |
 | `get_material_instance_parameters` | Material |
 
-Set `UNREAL_MCP_READ_ONLY=0` or remove the `env` block to enable all 37 tools.
+Set `UNREAL_MCP_READ_ONLY=0` or remove the `env` block to enable all 45 tools.
 
 ## Setup
 

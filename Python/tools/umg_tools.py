@@ -419,4 +419,404 @@ def register_umg_tools(mcp: FastMCP):
             logger.error(error_msg)
             return {"success": False, "message": error_msg}
 
+    @mcp.tool()
+    def add_image_to_widget(
+        ctx: Context,
+        path: str,
+        image_name: str,
+        texture_path: str = "",
+        tint_color: List[float] = [1.0, 1.0, 1.0, 1.0],
+        position: List[float] = [0.0, 0.0],
+        size: List[float] = [100.0, 100.0]
+    ) -> Dict[str, Any]:
+        """
+        Add an Image widget to a UMG Widget Blueprint.
+        
+        Args:
+            path: Full asset path of the target Widget Blueprint (e.g. "/Game/UI/WBP_HUD")
+            image_name: Name to give the new Image widget
+            texture_path: Full asset path of a Texture2D to display (e.g. "/Game/Textures/T_Icon"). Optional.
+            tint_color: [R, G, B, A] tint color (0.0 to 1.0). Default: white
+            position: [X, Y] position in the canvas panel
+            size: [Width, Height] of the image. Default: [100, 100]
+            
+        Returns:
+            Dict containing widget_name and texture_path
+            
+        Examples:
+            add_image_to_widget("/Game/UI/WBP_HUD", "BgImage", size=[1920, 1080])
+            add_image_to_widget("/Game/UI/WBP_HUD", "Icon", texture_path="/Game/Textures/T_Star", size=[64, 64])
+        """
+        from unreal_mcp_server import get_unreal_connection
+        
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            
+            params = {
+                "blueprint_name": path,
+                "widget_name": image_name,
+                "tint_color": tint_color,
+                "position": position,
+                "size": size
+            }
+            if texture_path:
+                params["texture_path"] = texture_path
+            
+            response = unreal.send_command("add_image_to_widget", params)
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            return response
+            
+        except Exception as e:
+            return {"success": False, "message": f"Error adding Image to widget: {e}"}
+
+    @mcp.tool()
+    def add_vertical_box_to_widget(
+        ctx: Context,
+        path: str,
+        box_name: str,
+        position: List[float] = [0.0, 0.0],
+        size: List[float] = [200.0, 400.0]
+    ) -> Dict[str, Any]:
+        """
+        Add a VerticalBox layout container to a UMG Widget Blueprint.
+        Children added to this box will stack top-to-bottom.
+        
+        Args:
+            path: Full asset path of the target Widget Blueprint (e.g. "/Game/UI/WBP_HUD")
+            box_name: Name to give the new VerticalBox
+            position: [X, Y] position in the canvas panel
+            size: [Width, Height] of the box. Default: [200, 400]
+            
+        Returns:
+            Dict containing widget_name
+            
+        Examples:
+            add_vertical_box_to_widget("/Game/UI/WBP_Menu", "MenuItems")
+        """
+        from unreal_mcp_server import get_unreal_connection
+        
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            
+            params = {
+                "blueprint_name": path,
+                "widget_name": box_name,
+                "position": position,
+                "size": size
+            }
+            
+            response = unreal.send_command("add_vertical_box_to_widget", params)
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            return response
+            
+        except Exception as e:
+            return {"success": False, "message": f"Error adding VerticalBox to widget: {e}"}
+
+    @mcp.tool()
+    def add_horizontal_box_to_widget(
+        ctx: Context,
+        path: str,
+        box_name: str,
+        position: List[float] = [0.0, 0.0],
+        size: List[float] = [400.0, 200.0]
+    ) -> Dict[str, Any]:
+        """
+        Add a HorizontalBox layout container to a UMG Widget Blueprint.
+        Children added to this box will stack left-to-right.
+        
+        Args:
+            path: Full asset path of the target Widget Blueprint (e.g. "/Game/UI/WBP_HUD")
+            box_name: Name to give the new HorizontalBox
+            position: [X, Y] position in the canvas panel
+            size: [Width, Height] of the box. Default: [400, 200]
+            
+        Returns:
+            Dict containing widget_name
+            
+        Examples:
+            add_horizontal_box_to_widget("/Game/UI/WBP_HUD", "ActionBar")
+        """
+        from unreal_mcp_server import get_unreal_connection
+        
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            
+            params = {
+                "blueprint_name": path,
+                "widget_name": box_name,
+                "position": position,
+                "size": size
+            }
+            
+            response = unreal.send_command("add_horizontal_box_to_widget", params)
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            return response
+            
+        except Exception as e:
+            return {"success": False, "message": f"Error adding HorizontalBox to widget: {e}"}
+
+    @mcp.tool()
+    def add_overlay_to_widget(
+        ctx: Context,
+        path: str,
+        overlay_name: str,
+        position: List[float] = [0.0, 0.0],
+        size: List[float] = [300.0, 300.0]
+    ) -> Dict[str, Any]:
+        """
+        Add an Overlay container to a UMG Widget Blueprint.
+        Children stack on top of each other (z-order).
+        
+        Args:
+            path: Full asset path of the target Widget Blueprint (e.g. "/Game/UI/WBP_HUD")
+            overlay_name: Name to give the new Overlay
+            position: [X, Y] position in the canvas panel
+            size: [Width, Height] of the overlay. Default: [300, 300]
+            
+        Returns:
+            Dict containing widget_name
+            
+        Examples:
+            add_overlay_to_widget("/Game/UI/WBP_HealthBar", "BarOverlay")
+        """
+        from unreal_mcp_server import get_unreal_connection
+        
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            
+            params = {
+                "blueprint_name": path,
+                "widget_name": overlay_name,
+                "position": position,
+                "size": size
+            }
+            
+            response = unreal.send_command("add_overlay_to_widget", params)
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            return response
+            
+        except Exception as e:
+            return {"success": False, "message": f"Error adding Overlay to widget: {e}"}
+
+    @mcp.tool()
+    def add_size_box_to_widget(
+        ctx: Context,
+        path: str,
+        size_box_name: str,
+        width_override: float = 0.0,
+        height_override: float = 0.0,
+        position: List[float] = [0.0, 0.0],
+        size: List[float] = [200.0, 200.0]
+    ) -> Dict[str, Any]:
+        """
+        Add a SizeBox to a UMG Widget Blueprint to constrain child dimensions.
+        
+        Args:
+            path: Full asset path of the target Widget Blueprint (e.g. "/Game/UI/WBP_HUD")
+            size_box_name: Name to give the new SizeBox
+            width_override: Fixed width constraint. 0 = no override.
+            height_override: Fixed height constraint. 0 = no override.
+            position: [X, Y] position in the canvas panel
+            size: [Width, Height] of the size box slot. Default: [200, 200]
+            
+        Returns:
+            Dict containing widget_name and override values
+            
+        Examples:
+            add_size_box_to_widget("/Game/UI/WBP_HUD", "HealthBarWrapper", width_override=300, height_override=30)
+        """
+        from unreal_mcp_server import get_unreal_connection
+        
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            
+            params = {
+                "blueprint_name": path,
+                "widget_name": size_box_name,
+                "position": position,
+                "size": size
+            }
+            if width_override > 0:
+                params["width_override"] = width_override
+            if height_override > 0:
+                params["height_override"] = height_override
+            
+            response = unreal.send_command("add_size_box_to_widget", params)
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            return response
+            
+        except Exception as e:
+            return {"success": False, "message": f"Error adding SizeBox to widget: {e}"}
+
+    @mcp.tool()
+    def add_border_to_widget(
+        ctx: Context,
+        path: str,
+        border_name: str,
+        background_color: List[float] = [0.1, 0.1, 0.1, 1.0],
+        position: List[float] = [0.0, 0.0],
+        size: List[float] = [200.0, 200.0]
+    ) -> Dict[str, Any]:
+        """
+        Add a Border widget to a UMG Widget Blueprint.
+        A Border has a background color/brush and one child slot.
+        
+        Args:
+            path: Full asset path of the target Widget Blueprint (e.g. "/Game/UI/WBP_HUD")
+            border_name: Name to give the new Border
+            background_color: [R, G, B, A] background color (0.0 to 1.0). Default: dark gray
+            position: [X, Y] position in the canvas panel
+            size: [Width, Height] of the border. Default: [200, 200]
+            
+        Returns:
+            Dict containing widget_name
+            
+        Examples:
+            add_border_to_widget("/Game/UI/WBP_HUD", "PanelBg", background_color=[0, 0, 0, 0.8])
+        """
+        from unreal_mcp_server import get_unreal_connection
+        
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            
+            params = {
+                "blueprint_name": path,
+                "widget_name": border_name,
+                "background_color": background_color,
+                "position": position,
+                "size": size
+            }
+            
+            response = unreal.send_command("add_border_to_widget", params)
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            return response
+            
+        except Exception as e:
+            return {"success": False, "message": f"Error adding Border to widget: {e}"}
+
+    @mcp.tool()
+    def add_spacer_to_widget(
+        ctx: Context,
+        path: str,
+        spacer_name: str,
+        size: List[float] = [100.0, 20.0],
+        position: List[float] = [0.0, 0.0]
+    ) -> Dict[str, Any]:
+        """
+        Add a Spacer widget for padding/spacing between elements.
+        
+        Args:
+            path: Full asset path of the target Widget Blueprint (e.g. "/Game/UI/WBP_HUD")
+            spacer_name: Name to give the new Spacer
+            size: [Width, Height] of the spacer. Default: [100, 20]
+            position: [X, Y] position in the canvas panel
+            
+        Returns:
+            Dict containing widget_name
+            
+        Examples:
+            add_spacer_to_widget("/Game/UI/WBP_Menu", "MenuSpacer", size=[200, 40])
+        """
+        from unreal_mcp_server import get_unreal_connection
+        
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            
+            params = {
+                "blueprint_name": path,
+                "widget_name": spacer_name,
+                "size": size,
+                "position": position
+            }
+            
+            response = unreal.send_command("add_spacer_to_widget", params)
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            return response
+            
+        except Exception as e:
+            return {"success": False, "message": f"Error adding Spacer to widget: {e}"}
+
+    @mcp.tool()
+    def set_widget_anchor(
+        ctx: Context,
+        path: str,
+        widget_name: str,
+        anchor: List[float] = [0.0, 0.0, 0.0, 0.0],
+        alignment: List[float] = [0.0, 0.0],
+        offset: List[float] = None,
+        position: List[float] = None,
+        size: List[float] = None
+    ) -> Dict[str, Any]:
+        """
+        Set anchor, alignment, offset, and size on any existing widget in a CanvasPanel.
+        
+        Args:
+            path: Full asset path of the target Widget Blueprint (e.g. "/Game/UI/WBP_HUD")
+            widget_name: Name of the widget to modify (must already exist in the blueprint)
+            anchor: [MinX, MinY, MaxX, MaxY] anchor values (0.0 to 1.0).
+                Common presets:
+                  Top-Left: [0,0,0,0], Top-Center: [0.5,0,0.5,0], Top-Right: [1,0,1,0]
+                  Center: [0.5,0.5,0.5,0.5], Stretch-All: [0,0,1,1]
+                  Bottom-Center: [0.5,1,0.5,1]
+            alignment: [X, Y] pivot alignment (0.0 to 1.0). [0.5, 0.5] = centered on position.
+            offset: [Left, Top, Right, Bottom] margin offsets for stretched anchors. Optional.
+            position: [X, Y] position override. Optional.
+            size: [Width, Height] size override. Optional.
+            
+        Returns:
+            Dict containing widget_name and success status
+            
+        Examples:
+            set_widget_anchor("/Game/UI/WBP_HUD", "HealthBar", anchor=[0.5, 1, 0.5, 1], alignment=[0.5, 1])
+            set_widget_anchor("/Game/UI/WBP_HUD", "FullScreenBg", anchor=[0, 0, 1, 1], offset=[0, 0, 0, 0])
+        """
+        from unreal_mcp_server import get_unreal_connection
+        
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            
+            params = {
+                "blueprint_name": path,
+                "widget_name": widget_name,
+                "anchor": anchor,
+                "alignment": alignment
+            }
+            if offset is not None:
+                params["offset"] = offset
+            if position is not None:
+                params["position"] = position
+            if size is not None:
+                params["size"] = size
+            
+            response = unreal.send_command("set_widget_anchor", params)
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            return response
+            
+        except Exception as e:
+            return {"success": False, "message": f"Error setting widget anchor: {e}"}
+
     logger.info("UMG tools registered successfully") 

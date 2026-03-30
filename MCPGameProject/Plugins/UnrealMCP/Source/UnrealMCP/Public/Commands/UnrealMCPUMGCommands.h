@@ -92,4 +92,28 @@ private:
      * @return JSON response with the added widget details
      */
     TSharedPtr<FJsonObject> HandleAddProgressBarToWidget(const TSharedPtr<FJsonObject>& Params);
+
+    /** Add an Image widget to a UMG Widget Blueprint */
+    TSharedPtr<FJsonObject> HandleAddImageToWidget(const TSharedPtr<FJsonObject>& Params);
+
+    /** Add a VerticalBox layout container to a UMG Widget Blueprint */
+    TSharedPtr<FJsonObject> HandleAddVerticalBoxToWidget(const TSharedPtr<FJsonObject>& Params);
+
+    /** Add a HorizontalBox layout container to a UMG Widget Blueprint */
+    TSharedPtr<FJsonObject> HandleAddHorizontalBoxToWidget(const TSharedPtr<FJsonObject>& Params);
+
+    /** Add an Overlay container to a UMG Widget Blueprint */
+    TSharedPtr<FJsonObject> HandleAddOverlayToWidget(const TSharedPtr<FJsonObject>& Params);
+
+    /** Add a SizeBox to constrain child widget dimensions */
+    TSharedPtr<FJsonObject> HandleAddSizeBoxToWidget(const TSharedPtr<FJsonObject>& Params);
+
+    /** Add a Border widget (background color/brush with one child slot) */
+    TSharedPtr<FJsonObject> HandleAddBorderToWidget(const TSharedPtr<FJsonObject>& Params);
+
+    /** Add a Spacer for padding between elements */
+    TSharedPtr<FJsonObject> HandleAddSpacerToWidget(const TSharedPtr<FJsonObject>& Params);
+
+    /** Set anchor, alignment, offset on any widget in a CanvasPanel */
+    TSharedPtr<FJsonObject> HandleSetWidgetAnchor(const TSharedPtr<FJsonObject>& Params);
 }; 

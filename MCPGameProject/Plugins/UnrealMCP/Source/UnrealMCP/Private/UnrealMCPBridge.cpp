@@ -280,7 +280,15 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("bind_widget_event") ||
                      CommandType == TEXT("set_text_block_binding") ||
                      CommandType == TEXT("add_widget_to_viewport") ||
-                     CommandType == TEXT("add_progress_bar_to_widget"))
+                     CommandType == TEXT("add_progress_bar_to_widget") ||
+                     CommandType == TEXT("add_image_to_widget") ||
+                     CommandType == TEXT("add_vertical_box_to_widget") ||
+                     CommandType == TEXT("add_horizontal_box_to_widget") ||
+                     CommandType == TEXT("add_overlay_to_widget") ||
+                     CommandType == TEXT("add_size_box_to_widget") ||
+                     CommandType == TEXT("add_border_to_widget") ||
+                     CommandType == TEXT("add_spacer_to_widget") ||
+                     CommandType == TEXT("set_widget_anchor"))
             {
                 ResultJson = UMGCommands->HandleCommand(CommandType, Params);
             }
