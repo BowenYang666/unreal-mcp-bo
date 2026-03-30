@@ -819,4 +819,44 @@ def register_umg_tools(mcp: FastMCP):
         except Exception as e:
             return {"success": False, "message": f"Error setting widget anchor: {e}"}
 
+    @mcp.tool()
+    def read_widget_layout(
+        ctx: Context,
+        path: str
+    ) -> Dict[str, Any]:
+        """
+        Read the full widget tree layout of a UMG Widget Blueprint.
+        Returns a recursive tree of all widgets with their type, slot info, and properties.
+        This is a read-only tool — it does not modify anything.
+        
+        Args:
+            path: Full asset path of the Widget Blueprint (e.g. "/Game/UI/WBP_HUD")
+            
+        Returns:
+            Dict with "path", "parent_class", and "root" containing the recursive widget tree.
+            Each node has: name, type, slot (position/size/anchor/alignment), properties, children.
+            
+        Examples:
+            read_widget_layout("/Game/UI/WBP_TowerInteraction")
+            read_widget_layout("/Game/UI/WBP_HealthBar")
+        """
+        from unreal_mcp_server import get_unreal_connection
+        
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            
+            params = {
+                "blueprint_name": path
+            }
+            
+            response = unreal.send_command("read_widget_layout", params)
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            return response
+            
+        except Exception as e:
+            return {"success": False, "message": f"Error reading widget layout: {e}"}
+
     logger.info("UMG tools registered successfully") 

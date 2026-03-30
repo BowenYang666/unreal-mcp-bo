@@ -116,4 +116,7 @@ private:
 
     /** Set anchor, alignment, offset on any widget in a CanvasPanel */
     TSharedPtr<FJsonObject> HandleSetWidgetAnchor(const TSharedPtr<FJsonObject>& Params);
+
+    /** Read the full widget tree layout of a Widget Blueprint (read-only) */
+    TSharedPtr<FJsonObject> HandleReadWidgetLayout(const TSharedPtr<FJsonObject>& Params);
 }; 

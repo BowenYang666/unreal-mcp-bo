@@ -106,6 +106,10 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleCommand(const FString& Comm
 	{
 		return HandleSetWidgetAnchor(Params);
 	}
+	else if (CommandName == TEXT("read_widget_layout"))
+	{
+		return HandleReadWidgetLayout(Params);
+	}
 
 	return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown UMG command: %s"), *CommandName));
 }
@@ -1149,5 +1153,257 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleSetWidgetAnchor(const TShar
 	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
 	Result->SetStringField(TEXT("widget_name"), WidgetName);
 	Result->SetBoolField(TEXT("success"), true);
+	return Result;
+}
+
+// ---- read_widget_layout helpers ----
+
+// Serialize a color array to JSON.
+static TArray<TSharedPtr<FJsonValue>> ColorToJsonArray(const FLinearColor& C)
+{
+	TArray<TSharedPtr<FJsonValue>> Arr;
+	Arr.Add(MakeShared<FJsonValueNumber>(C.R));
+	Arr.Add(MakeShared<FJsonValueNumber>(C.G));
+	Arr.Add(MakeShared<FJsonValueNumber>(C.B));
+	Arr.Add(MakeShared<FJsonValueNumber>(C.A));
+	return Arr;
+}
+
+// Serialize slot info — safe, no UPropertyToJsonValue.
+static TSharedPtr<FJsonObject> SerializeSlot(UPanelSlot* Slot)
+{
+	if (!Slot) return nullptr;
+
+	TSharedPtr<FJsonObject> SlotObj = MakeShared<FJsonObject>();
+	SlotObj->SetStringField(TEXT("type"), Slot->GetClass()->GetName());
+
+	if (UCanvasPanelSlot* CanvasSlot = Cast<UCanvasPanelSlot>(Slot))
+	{
+		FVector2D Pos = CanvasSlot->GetPosition();
+		FVector2D Size = CanvasSlot->GetSize();
+		FAnchors Anchors = CanvasSlot->GetAnchors();
+		FVector2D Align = CanvasSlot->GetAlignment();
+
+		TArray<TSharedPtr<FJsonValue>> PosArr;
+		PosArr.Add(MakeShared<FJsonValueNumber>(Pos.X));
+		PosArr.Add(MakeShared<FJsonValueNumber>(Pos.Y));
+		SlotObj->SetArrayField(TEXT("position"), PosArr);
+
+		TArray<TSharedPtr<FJsonValue>> SizeArr;
+		SizeArr.Add(MakeShared<FJsonValueNumber>(Size.X));
+		SizeArr.Add(MakeShared<FJsonValueNumber>(Size.Y));
+		SlotObj->SetArrayField(TEXT("size"), SizeArr);
+
+		TArray<TSharedPtr<FJsonValue>> AnchorArr;
+		AnchorArr.Add(MakeShared<FJsonValueNumber>(Anchors.Minimum.X));
+		AnchorArr.Add(MakeShared<FJsonValueNumber>(Anchors.Minimum.Y));
+		AnchorArr.Add(MakeShared<FJsonValueNumber>(Anchors.Maximum.X));
+		AnchorArr.Add(MakeShared<FJsonValueNumber>(Anchors.Maximum.Y));
+		SlotObj->SetArrayField(TEXT("anchor"), AnchorArr);
+
+		TArray<TSharedPtr<FJsonValue>> AlignArr;
+		AlignArr.Add(MakeShared<FJsonValueNumber>(Align.X));
+		AlignArr.Add(MakeShared<FJsonValueNumber>(Align.Y));
+		SlotObj->SetArrayField(TEXT("alignment"), AlignArr);
+
+		FMargin Offsets = CanvasSlot->GetOffsets();
+		TArray<TSharedPtr<FJsonValue>> OffArr;
+		OffArr.Add(MakeShared<FJsonValueNumber>(Offsets.Left));
+		OffArr.Add(MakeShared<FJsonValueNumber>(Offsets.Top));
+		OffArr.Add(MakeShared<FJsonValueNumber>(Offsets.Right));
+		OffArr.Add(MakeShared<FJsonValueNumber>(Offsets.Bottom));
+		SlotObj->SetArrayField(TEXT("offset"), OffArr);
+
+		bool bAutoSize = CanvasSlot->GetAutoSize();
+		SlotObj->SetBoolField(TEXT("auto_size"), bAutoSize);
+	}
+	else if (UVerticalBoxSlot* VSlot = Cast<UVerticalBoxSlot>(Slot))
+	{
+		FSlateChildSize SizeRule = VSlot->GetSize();
+		SlotObj->SetStringField(TEXT("size_rule"), SizeRule.SizeRule == ESlateSizeRule::Automatic ? TEXT("Auto") : TEXT("Fill"));
+		SlotObj->SetNumberField(TEXT("fill_value"), SizeRule.Value);
+
+		FMargin Padding = VSlot->GetPadding();
+		TArray<TSharedPtr<FJsonValue>> PadArr;
+		PadArr.Add(MakeShared<FJsonValueNumber>(Padding.Left));
+		PadArr.Add(MakeShared<FJsonValueNumber>(Padding.Top));
+		PadArr.Add(MakeShared<FJsonValueNumber>(Padding.Right));
+		PadArr.Add(MakeShared<FJsonValueNumber>(Padding.Bottom));
+		SlotObj->SetArrayField(TEXT("padding"), PadArr);
+
+		SlotObj->SetStringField(TEXT("h_align"), UEnum::GetValueAsString(VSlot->GetHorizontalAlignment()));
+		SlotObj->SetStringField(TEXT("v_align"), UEnum::GetValueAsString(VSlot->GetVerticalAlignment()));
+	}
+	else if (UHorizontalBoxSlot* HSlot = Cast<UHorizontalBoxSlot>(Slot))
+	{
+		FSlateChildSize SizeRule = HSlot->GetSize();
+		SlotObj->SetStringField(TEXT("size_rule"), SizeRule.SizeRule == ESlateSizeRule::Automatic ? TEXT("Auto") : TEXT("Fill"));
+		SlotObj->SetNumberField(TEXT("fill_value"), SizeRule.Value);
+
+		FMargin Padding = HSlot->GetPadding();
+		TArray<TSharedPtr<FJsonValue>> PadArr;
+		PadArr.Add(MakeShared<FJsonValueNumber>(Padding.Left));
+		PadArr.Add(MakeShared<FJsonValueNumber>(Padding.Top));
+		PadArr.Add(MakeShared<FJsonValueNumber>(Padding.Right));
+		PadArr.Add(MakeShared<FJsonValueNumber>(Padding.Bottom));
+		SlotObj->SetArrayField(TEXT("padding"), PadArr);
+
+		SlotObj->SetStringField(TEXT("h_align"), UEnum::GetValueAsString(HSlot->GetHorizontalAlignment()));
+		SlotObj->SetStringField(TEXT("v_align"), UEnum::GetValueAsString(HSlot->GetVerticalAlignment()));
+	}
+	else if (UOverlaySlot* OSlot = Cast<UOverlaySlot>(Slot))
+	{
+		FMargin Padding = OSlot->GetPadding();
+		TArray<TSharedPtr<FJsonValue>> PadArr;
+		PadArr.Add(MakeShared<FJsonValueNumber>(Padding.Left));
+		PadArr.Add(MakeShared<FJsonValueNumber>(Padding.Top));
+		PadArr.Add(MakeShared<FJsonValueNumber>(Padding.Right));
+		PadArr.Add(MakeShared<FJsonValueNumber>(Padding.Bottom));
+		SlotObj->SetArrayField(TEXT("padding"), PadArr);
+
+		SlotObj->SetStringField(TEXT("h_align"), UEnum::GetValueAsString(OSlot->GetHorizontalAlignment()));
+		SlotObj->SetStringField(TEXT("v_align"), UEnum::GetValueAsString(OSlot->GetVerticalAlignment()));
+	}
+
+	return SlotObj;
+}
+
+// Serialize widget-type-specific properties — safe, no UPropertyToJsonValue.
+static TSharedPtr<FJsonObject> SerializeWidgetProperties(UWidget* Widget)
+{
+	TSharedPtr<FJsonObject> Props = MakeShared<FJsonObject>();
+
+	Props->SetBoolField(TEXT("is_visible"), Widget->IsVisible());
+
+	if (UTextBlock* TB = Cast<UTextBlock>(Widget))
+	{
+		Props->SetStringField(TEXT("text"), TB->GetText().ToString());
+		Props->SetArrayField(TEXT("color"), ColorToJsonArray(TB->GetColorAndOpacity().GetSpecifiedColor()));
+	}
+	else if (UButton* Btn = Cast<UButton>(Widget))
+	{
+		Props->SetBoolField(TEXT("is_enabled"), Btn->GetIsEnabled());
+	}
+	else if (UProgressBar* PB = Cast<UProgressBar>(Widget))
+	{
+		Props->SetNumberField(TEXT("percent"), PB->GetPercent());
+		Props->SetArrayField(TEXT("fill_color"), ColorToJsonArray(PB->GetFillColorAndOpacity()));
+	}
+	else if (UImage* Img = Cast<UImage>(Widget))
+	{
+		Props->SetArrayField(TEXT("tint_color"), ColorToJsonArray(Img->GetColorAndOpacity()));
+		// Report brush resource name if set
+		UObject* Resource = Img->GetBrush().GetResourceObject();
+		if (Resource)
+		{
+			Props->SetStringField(TEXT("texture_path"), Resource->GetPathName());
+		}
+	}
+	else if (UBorder* Bdr = Cast<UBorder>(Widget))
+	{
+		Props->SetArrayField(TEXT("brush_color"), ColorToJsonArray(Bdr->GetBrushColor()));
+	}
+	else if (USizeBox* SB = Cast<USizeBox>(Widget))
+	{
+		// SizeBox override getters aren't exposed directly; read from FOptionalSize properties
+		// We'll just note it's a SizeBox; the slot size is in the slot info.
+	}
+	else if (USpacer* Sp = Cast<USpacer>(Widget))
+	{
+		FVector2D SpSize = Sp->GetSize();
+		TArray<TSharedPtr<FJsonValue>> SArr;
+		SArr.Add(MakeShared<FJsonValueNumber>(SpSize.X));
+		SArr.Add(MakeShared<FJsonValueNumber>(SpSize.Y));
+		Props->SetArrayField(TEXT("size"), SArr);
+	}
+
+	return Props;
+}
+
+// Recursively serialize a widget and its children into a JSON tree.
+// Max depth protects against any unforeseen cycles.
+static TSharedPtr<FJsonObject> SerializeWidgetTree(UWidget* Widget, UWidgetBlueprint* WidgetBlueprint, int32 Depth = 0)
+{
+	if (!Widget || Depth > 50) return nullptr;
+
+	TSharedPtr<FJsonObject> Node = MakeShared<FJsonObject>();
+	Node->SetStringField(TEXT("name"), Widget->GetName());
+	Node->SetStringField(TEXT("type"), Widget->GetClass()->GetName());
+
+	// Slot info (safe manual extraction)
+	TSharedPtr<FJsonObject> SlotObj = SerializeSlot(Widget->Slot);
+	if (SlotObj)
+	{
+		Node->SetObjectField(TEXT("slot"), SlotObj);
+	}
+
+	// Widget-specific properties
+	Node->SetObjectField(TEXT("properties"), SerializeWidgetProperties(Widget));
+
+	// Children
+	TArray<TSharedPtr<FJsonValue>> ChildrenArr;
+	if (UPanelWidget* Panel = Cast<UPanelWidget>(Widget))
+	{
+		for (int32 i = 0; i < Panel->GetChildrenCount(); i++)
+		{
+			UWidget* Child = Panel->GetChildAt(i);
+			TSharedPtr<FJsonObject> ChildNode = SerializeWidgetTree(Child, WidgetBlueprint, Depth + 1);
+			if (ChildNode)
+			{
+				ChildrenArr.Add(MakeShared<FJsonValueObject>(ChildNode));
+			}
+		}
+	}
+	// Also handle single-child containers (SizeBox, Border inherit from UContentWidget)
+	else if (UContentWidget* Content = Cast<UContentWidget>(Widget))
+	{
+		UWidget* Child = Content->GetContent();
+		if (Child)
+		{
+			TSharedPtr<FJsonObject> ChildNode = SerializeWidgetTree(Child, WidgetBlueprint, Depth + 1);
+			if (ChildNode)
+			{
+				ChildrenArr.Add(MakeShared<FJsonValueObject>(ChildNode));
+			}
+		}
+	}
+	Node->SetArrayField(TEXT("children"), ChildrenArr);
+
+	return Node;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleReadWidgetLayout(const TSharedPtr<FJsonObject>& Params)
+{
+	FString BlueprintName;
+	if (!Params->TryGetStringField(TEXT("blueprint_name"), BlueprintName))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
+
+	UWidgetBlueprint* WidgetBlueprint = FindWidgetBlueprint(BlueprintName);
+	if (!WidgetBlueprint)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Widget Blueprint '%s' not found"), *BlueprintName));
+
+	if (!WidgetBlueprint->WidgetTree || !WidgetBlueprint->WidgetTree->RootWidget)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Widget Blueprint has no widget tree or root widget"));
+
+	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetStringField(TEXT("path"), BlueprintName);
+
+	// Parent class info
+	if (WidgetBlueprint->GeneratedClass)
+	{
+		UClass* ParentClass = WidgetBlueprint->GeneratedClass->GetSuperClass();
+		if (ParentClass)
+		{
+			Result->SetStringField(TEXT("parent_class"), ParentClass->GetName());
+		}
+	}
+
+	// Serialize the widget tree recursively
+	TSharedPtr<FJsonObject> RootNode = SerializeWidgetTree(WidgetBlueprint->WidgetTree->RootWidget, WidgetBlueprint);
+	if (RootNode)
+	{
+		Result->SetObjectField(TEXT("root"), RootNode);
+	}
+
 	return Result;
 }

@@ -4,7 +4,7 @@ Fork of [chongdashu/unreal-mcp](https://github.com/chongdashu/unreal-mcp) with a
 
 > **What's different from the original?** This fork adds read-only tools (blueprint reading, editor log capture, material inspection) and a read-only mode so AI can safely understand your project without modifying it.
 
-## Supported Tools (45 total)
+## Supported Tools (46 total)
 
 ### Actor Tools (Original)
 
@@ -82,6 +82,7 @@ Fork of [chongdashu/unreal-mcp](https://github.com/chongdashu/unreal-mcp) with a
 | **`add_border_to_widget`** | **Add a Border widget (background color/brush with one child slot).** | **Added** |
 | **`add_spacer_to_widget`** | **Add a Spacer for padding/spacing between elements in layout containers.** | **Added** |
 | **`set_widget_anchor`** | **Set anchor, alignment, offset, and size on any existing widget in a CanvasPanel.** | **Added** |
+| **`read_widget_layout`** | **Read the full widget tree layout (recursive: name, type, slot, properties, children). Read-only.** | **Added** |
 
 ### Project Tools (Original)
 
@@ -109,7 +110,7 @@ Set the `UNREAL_MCP_READ_ONLY` environment variable to restrict the AI to query-
 }
 ```
 
-**Read-only tools (11):**
+**Read-only tools (12):**
 
 | Tool | Category |
 |------|----------|
@@ -124,8 +125,9 @@ Set the `UNREAL_MCP_READ_ONLY` environment variable to restrict the AI to query-
 | `list_materials` | Material |
 | `read_material` | Material |
 | `get_material_instance_parameters` | Material |
+| `read_widget_layout` | UMG / Widget |
 
-Set `UNREAL_MCP_READ_ONLY=0` or remove the `env` block to enable all 45 tools.
+Set `UNREAL_MCP_READ_ONLY=0` or remove the `env` block to enable all 46 tools.
 
 ## Setup
 

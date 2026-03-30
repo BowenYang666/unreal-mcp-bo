@@ -311,6 +311,8 @@ if _read_only:
         "list_materials",
         "read_material",
         "get_material_instance_parameters",
+        # UMG: read widget layout
+        "read_widget_layout",
     }
 
     all_tool_names = list(mcp._tool_manager._tools.keys())
