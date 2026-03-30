@@ -18,19 +18,27 @@ def register_umg_tools(mcp: FastMCP):
     def create_umg_widget_blueprint(
         ctx: Context,
         widget_name: str,
-        parent_class: str = "UserWidget",
-        path: str = "/Game/UI"
+        parent_class: str = "",
+        path: str = "/Game/Widgets"
     ) -> Dict[str, Any]:
         """
         Create a new UMG Widget Blueprint.
         
         Args:
-            widget_name: Name of the widget blueprint to create
-            parent_class: Parent class for the widget (default: UserWidget)
-            path: Content browser path where the widget should be created
+            widget_name: Name of the widget blueprint to create (e.g. "WBP_HealthBar")
+            parent_class: Parent class for the widget. Supports:
+                - Native class name: "UserWidget" (default if empty)
+                - Blueprint asset path: "/Game/UI/WBP_BaseHUD"
+                - Full class path: "/Script/UMG.UserWidget"
+            path: Content browser folder path (default: "/Game/Widgets")
             
         Returns:
-            Dict containing success status and widget path
+            Dict containing name, path, and parent_class of the created widget
+            
+        Examples:
+            create_umg_widget_blueprint("WBP_MainMenu")
+            create_umg_widget_blueprint("WBP_HealthBar", parent_class="/Game/UI/WBP_BaseWidget")
+            create_umg_widget_blueprint("WBP_HUD", path="/Game/UI/HUD")
         """
         from unreal_mcp_server import get_unreal_connection
         
@@ -41,10 +49,11 @@ def register_umg_tools(mcp: FastMCP):
                 return {"success": False, "message": "Failed to connect to Unreal Engine"}
             
             params = {
-                "widget_name": widget_name,
-                "parent_class": parent_class,
+                "name": widget_name,
                 "path": path
             }
+            if parent_class:
+                params["parent_class"] = parent_class
             
             logger.info(f"Creating UMG Widget Blueprint with params: {params}")
             response = unreal.send_command("create_umg_widget_blueprint", params)
