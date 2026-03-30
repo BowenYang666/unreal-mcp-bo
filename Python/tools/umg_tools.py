@@ -73,7 +73,7 @@ def register_umg_tools(mcp: FastMCP):
     @mcp.tool()
     def add_text_block_to_widget(
         ctx: Context,
-        widget_name: str,
+        path: str,
         text_block_name: str,
         text: str = "",
         position: List[float] = [0.0, 0.0],
@@ -85,7 +85,7 @@ def register_umg_tools(mcp: FastMCP):
         Add a Text Block widget to a UMG Widget Blueprint.
         
         Args:
-            widget_name: Name of the target Widget Blueprint
+            path: Full asset path of the target Widget Blueprint (e.g. "/Game/UI/WBP_HUD")
             text_block_name: Name to give the new Text Block
             text: Initial text content
             position: [X, Y] position in the canvas panel
@@ -95,6 +95,9 @@ def register_umg_tools(mcp: FastMCP):
             
         Returns:
             Dict containing success status and text block properties
+            
+        Examples:
+            add_text_block_to_widget("/Game/UI/WBP_HUD", "Title", text="Hello World")
         """
         from unreal_mcp_server import get_unreal_connection
         
@@ -105,8 +108,8 @@ def register_umg_tools(mcp: FastMCP):
                 return {"success": False, "message": "Failed to connect to Unreal Engine"}
             
             params = {
-                "widget_name": widget_name,
-                "text_block_name": text_block_name,
+                "blueprint_name": path,
+                "widget_name": text_block_name,
                 "text": text,
                 "position": position,
                 "size": size,
@@ -132,7 +135,7 @@ def register_umg_tools(mcp: FastMCP):
     @mcp.tool()
     def add_button_to_widget(
         ctx: Context,
-        widget_name: str,
+        path: str,
         button_name: str,
         text: str = "",
         position: List[float] = [0.0, 0.0],
@@ -145,7 +148,7 @@ def register_umg_tools(mcp: FastMCP):
         Add a Button widget to a UMG Widget Blueprint.
         
         Args:
-            widget_name: Name of the target Widget Blueprint
+            path: Full asset path of the target Widget Blueprint (e.g. "/Game/UI/WBP_HUD")
             button_name: Name to give the new Button
             text: Text to display on the button
             position: [X, Y] position in the canvas panel
@@ -156,6 +159,9 @@ def register_umg_tools(mcp: FastMCP):
             
         Returns:
             Dict containing success status and button properties
+            
+        Examples:
+            add_button_to_widget("/Game/UI/WBP_Menu", "StartBtn", text="Start Game")
         """
         from unreal_mcp_server import get_unreal_connection
         
@@ -166,8 +172,8 @@ def register_umg_tools(mcp: FastMCP):
                 return {"success": False, "message": "Failed to connect to Unreal Engine"}
             
             params = {
-                "widget_name": widget_name,
-                "button_name": button_name,
+                "blueprint_name": path,
+                "widget_name": button_name,
                 "text": text,
                 "position": position,
                 "size": size,
@@ -194,7 +200,7 @@ def register_umg_tools(mcp: FastMCP):
     @mcp.tool()
     def bind_widget_event(
         ctx: Context,
-        widget_name: str,
+        path: str,
         widget_component_name: str,
         event_name: str,
         function_name: str = ""
@@ -203,13 +209,16 @@ def register_umg_tools(mcp: FastMCP):
         Bind an event on a widget component to a function.
         
         Args:
-            widget_name: Name of the target Widget Blueprint
+            path: Full asset path of the target Widget Blueprint (e.g. "/Game/UI/WBP_Menu")
             widget_component_name: Name of the widget component (button, etc.)
             event_name: Name of the event to bind (OnClicked, etc.)
             function_name: Name of the function to create/bind to (defaults to f"{widget_component_name}_{event_name}")
             
         Returns:
             Dict containing success status and binding information
+            
+        Examples:
+            bind_widget_event("/Game/UI/WBP_Menu", "StartBtn", "OnClicked")
         """
         from unreal_mcp_server import get_unreal_connection
         
@@ -224,8 +233,8 @@ def register_umg_tools(mcp: FastMCP):
                 function_name = f"{widget_component_name}_{event_name}"
             
             params = {
-                "widget_name": widget_name,
-                "widget_component_name": widget_component_name,
+                "blueprint_name": path,
+                "widget_name": widget_component_name,
                 "event_name": event_name,
                 "function_name": function_name
             }
@@ -248,18 +257,21 @@ def register_umg_tools(mcp: FastMCP):
     @mcp.tool()
     def add_widget_to_viewport(
         ctx: Context,
-        widget_name: str,
+        path: str,
         z_order: int = 0
     ) -> Dict[str, Any]:
         """
         Add a Widget Blueprint instance to the viewport.
         
         Args:
-            widget_name: Name of the Widget Blueprint to add
+            path: Full asset path of the Widget Blueprint to add (e.g. "/Game/UI/WBP_HUD")
             z_order: Z-order for the widget (higher numbers appear on top)
             
         Returns:
             Dict containing success status and widget instance information
+            
+        Examples:
+            add_widget_to_viewport("/Game/UI/WBP_HUD")
         """
         from unreal_mcp_server import get_unreal_connection
         
@@ -270,7 +282,7 @@ def register_umg_tools(mcp: FastMCP):
                 return {"success": False, "message": "Failed to connect to Unreal Engine"}
             
             params = {
-                "widget_name": widget_name,
+                "blueprint_name": path,
                 "z_order": z_order
             }
             
@@ -292,7 +304,7 @@ def register_umg_tools(mcp: FastMCP):
     @mcp.tool()
     def set_text_block_binding(
         ctx: Context,
-        widget_name: str,
+        path: str,
         text_block_name: str,
         binding_property: str,
         binding_type: str = "Text"
@@ -301,13 +313,16 @@ def register_umg_tools(mcp: FastMCP):
         Set up a property binding for a Text Block widget.
         
         Args:
-            widget_name: Name of the target Widget Blueprint
+            path: Full asset path of the target Widget Blueprint (e.g. "/Game/UI/WBP_HUD")
             text_block_name: Name of the Text Block to bind
             binding_property: Name of the property to bind to
             binding_type: Type of binding (Text, Visibility, etc.)
             
         Returns:
             Dict containing success status and binding information
+            
+        Examples:
+            set_text_block_binding("/Game/UI/WBP_HUD", "HealthText", "CurrentHealth")
         """
         from unreal_mcp_server import get_unreal_connection
         
@@ -318,9 +333,9 @@ def register_umg_tools(mcp: FastMCP):
                 return {"success": False, "message": "Failed to connect to Unreal Engine"}
             
             params = {
-                "widget_name": widget_name,
-                "text_block_name": text_block_name,
-                "binding_property": binding_property,
+                "blueprint_name": path,
+                "widget_name": text_block_name,
+                "binding_name": binding_property,
                 "binding_type": binding_type
             }
             
@@ -342,7 +357,7 @@ def register_umg_tools(mcp: FastMCP):
     @mcp.tool()
     def add_progress_bar_to_widget(
         ctx: Context,
-        widget_name: str,
+        path: str,
         progress_bar_name: str,
         percent: float = 1.0,
         fill_color: List[float] = [1.0, 0.0, 0.0, 1.0],
@@ -354,7 +369,7 @@ def register_umg_tools(mcp: FastMCP):
         Add a ProgressBar widget to a UMG Widget Blueprint.
         
         Args:
-            widget_name: Name of the target Widget Blueprint (must exist in /Game/Widgets/)
+            path: Full asset path of the target Widget Blueprint (e.g. "/Game/UI/WBP_HealthBar")
             progress_bar_name: Name to give the new ProgressBar
             percent: Initial fill percentage from 0.0 (empty) to 1.0 (full). Default: 1.0
             fill_color: [R, G, B, A] fill color values (0.0 to 1.0). Default: red [1,0,0,1]
@@ -365,11 +380,11 @@ def register_umg_tools(mcp: FastMCP):
                        "FillFromCenterVertical". Default: "LeftToRight"
             
         Returns:
-            Dict containing widget_name, percent, fill_color, and size
+            Dict containing path, percent, fill_color, and size
             
         Examples:
-            add_progress_bar_to_widget("WBP_HealthBar", "HealthBar", percent=0.75, fill_color=[1,0,0,1])
-            add_progress_bar_to_widget("WBP_HUD", "ExpBar", fill_color=[0,0.5,1,1], size=[300,15])
+            add_progress_bar_to_widget("/Game/UI/WBP_HealthBar", "HealthBar", percent=0.75, fill_color=[1,0,0,1])
+            add_progress_bar_to_widget("/Game/UI/WBP_HUD", "ExpBar", fill_color=[0,0.5,1,1], size=[300,15])
         """
         from unreal_mcp_server import get_unreal_connection
         
@@ -380,7 +395,7 @@ def register_umg_tools(mcp: FastMCP):
                 return {"success": False, "message": "Failed to connect to Unreal Engine"}
             
             params = {
-                "blueprint_name": widget_name,
+                "blueprint_name": path,
                 "widget_name": progress_bar_name,
                 "percent": percent,
                 "fill_color": fill_color,
