@@ -79,4 +79,17 @@ private:
      * @return JSON response with the binding details
      */
     TSharedPtr<FJsonObject> HandleSetTextBlockBinding(const TSharedPtr<FJsonObject>& Params);
+
+    /**
+     * Add a ProgressBar widget to a UMG Widget Blueprint
+     * @param Params - Must include:
+     *                "blueprint_name" - Name of the target Widget Blueprint
+     *                "widget_name" - Name for the new ProgressBar
+     *                "percent" - Initial fill percentage 0.0-1.0 (optional, default 1.0)
+     *                "fill_color" - [R, G, B, A] fill color (optional)
+     *                "position" - [X, Y] position in the canvas (optional)
+     *                "size" - [Width, Height] size (optional)
+     * @return JSON response with the added widget details
+     */
+    TSharedPtr<FJsonObject> HandleAddProgressBarToWidget(const TSharedPtr<FJsonObject>& Params);
 }; 

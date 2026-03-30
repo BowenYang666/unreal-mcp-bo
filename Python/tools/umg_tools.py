@@ -339,4 +339,69 @@ def register_umg_tools(mcp: FastMCP):
             logger.error(error_msg)
             return {"success": False, "message": error_msg}
 
+    @mcp.tool()
+    def add_progress_bar_to_widget(
+        ctx: Context,
+        widget_name: str,
+        progress_bar_name: str,
+        percent: float = 1.0,
+        fill_color: List[float] = [1.0, 0.0, 0.0, 1.0],
+        position: List[float] = [0.0, 0.0],
+        size: List[float] = [200.0, 20.0],
+        fill_type: str = "LeftToRight"
+    ) -> Dict[str, Any]:
+        """
+        Add a ProgressBar widget to a UMG Widget Blueprint.
+        
+        Args:
+            widget_name: Name of the target Widget Blueprint (must exist in /Game/Widgets/)
+            progress_bar_name: Name to give the new ProgressBar
+            percent: Initial fill percentage from 0.0 (empty) to 1.0 (full). Default: 1.0
+            fill_color: [R, G, B, A] fill color values (0.0 to 1.0). Default: red [1,0,0,1]
+            position: [X, Y] position in the canvas panel
+            size: [Width, Height] of the progress bar. Default: [200, 20]
+            fill_type: Fill direction. One of: "LeftToRight", "RightToLeft", "TopToBottom",
+                       "BottomToTop", "FillFromCenter", "FillFromCenterHorizontal",
+                       "FillFromCenterVertical". Default: "LeftToRight"
+            
+        Returns:
+            Dict containing widget_name, percent, fill_color, and size
+            
+        Examples:
+            add_progress_bar_to_widget("WBP_HealthBar", "HealthBar", percent=0.75, fill_color=[1,0,0,1])
+            add_progress_bar_to_widget("WBP_HUD", "ExpBar", fill_color=[0,0.5,1,1], size=[300,15])
+        """
+        from unreal_mcp_server import get_unreal_connection
+        
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                logger.error("Failed to connect to Unreal Engine")
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            
+            params = {
+                "blueprint_name": widget_name,
+                "widget_name": progress_bar_name,
+                "percent": percent,
+                "fill_color": fill_color,
+                "position": position,
+                "size": size,
+                "fill_type": fill_type
+            }
+            
+            logger.info(f"Adding ProgressBar to widget with params: {params}")
+            response = unreal.send_command("add_progress_bar_to_widget", params)
+            
+            if not response:
+                logger.error("No response from Unreal Engine")
+                return {"success": False, "message": "No response from Unreal Engine"}
+            
+            logger.info(f"Add ProgressBar response: {response}")
+            return response
+            
+        except Exception as e:
+            error_msg = f"Error adding ProgressBar to widget: {e}"
+            logger.error(error_msg)
+            return {"success": False, "message": error_msg}
+
     logger.info("UMG tools registered successfully") 

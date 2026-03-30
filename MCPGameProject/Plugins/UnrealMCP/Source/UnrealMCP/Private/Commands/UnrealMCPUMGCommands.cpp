@@ -15,6 +15,7 @@
 #include "JsonObjectConverter.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Components/Button.h"
+#include "Components/ProgressBar.h"
 #include "K2Node_FunctionEntry.h"
 #include "K2Node_CallFunction.h"
 #include "K2Node_VariableGet.h"
@@ -52,6 +53,10 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleCommand(const FString& Comm
 	else if (CommandName == TEXT("set_text_block_binding"))
 	{
 		return HandleSetTextBlockBinding(Params);
+	}
+	else if (CommandName == TEXT("add_progress_bar_to_widget"))
+	{
+		return HandleAddProgressBarToWidget(Params);
 	}
 
 	return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown UMG command: %s"), *CommandName));
@@ -608,4 +613,145 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleSetTextBlockBinding(const T
 	Response->SetBoolField(TEXT("success"), true);
 	Response->SetStringField(TEXT("binding_name"), BindingName);
 	return Response;
-} 
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleAddProgressBarToWidget(const TSharedPtr<FJsonObject>& Params)
+{
+	// Get required parameters
+	FString BlueprintName;
+	if (!Params->TryGetStringField(TEXT("blueprint_name"), BlueprintName))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
+	}
+
+	FString WidgetName;
+	if (!Params->TryGetStringField(TEXT("widget_name"), WidgetName))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'widget_name' parameter"));
+	}
+
+	// Find the Widget Blueprint
+	FString FullPath = TEXT("/Game/Widgets/") + BlueprintName;
+	UWidgetBlueprint* WidgetBlueprint = Cast<UWidgetBlueprint>(UEditorAssetLibrary::LoadAsset(FullPath));
+	if (!WidgetBlueprint)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Widget Blueprint '%s' not found"), *BlueprintName));
+	}
+
+	// Get optional parameters
+	float Percent = 1.0f;
+	if (Params->HasField(TEXT("percent")))
+	{
+		Percent = static_cast<float>(Params->GetNumberField(TEXT("percent")));
+	}
+
+	FLinearColor FillColor(1.0f, 0.0f, 0.0f, 1.0f); // Default: red
+	if (Params->HasField(TEXT("fill_color")))
+	{
+		const TArray<TSharedPtr<FJsonValue>>* ColorArray;
+		if (Params->TryGetArrayField(TEXT("fill_color"), ColorArray) && ColorArray->Num() >= 3)
+		{
+			FillColor.R = static_cast<float>((*ColorArray)[0]->AsNumber());
+			FillColor.G = static_cast<float>((*ColorArray)[1]->AsNumber());
+			FillColor.B = static_cast<float>((*ColorArray)[2]->AsNumber());
+			FillColor.A = ColorArray->Num() >= 4 ? static_cast<float>((*ColorArray)[3]->AsNumber()) : 1.0f;
+		}
+	}
+
+	FVector2D Position(0.0f, 0.0f);
+	if (Params->HasField(TEXT("position")))
+	{
+		const TArray<TSharedPtr<FJsonValue>>* PosArray;
+		if (Params->TryGetArrayField(TEXT("position"), PosArray) && PosArray->Num() >= 2)
+		{
+			Position.X = (*PosArray)[0]->AsNumber();
+			Position.Y = (*PosArray)[1]->AsNumber();
+		}
+	}
+
+	FVector2D Size(200.0f, 20.0f); // Default size for a progress bar
+	if (Params->HasField(TEXT("size")))
+	{
+		const TArray<TSharedPtr<FJsonValue>>* SizeArray;
+		if (Params->TryGetArrayField(TEXT("size"), SizeArray) && SizeArray->Num() >= 2)
+		{
+			Size.X = (*SizeArray)[0]->AsNumber();
+			Size.Y = (*SizeArray)[1]->AsNumber();
+		}
+	}
+
+	FString FillType = TEXT("LeftToRight");
+	Params->TryGetStringField(TEXT("fill_type"), FillType);
+
+	// Create ProgressBar widget
+	UProgressBar* ProgressBar = WidgetBlueprint->WidgetTree->ConstructWidget<UProgressBar>(UProgressBar::StaticClass(), *WidgetName);
+	if (!ProgressBar)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create ProgressBar widget"));
+	}
+
+	// Configure properties
+	ProgressBar->SetPercent(Percent);
+	ProgressBar->SetFillColorAndOpacity(FillColor);
+
+	// Set fill type
+	if (FillType == TEXT("RightToLeft"))
+	{
+		ProgressBar->SetBarFillType(EProgressBarFillType::RightToLeft);
+	}
+	else if (FillType == TEXT("FillFromCenter"))
+	{
+		ProgressBar->SetBarFillType(EProgressBarFillType::FillFromCenter);
+	}
+	else if (FillType == TEXT("FillFromCenterHorizontal"))
+	{
+		ProgressBar->SetBarFillType(EProgressBarFillType::FillFromCenterHorizontal);
+	}
+	else if (FillType == TEXT("FillFromCenterVertical"))
+	{
+		ProgressBar->SetBarFillType(EProgressBarFillType::FillFromCenterVertical);
+	}
+	else if (FillType == TEXT("TopToBottom"))
+	{
+		ProgressBar->SetBarFillType(EProgressBarFillType::TopToBottom);
+	}
+	else if (FillType == TEXT("BottomToTop"))
+	{
+		ProgressBar->SetBarFillType(EProgressBarFillType::BottomToTop);
+	}
+	// else default LeftToRight
+
+	// Add to canvas panel
+	UCanvasPanel* RootCanvas = Cast<UCanvasPanel>(WidgetBlueprint->WidgetTree->RootWidget);
+	if (!RootCanvas)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Root Canvas Panel not found"));
+	}
+
+	UCanvasPanelSlot* PanelSlot = RootCanvas->AddChildToCanvas(ProgressBar);
+	PanelSlot->SetPosition(Position);
+	PanelSlot->SetSize(Size);
+
+	// Mark dirty and compile
+	WidgetBlueprint->MarkPackageDirty();
+	FKismetEditorUtilities::CompileBlueprint(WidgetBlueprint);
+
+	// Create success response
+	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+	ResultObj->SetStringField(TEXT("widget_name"), WidgetName);
+	ResultObj->SetNumberField(TEXT("percent"), Percent);
+
+	TArray<TSharedPtr<FJsonValue>> ColorArr;
+	ColorArr.Add(MakeShared<FJsonValueNumber>(FillColor.R));
+	ColorArr.Add(MakeShared<FJsonValueNumber>(FillColor.G));
+	ColorArr.Add(MakeShared<FJsonValueNumber>(FillColor.B));
+	ColorArr.Add(MakeShared<FJsonValueNumber>(FillColor.A));
+	ResultObj->SetArrayField(TEXT("fill_color"), ColorArr);
+
+	TArray<TSharedPtr<FJsonValue>> SizeArr;
+	SizeArr.Add(MakeShared<FJsonValueNumber>(Size.X));
+	SizeArr.Add(MakeShared<FJsonValueNumber>(Size.Y));
+	ResultObj->SetArrayField(TEXT("size"), SizeArr);
+
+	return ResultObj;
+}
