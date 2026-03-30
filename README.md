@@ -63,16 +63,26 @@ Fork of [chongdashu/unreal-mcp](https://github.com/chongdashu/unreal-mcp) with a
 | **`read_material`** | Read a Material's node graph, expressions, connections, and input pins |
 | **`get_material_instance_parameters`** | Read a MaterialInstance's scalar, vector, and texture parameter overrides |
 
-### UMG / Widget Tools (Original)
+### UMG / Widget Tools (Original + Added)
 
-| Tool | Description |
-|------|-------------|
-| `create_umg_widget_blueprint` | Create a UMG Widget Blueprint |
-| `add_text_block_to_widget` | Add a text block to a widget |
-| `add_button_to_widget` | Add a button to a widget |
-| `bind_widget_event` | Bind an event to a widget element |
-| `set_text_block_binding` | Set text binding on a text block |
-| `add_widget_to_viewport` | Add a widget to the viewport |
+| Tool | Description | Status |
+|------|-------------|--------|
+| `create_umg_widget_blueprint` | Create a UMG Widget Blueprint | Original |
+| `add_text_block_to_widget` | Add a text block to a widget (supports anchor, alignment) | Original (enhanced) |
+| `add_button_to_widget` | Add a button to a widget (supports anchor, alignment) | Original (enhanced) |
+| `bind_widget_event` | Bind an event to a widget element | Original |
+| `set_text_block_binding` | Set text binding on a text block | Original |
+| `add_widget_to_viewport` | Add a widget to the viewport | Original |
+| **`add_progress_bar_to_widget`** | **Add a ProgressBar to a widget (percent, fill color, fill type). For health bars, loading bars, etc.** | **Planned** |
+| **`add_image_to_widget`** | **Add an Image widget (texture/brush, tint color, size). For backgrounds, icons, etc.** | **Planned** |
+| **`add_vertical_box_to_widget`** | **Add a VerticalBox layout container. Children stack top-to-bottom.** | **Planned** |
+| **`add_horizontal_box_to_widget`** | **Add a HorizontalBox layout container. Children stack left-to-right.** | **Planned** |
+| **`add_overlay_to_widget`** | **Add an Overlay container. Children stack on top of each other (z-order).** | **Planned** |
+| **`add_size_box_to_widget`** | **Add a SizeBox to constrain child width/height (e.g., fixed-size health bar wrapper).** | **Planned** |
+| **`add_border_to_widget`** | **Add a Border widget (background color/brush with one child slot).** | **Planned** |
+| **`add_spacer_to_widget`** | **Add a Spacer for padding/spacing between elements in layout containers.** | **Planned** |
+| **`set_widget_anchor`** | **Set anchor, alignment, offset, and size on any existing widget in a CanvasPanel.** | **Planned** |
+| **`add_widget_to_container`** | **Add an existing widget as a child of a layout container (VerticalBox, HorizontalBox, Overlay, etc.)** | **Planned** |
 
 ### Project Tools (Original)
 
