@@ -10,6 +10,10 @@
 #include "NiagaraSimulationStageBase.h"
 #include "NiagaraScriptVariable.h"
 #include "NiagaraParameterStore.h"
+#include "NiagaraScriptSource.h"
+#include "NiagaraGraph.h"
+#include "NiagaraNodeOutput.h"
+#include "NiagaraNodeFunctionCall.h"
 
 // Editor includes
 #include "AssetRegistry/AssetRegistryModule.h"
@@ -19,6 +23,110 @@
 #include "IAssetTools.h"
 #include "UObject/SavePackage.h"
 #include "Factories/Factory.h"
+
+// Helper: Serialize a NiagaraParameterStore's variables to JSON array
+static TArray<TSharedPtr<FJsonValue>> SerializeParameterStore(const FNiagaraParameterStore& Store)
+{
+	TArray<TSharedPtr<FJsonValue>> ParamArray;
+	TArray<FNiagaraVariable> Params;
+	Store.GetParameters(Params);
+
+	for (const FNiagaraVariable& Var : Params)
+	{
+		TSharedPtr<FJsonObject> ParamObj = MakeShared<FJsonObject>();
+		ParamObj->SetStringField(TEXT("name"), Var.GetName().ToString());
+		FNiagaraTypeDefinition TypeDef = Var.GetType();
+		ParamObj->SetStringField(TEXT("type"), TypeDef.GetName());
+
+		// Try extracting value based on type using templated getter
+		int32 Offset = Store.IndexOf(Var);
+		if (Offset != INDEX_NONE)
+		{
+			if (TypeDef == FNiagaraTypeDefinition::GetFloatDef())
+			{
+				ParamObj->SetNumberField(TEXT("value"), Store.GetParameterValue<float>(Var));
+			}
+			else if (TypeDef == FNiagaraTypeDefinition::GetIntDef())
+			{
+				ParamObj->SetNumberField(TEXT("value"), Store.GetParameterValue<int32>(Var));
+			}
+			else if (TypeDef == FNiagaraTypeDefinition::GetBoolDef())
+			{
+				FNiagaraBool Value = Store.GetParameterValue<FNiagaraBool>(Var);
+				ParamObj->SetBoolField(TEXT("value"), Value.GetValue());
+			}
+			else if (TypeDef == FNiagaraTypeDefinition::GetVec3Def() || TypeDef == FNiagaraTypeDefinition::GetPositionDef())
+			{
+				FVector3f Value = Store.GetParameterValue<FVector3f>(Var);
+				TArray<TSharedPtr<FJsonValue>> Vec;
+				Vec.Add(MakeShared<FJsonValueNumber>(Value.X));
+				Vec.Add(MakeShared<FJsonValueNumber>(Value.Y));
+				Vec.Add(MakeShared<FJsonValueNumber>(Value.Z));
+				ParamObj->SetArrayField(TEXT("value"), Vec);
+			}
+			else if (TypeDef == FNiagaraTypeDefinition::GetVec2Def())
+			{
+				FVector2f Value = Store.GetParameterValue<FVector2f>(Var);
+				TArray<TSharedPtr<FJsonValue>> Vec;
+				Vec.Add(MakeShared<FJsonValueNumber>(Value.X));
+				Vec.Add(MakeShared<FJsonValueNumber>(Value.Y));
+				ParamObj->SetArrayField(TEXT("value"), Vec);
+			}
+			else if (TypeDef == FNiagaraTypeDefinition::GetVec4Def())
+			{
+				FVector4f Value = Store.GetParameterValue<FVector4f>(Var);
+				TArray<TSharedPtr<FJsonValue>> Vec;
+				Vec.Add(MakeShared<FJsonValueNumber>(Value.X));
+				Vec.Add(MakeShared<FJsonValueNumber>(Value.Y));
+				Vec.Add(MakeShared<FJsonValueNumber>(Value.Z));
+				Vec.Add(MakeShared<FJsonValueNumber>(Value.W));
+				ParamObj->SetArrayField(TEXT("value"), Vec);
+			}
+			else if (TypeDef == FNiagaraTypeDefinition::GetColorDef())
+			{
+				FLinearColor Value = Store.GetParameterValue<FLinearColor>(Var);
+				TSharedPtr<FJsonObject> ColorObj = MakeShared<FJsonObject>();
+				ColorObj->SetNumberField(TEXT("r"), Value.R);
+				ColorObj->SetNumberField(TEXT("g"), Value.G);
+				ColorObj->SetNumberField(TEXT("b"), Value.B);
+				ColorObj->SetNumberField(TEXT("a"), Value.A);
+				ParamObj->SetObjectField(TEXT("value"), ColorObj);
+			}
+		}
+
+		ParamArray.Add(MakeShared<FJsonValueObject>(ParamObj));
+	}
+	return ParamArray;
+}
+
+// Helper: Get module nodes from a script's graph
+static TArray<TSharedPtr<FJsonValue>> GetModulesFromScript(UNiagaraScript* Script)
+{
+	TArray<TSharedPtr<FJsonValue>> ModuleArray;
+	if (!Script) return ModuleArray;
+
+	UNiagaraScriptSource* Source = Cast<UNiagaraScriptSource>(Script->GetLatestSource());
+	if (!Source || !Source->NodeGraph) return ModuleArray;
+
+	TArray<TObjectPtr<UEdGraphNode>>& AllNodes = Source->NodeGraph->Nodes;
+	for (UEdGraphNode* Node : AllNodes)
+	{
+		UNiagaraNodeFunctionCall* FuncNode = Cast<UNiagaraNodeFunctionCall>(Node);
+		if (!FuncNode) continue;
+
+		TSharedPtr<FJsonObject> ModObj = MakeShared<FJsonObject>();
+		ModObj->SetStringField(TEXT("name"), FuncNode->GetNodeTitle(ENodeTitleType::ListView).ToString());
+		ModObj->SetBoolField(TEXT("enabled"), FuncNode->IsNodeEnabled());
+
+		if (FuncNode->FunctionScript)
+		{
+			ModObj->SetStringField(TEXT("script_name"), FuncNode->FunctionScript->GetName());
+		}
+
+		ModuleArray.Add(MakeShared<FJsonValueObject>(ModObj));
+	}
+	return ModuleArray;
+}
 
 FUnrealMCPNiagaraCommands::FUnrealMCPNiagaraCommands()
 {
@@ -207,9 +315,42 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleReadNiagaraSystem(const
 			ENiagaraSimTarget SimTarget = EmitterData->SimTarget;
 			EmitterObj->SetStringField(TEXT("sim_target"), SimTarget == ENiagaraSimTarget::CPUSim ? TEXT("CPU") : TEXT("GPU"));
 
-			// Scalability — max particles
 			EmitterObj->SetBoolField(TEXT("local_space"), EmitterData->bLocalSpace);
 			EmitterObj->SetBoolField(TEXT("determinism"), EmitterData->bDeterminism);
+
+			// Module stacks (Spawn / Update)
+			auto AddScriptModules = [&](const TCHAR* SectionName, UNiagaraScript* Script)
+			{
+				if (!Script) return;
+
+				TSharedPtr<FJsonObject> ScriptSection = MakeShared<FJsonObject>();
+
+				// Modules from graph
+				TArray<TSharedPtr<FJsonValue>> Modules = GetModulesFromScript(Script);
+				ScriptSection->SetArrayField(TEXT("modules"), Modules);
+
+				// Rapid iteration parameters
+				TArray<TSharedPtr<FJsonValue>> RapidParams = SerializeParameterStore(Script->RapidIterationParameters);
+				ScriptSection->SetArrayField(TEXT("rapid_iteration_parameters"), RapidParams);
+
+				EmitterObj->SetObjectField(SectionName, ScriptSection);
+			};
+
+			AddScriptModules(TEXT("spawn_script"), EmitterData->SpawnScriptProps.Script);
+			AddScriptModules(TEXT("update_script"), EmitterData->UpdateScriptProps.Script);
+
+			// Renderers
+			const TArray<UNiagaraRendererProperties*>& Renderers = EmitterData->GetRenderers();
+			TArray<TSharedPtr<FJsonValue>> RendererArray;
+			for (const UNiagaraRendererProperties* Renderer : Renderers)
+			{
+				if (!Renderer) continue;
+				TSharedPtr<FJsonObject> RendObj = MakeShared<FJsonObject>();
+				RendObj->SetStringField(TEXT("type"), Renderer->GetClass()->GetName());
+				RendObj->SetBoolField(TEXT("enabled"), Renderer->GetIsEnabled());
+				RendererArray.Add(MakeShared<FJsonValueObject>(RendObj));
+			}
+			EmitterObj->SetArrayField(TEXT("renderers"), RendererArray);
 		}
 
 		EmitterArray.Add(MakeShared<FJsonValueObject>(EmitterObj));
