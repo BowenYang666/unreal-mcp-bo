@@ -532,4 +532,50 @@ def register_editor_tools(mcp: FastMCP):
             logger.error(error_msg)
             return {"success": False, "message": error_msg}
 
+    @mcp.tool()
+    def save_asset(
+        ctx: Context,
+        asset_path: str
+    ) -> Dict[str, Any]:
+        """Save an asset to disk.
+
+        Persists any in-memory changes (e.g. after creating or modifying an asset via MCP)
+        so they survive an editor restart.
+
+        Args:
+            ctx: The MCP context
+            asset_path: The asset path to save, e.g. "/Game/VFX/NS_Explosion.NS_Explosion"
+                        or "/Game/UI/WBP_MyWidget"
+
+        Returns:
+            Dict with success message or error
+
+        Examples:
+            save_asset(asset_path="/Game/VFX/NS_Explosion.NS_Explosion")
+            save_asset(asset_path="/Game/UI/WBP_HUD")
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                logger.error("Failed to connect to Unreal Engine")
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            response = unreal.send_command("save_asset", {"asset_path": asset_path})
+
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+
+            result = response.get("result", response)
+            logger.info(f"Asset saved: {asset_path}")
+            return result
+
+        except Exception as e:
+            logger.error(f"Error saving asset: {e}")
+            return {"success": False, "message": str(e)}
+
     logger.info("Editor tools registered successfully")

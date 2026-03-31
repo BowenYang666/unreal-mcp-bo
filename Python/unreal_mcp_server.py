@@ -274,6 +274,7 @@ from tools.node_tools import register_blueprint_node_tools
 from tools.project_tools import register_project_tools
 from tools.umg_tools import register_umg_tools
 from tools.material_tools import register_material_tools
+from tools.niagara_tools import register_niagara_tools
 
 # Register all tools first
 register_editor_tools(mcp)
@@ -282,6 +283,7 @@ register_blueprint_node_tools(mcp)
 register_project_tools(mcp)
 register_umg_tools(mcp)
 register_material_tools(mcp)
+register_niagara_tools(mcp)
 
 # Read-only mode: if UNREAL_MCP_READ_ONLY=1, remove all write/modify tools
 # and keep only read/query tools. This is useful when you want the AI to
@@ -313,6 +315,10 @@ if _read_only:
         "get_material_instance_parameters",
         # UMG: read widget layout
         "read_widget_layout",
+        # Niagara: read-only inspection
+        "list_niagara_systems",
+        "read_niagara_system",
+        "get_niagara_parameters",
     }
 
     all_tool_names = list(mcp._tool_manager._tools.keys())

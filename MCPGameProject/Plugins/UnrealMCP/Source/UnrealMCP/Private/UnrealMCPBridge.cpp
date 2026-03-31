@@ -57,6 +57,7 @@
 #include "Commands/UnrealMCPProjectCommands.h"
 #include "Commands/UnrealMCPCommonUtils.h"
 #include "Commands/UnrealMCPUMGCommands.h"
+#include "Commands/UnrealMCPNiagaraCommands.h"
 
 // Default settings
 #define MCP_SERVER_HOST "127.0.0.1"
@@ -70,6 +71,7 @@ UUnrealMCPBridge::UUnrealMCPBridge()
     ProjectCommands = MakeShared<FUnrealMCPProjectCommands>();
     UMGCommands = MakeShared<FUnrealMCPUMGCommands>();
     MaterialCommands = MakeShared<FUnrealMCPMaterialCommands>();
+    NiagaraCommands = MakeShared<FUnrealMCPNiagaraCommands>();
 }
 
 UUnrealMCPBridge::~UUnrealMCPBridge()
@@ -80,6 +82,7 @@ UUnrealMCPBridge::~UUnrealMCPBridge()
     ProjectCommands.Reset();
     UMGCommands.Reset();
     MaterialCommands.Reset();
+    NiagaraCommands.Reset();
 }
 
 // Initialize subsystem
@@ -237,7 +240,8 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("spawn_blueprint_actor") ||
                      CommandType == TEXT("focus_viewport") || 
                      CommandType == TEXT("take_screenshot") ||
-                     CommandType == TEXT("get_unsaved_changes"))
+                     CommandType == TEXT("get_unsaved_changes") ||
+                     CommandType == TEXT("save_asset"))
             {
                 ResultJson = EditorCommands->HandleCommand(CommandType, Params);
             }
@@ -299,6 +303,15 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("get_material_instance_parameters"))
             {
                 ResultJson = MaterialCommands->HandleCommand(CommandType, Params);
+            }
+            // Niagara Commands
+            else if (CommandType == TEXT("list_niagara_systems") ||
+                     CommandType == TEXT("read_niagara_system") ||
+                     CommandType == TEXT("set_niagara_parameter") ||
+                     CommandType == TEXT("get_niagara_parameters") ||
+                     CommandType == TEXT("create_niagara_system"))
+            {
+                ResultJson = NiagaraCommands->HandleCommand(CommandType, Params);
             }
             else
             {

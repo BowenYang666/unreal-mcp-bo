@@ -21,6 +21,8 @@
 #include "Subsystems/EditorActorSubsystem.h"
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
+#include "EditorAssetLibrary.h"
+#include "UObject/SavePackage.h"
 
 FUnrealMCPEditorCommands::FUnrealMCPEditorCommands()
 {
@@ -79,6 +81,10 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleCommand(const FString& C
     else if (CommandType == TEXT("get_unsaved_changes"))
     {
         return HandleGetUnsavedChanges(Params);
+    }
+    else if (CommandType == TEXT("save_asset"))
+    {
+        return HandleSaveAsset(Params);
     }
     
     return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown editor command: %s"), *CommandType));
@@ -647,5 +653,46 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleGetUnsavedChanges(const 
     }
     ResultJson->SetArrayField(TEXT("unsaved_maps"), MapArray);
 
+    return ResultJson;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSaveAsset(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    }
+
+    UObject* Asset = UEditorAssetLibrary::LoadAsset(AssetPath);
+    if (!Asset)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Asset not found: %s"), *AssetPath));
+    }
+
+    UPackage* Package = Asset->GetOutermost();
+    if (!Package)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Could not find package for asset"));
+    }
+
+    FString PackageFilename;
+    if (!FPackageName::TryConvertLongPackageNameToFilename(Package->GetName(), PackageFilename, FPackageName::GetAssetPackageExtension()))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Could not resolve package filename"));
+    }
+
+    FSavePackageArgs SaveArgs;
+    SaveArgs.TopLevelFlags = RF_Standalone;
+    bool bSaved = UPackage::SavePackage(Package, Asset, *PackageFilename, SaveArgs);
+
+    if (!bSaved)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Failed to save asset: %s"), *AssetPath));
+    }
+
+    TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
+    ResultJson->SetStringField(TEXT("message"), FString::Printf(TEXT("Asset saved successfully: %s"), *AssetPath));
+    ResultJson->SetStringField(TEXT("path"), AssetPath);
     return ResultJson;
 }

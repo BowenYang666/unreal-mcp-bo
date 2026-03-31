@@ -34,7 +34,8 @@ public class UnrealMCP : ModuleRules
 				"HTTP",
 				"Json",
 				"JsonUtilities",
-				"DeveloperSettings"
+				"DeveloperSettings",
+				"Niagara"
 			}
 		);
 		
@@ -51,7 +52,9 @@ public class UnrealMCP : ModuleRules
 				"KismetCompiler",
 				"BlueprintGraph",
 				"Projects",
-				"AssetRegistry"
+				"AssetRegistry",
+				"NiagaraCore",
+				"NiagaraEditor"
 			}
 		);
 		
