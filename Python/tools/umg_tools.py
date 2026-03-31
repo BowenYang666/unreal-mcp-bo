@@ -79,7 +79,8 @@ def register_umg_tools(mcp: FastMCP):
         position: List[float] = [0.0, 0.0],
         size: List[float] = [200.0, 50.0],
         font_size: int = 12,
-        color: List[float] = [1.0, 1.0, 1.0, 1.0]
+        color: List[float] = [1.0, 1.0, 1.0, 1.0],
+        parent_name: str = ""
     ) -> Dict[str, Any]:
         """
         Add a Text Block widget to a UMG Widget Blueprint.
@@ -88,16 +89,18 @@ def register_umg_tools(mcp: FastMCP):
             path: Full asset path of the target Widget Blueprint (e.g. "/Game/UI/WBP_HUD")
             text_block_name: Name to give the new Text Block
             text: Initial text content
-            position: [X, Y] position in the canvas panel
-            size: [Width, Height] of the text block
+            position: [X, Y] position (only used when adding to root CanvasPanel)
+            size: [Width, Height] of the text block (only used when adding to root CanvasPanel)
             font_size: Font size in points
             color: [R, G, B, A] color values (0.0 to 1.0)
+            parent_name: Name of an existing container widget (e.g. VBox, HBox, Overlay, Border) to nest this widget inside. If empty, adds to root CanvasPanel.
             
         Returns:
             Dict containing success status and text block properties
             
         Examples:
             add_text_block_to_widget("/Game/UI/WBP_HUD", "Title", text="Hello World")
+            add_text_block_to_widget("/Game/UI/WBP_HUD", "Label", text="HP:", parent_name="StatsVBox")
         """
         from unreal_mcp_server import get_unreal_connection
         
@@ -116,6 +119,8 @@ def register_umg_tools(mcp: FastMCP):
                 "font_size": font_size,
                 "color": color
             }
+            if parent_name:
+                params["parent_name"] = parent_name
             
             logger.info(f"Adding Text Block to widget with params: {params}")
             response = unreal.send_command("add_text_block_to_widget", params)
@@ -142,7 +147,8 @@ def register_umg_tools(mcp: FastMCP):
         size: List[float] = [200.0, 50.0],
         font_size: int = 12,
         color: List[float] = [1.0, 1.0, 1.0, 1.0],
-        background_color: List[float] = [0.1, 0.1, 0.1, 1.0]
+        background_color: List[float] = [0.1, 0.1, 0.1, 1.0],
+        parent_name: str = ""
     ) -> Dict[str, Any]:
         """
         Add a Button widget to a UMG Widget Blueprint.
@@ -151,17 +157,19 @@ def register_umg_tools(mcp: FastMCP):
             path: Full asset path of the target Widget Blueprint (e.g. "/Game/UI/WBP_HUD")
             button_name: Name to give the new Button
             text: Text to display on the button
-            position: [X, Y] position in the canvas panel
-            size: [Width, Height] of the button
+            position: [X, Y] position (only used when adding to root CanvasPanel)
+            size: [Width, Height] of the button (only used when adding to root CanvasPanel)
             font_size: Font size for button text
             color: [R, G, B, A] text color values (0.0 to 1.0)
             background_color: [R, G, B, A] button background color values (0.0 to 1.0)
+            parent_name: Name of an existing container widget to nest this button inside. If empty, adds to root CanvasPanel.
             
         Returns:
             Dict containing success status and button properties
             
         Examples:
             add_button_to_widget("/Game/UI/WBP_Menu", "StartBtn", text="Start Game")
+            add_button_to_widget("/Game/UI/WBP_Menu", "StartBtn", text="Start", parent_name="ButtonsVBox")
         """
         from unreal_mcp_server import get_unreal_connection
         
@@ -181,6 +189,8 @@ def register_umg_tools(mcp: FastMCP):
                 "color": color,
                 "background_color": background_color
             }
+            if parent_name:
+                params["parent_name"] = parent_name
             
             logger.info(f"Adding Button to widget with params: {params}")
             response = unreal.send_command("add_button_to_widget", params)
@@ -363,7 +373,8 @@ def register_umg_tools(mcp: FastMCP):
         fill_color: List[float] = [1.0, 0.0, 0.0, 1.0],
         position: List[float] = [0.0, 0.0],
         size: List[float] = [200.0, 20.0],
-        fill_type: str = "LeftToRight"
+        fill_type: str = "LeftToRight",
+        parent_name: str = ""
     ) -> Dict[str, Any]:
         """
         Add a ProgressBar widget to a UMG Widget Blueprint.
@@ -373,18 +384,19 @@ def register_umg_tools(mcp: FastMCP):
             progress_bar_name: Name to give the new ProgressBar
             percent: Initial fill percentage from 0.0 (empty) to 1.0 (full). Default: 1.0
             fill_color: [R, G, B, A] fill color values (0.0 to 1.0). Default: red [1,0,0,1]
-            position: [X, Y] position in the canvas panel
-            size: [Width, Height] of the progress bar. Default: [200, 20]
+            position: [X, Y] position (only used when adding to root CanvasPanel)
+            size: [Width, Height] of the progress bar (only used when adding to root CanvasPanel). Default: [200, 20]
             fill_type: Fill direction. One of: "LeftToRight", "RightToLeft", "TopToBottom",
                        "BottomToTop", "FillFromCenter", "FillFromCenterHorizontal",
                        "FillFromCenterVertical". Default: "LeftToRight"
+            parent_name: Name of an existing container widget to nest this inside. If empty, adds to root CanvasPanel.
             
         Returns:
             Dict containing path, percent, fill_color, and size
             
         Examples:
             add_progress_bar_to_widget("/Game/UI/WBP_HealthBar", "HealthBar", percent=0.75, fill_color=[1,0,0,1])
-            add_progress_bar_to_widget("/Game/UI/WBP_HUD", "ExpBar", fill_color=[0,0.5,1,1], size=[300,15])
+            add_progress_bar_to_widget("/Game/UI/WBP_HUD", "HPBar", parent_name="HealthOverlay")
         """
         from unreal_mcp_server import get_unreal_connection
         
@@ -403,6 +415,8 @@ def register_umg_tools(mcp: FastMCP):
                 "size": size,
                 "fill_type": fill_type
             }
+            if parent_name:
+                params["parent_name"] = parent_name
             
             logger.info(f"Adding ProgressBar to widget with params: {params}")
             response = unreal.send_command("add_progress_bar_to_widget", params)
@@ -427,7 +441,8 @@ def register_umg_tools(mcp: FastMCP):
         texture_path: str = "",
         tint_color: List[float] = [1.0, 1.0, 1.0, 1.0],
         position: List[float] = [0.0, 0.0],
-        size: List[float] = [100.0, 100.0]
+        size: List[float] = [100.0, 100.0],
+        parent_name: str = ""
     ) -> Dict[str, Any]:
         """
         Add an Image widget to a UMG Widget Blueprint.
@@ -435,17 +450,18 @@ def register_umg_tools(mcp: FastMCP):
         Args:
             path: Full asset path of the target Widget Blueprint (e.g. "/Game/UI/WBP_HUD")
             image_name: Name to give the new Image widget
-            texture_path: Full asset path of a Texture2D to display (e.g. "/Game/Textures/T_Icon"). Optional.
+            texture_path: Full asset path of a Texture2D to display. Optional.
             tint_color: [R, G, B, A] tint color (0.0 to 1.0). Default: white
-            position: [X, Y] position in the canvas panel
-            size: [Width, Height] of the image. Default: [100, 100]
+            position: [X, Y] position (only used when adding to root CanvasPanel)
+            size: [Width, Height] of the image (only used when adding to root CanvasPanel). Default: [100, 100]
+            parent_name: Name of an existing container widget to nest this inside. If empty, adds to root CanvasPanel.
             
         Returns:
             Dict containing widget_name and texture_path
             
         Examples:
             add_image_to_widget("/Game/UI/WBP_HUD", "BgImage", size=[1920, 1080])
-            add_image_to_widget("/Game/UI/WBP_HUD", "Icon", texture_path="/Game/Textures/T_Star", size=[64, 64])
+            add_image_to_widget("/Game/UI/WBP_HUD", "Icon", parent_name="IconOverlay")
         """
         from unreal_mcp_server import get_unreal_connection
         
@@ -463,6 +479,8 @@ def register_umg_tools(mcp: FastMCP):
             }
             if texture_path:
                 params["texture_path"] = texture_path
+            if parent_name:
+                params["parent_name"] = parent_name
             
             response = unreal.send_command("add_image_to_widget", params)
             if not response:
@@ -478,7 +496,8 @@ def register_umg_tools(mcp: FastMCP):
         path: str,
         box_name: str,
         position: List[float] = [0.0, 0.0],
-        size: List[float] = [200.0, 400.0]
+        size: List[float] = [200.0, 400.0],
+        parent_name: str = ""
     ) -> Dict[str, Any]:
         """
         Add a VerticalBox layout container to a UMG Widget Blueprint.
@@ -487,14 +506,16 @@ def register_umg_tools(mcp: FastMCP):
         Args:
             path: Full asset path of the target Widget Blueprint (e.g. "/Game/UI/WBP_HUD")
             box_name: Name to give the new VerticalBox
-            position: [X, Y] position in the canvas panel
-            size: [Width, Height] of the box. Default: [200, 400]
+            position: [X, Y] position (only used when adding to root CanvasPanel)
+            size: [Width, Height] of the box (only used when adding to root CanvasPanel). Default: [200, 400]
+            parent_name: Name of an existing container widget to nest this inside. If empty, adds to root CanvasPanel.
             
         Returns:
             Dict containing widget_name
             
         Examples:
             add_vertical_box_to_widget("/Game/UI/WBP_Menu", "MenuItems")
+            add_vertical_box_to_widget("/Game/UI/WBP_Menu", "InnerVBox", parent_name="OuterBorder")
         """
         from unreal_mcp_server import get_unreal_connection
         
@@ -509,6 +530,8 @@ def register_umg_tools(mcp: FastMCP):
                 "position": position,
                 "size": size
             }
+            if parent_name:
+                params["parent_name"] = parent_name
             
             response = unreal.send_command("add_vertical_box_to_widget", params)
             if not response:
@@ -524,7 +547,8 @@ def register_umg_tools(mcp: FastMCP):
         path: str,
         box_name: str,
         position: List[float] = [0.0, 0.0],
-        size: List[float] = [400.0, 200.0]
+        size: List[float] = [400.0, 200.0],
+        parent_name: str = ""
     ) -> Dict[str, Any]:
         """
         Add a HorizontalBox layout container to a UMG Widget Blueprint.
@@ -533,14 +557,16 @@ def register_umg_tools(mcp: FastMCP):
         Args:
             path: Full asset path of the target Widget Blueprint (e.g. "/Game/UI/WBP_HUD")
             box_name: Name to give the new HorizontalBox
-            position: [X, Y] position in the canvas panel
-            size: [Width, Height] of the box. Default: [400, 200]
+            position: [X, Y] position (only used when adding to root CanvasPanel)
+            size: [Width, Height] of the box (only used when adding to root CanvasPanel). Default: [400, 200]
+            parent_name: Name of an existing container widget to nest this inside. If empty, adds to root CanvasPanel.
             
         Returns:
             Dict containing widget_name
             
         Examples:
             add_horizontal_box_to_widget("/Game/UI/WBP_HUD", "ActionBar")
+            add_horizontal_box_to_widget("/Game/UI/WBP_HUD", "ButtonRow", parent_name="MainVBox")
         """
         from unreal_mcp_server import get_unreal_connection
         
@@ -555,6 +581,8 @@ def register_umg_tools(mcp: FastMCP):
                 "position": position,
                 "size": size
             }
+            if parent_name:
+                params["parent_name"] = parent_name
             
             response = unreal.send_command("add_horizontal_box_to_widget", params)
             if not response:
@@ -570,7 +598,8 @@ def register_umg_tools(mcp: FastMCP):
         path: str,
         overlay_name: str,
         position: List[float] = [0.0, 0.0],
-        size: List[float] = [300.0, 300.0]
+        size: List[float] = [300.0, 300.0],
+        parent_name: str = ""
     ) -> Dict[str, Any]:
         """
         Add an Overlay container to a UMG Widget Blueprint.
@@ -579,14 +608,16 @@ def register_umg_tools(mcp: FastMCP):
         Args:
             path: Full asset path of the target Widget Blueprint (e.g. "/Game/UI/WBP_HUD")
             overlay_name: Name to give the new Overlay
-            position: [X, Y] position in the canvas panel
-            size: [Width, Height] of the overlay. Default: [300, 300]
+            position: [X, Y] position (only used when adding to root CanvasPanel)
+            size: [Width, Height] of the overlay (only used when adding to root CanvasPanel). Default: [300, 300]
+            parent_name: Name of an existing container widget to nest this inside. If empty, adds to root CanvasPanel.
             
         Returns:
             Dict containing widget_name
             
         Examples:
             add_overlay_to_widget("/Game/UI/WBP_HealthBar", "BarOverlay")
+            add_overlay_to_widget("/Game/UI/WBP_HUD", "Overlay1", parent_name="MainVBox")
         """
         from unreal_mcp_server import get_unreal_connection
         
@@ -601,6 +632,8 @@ def register_umg_tools(mcp: FastMCP):
                 "position": position,
                 "size": size
             }
+            if parent_name:
+                params["parent_name"] = parent_name
             
             response = unreal.send_command("add_overlay_to_widget", params)
             if not response:
@@ -618,7 +651,8 @@ def register_umg_tools(mcp: FastMCP):
         width_override: float = 0.0,
         height_override: float = 0.0,
         position: List[float] = [0.0, 0.0],
-        size: List[float] = [200.0, 200.0]
+        size: List[float] = [200.0, 200.0],
+        parent_name: str = ""
     ) -> Dict[str, Any]:
         """
         Add a SizeBox to a UMG Widget Blueprint to constrain child dimensions.
@@ -628,14 +662,16 @@ def register_umg_tools(mcp: FastMCP):
             size_box_name: Name to give the new SizeBox
             width_override: Fixed width constraint. 0 = no override.
             height_override: Fixed height constraint. 0 = no override.
-            position: [X, Y] position in the canvas panel
-            size: [Width, Height] of the size box slot. Default: [200, 200]
+            position: [X, Y] position (only used when adding to root CanvasPanel)
+            size: [Width, Height] of the size box slot (only used when adding to root CanvasPanel). Default: [200, 200]
+            parent_name: Name of an existing container widget to nest this inside. If empty, adds to root CanvasPanel.
             
         Returns:
             Dict containing widget_name and override values
             
         Examples:
             add_size_box_to_widget("/Game/UI/WBP_HUD", "HealthBarWrapper", width_override=300, height_override=30)
+            add_size_box_to_widget("/Game/UI/WBP_HUD", "Wrapper", parent_name="MainVBox", width_override=200)
         """
         from unreal_mcp_server import get_unreal_connection
         
@@ -654,6 +690,8 @@ def register_umg_tools(mcp: FastMCP):
                 params["width_override"] = width_override
             if height_override > 0:
                 params["height_override"] = height_override
+            if parent_name:
+                params["parent_name"] = parent_name
             
             response = unreal.send_command("add_size_box_to_widget", params)
             if not response:
@@ -670,7 +708,8 @@ def register_umg_tools(mcp: FastMCP):
         border_name: str,
         background_color: List[float] = [0.1, 0.1, 0.1, 1.0],
         position: List[float] = [0.0, 0.0],
-        size: List[float] = [200.0, 200.0]
+        size: List[float] = [200.0, 200.0],
+        parent_name: str = ""
     ) -> Dict[str, Any]:
         """
         Add a Border widget to a UMG Widget Blueprint.
@@ -680,14 +719,16 @@ def register_umg_tools(mcp: FastMCP):
             path: Full asset path of the target Widget Blueprint (e.g. "/Game/UI/WBP_HUD")
             border_name: Name to give the new Border
             background_color: [R, G, B, A] background color (0.0 to 1.0). Default: dark gray
-            position: [X, Y] position in the canvas panel
-            size: [Width, Height] of the border. Default: [200, 200]
+            position: [X, Y] position (only used when adding to root CanvasPanel)
+            size: [Width, Height] of the border (only used when adding to root CanvasPanel). Default: [200, 200]
+            parent_name: Name of an existing container widget to nest this inside. If empty, adds to root CanvasPanel.
             
         Returns:
             Dict containing widget_name
             
         Examples:
             add_border_to_widget("/Game/UI/WBP_HUD", "PanelBg", background_color=[0, 0, 0, 0.8])
+            add_border_to_widget("/Game/UI/WBP_HUD", "Inner", parent_name="MainVBox")
         """
         from unreal_mcp_server import get_unreal_connection
         
@@ -703,6 +744,8 @@ def register_umg_tools(mcp: FastMCP):
                 "position": position,
                 "size": size
             }
+            if parent_name:
+                params["parent_name"] = parent_name
             
             response = unreal.send_command("add_border_to_widget", params)
             if not response:
@@ -718,7 +761,8 @@ def register_umg_tools(mcp: FastMCP):
         path: str,
         spacer_name: str,
         size: List[float] = [100.0, 20.0],
-        position: List[float] = [0.0, 0.0]
+        position: List[float] = [0.0, 0.0],
+        parent_name: str = ""
     ) -> Dict[str, Any]:
         """
         Add a Spacer widget for padding/spacing between elements.
@@ -727,13 +771,15 @@ def register_umg_tools(mcp: FastMCP):
             path: Full asset path of the target Widget Blueprint (e.g. "/Game/UI/WBP_HUD")
             spacer_name: Name to give the new Spacer
             size: [Width, Height] of the spacer. Default: [100, 20]
-            position: [X, Y] position in the canvas panel
+            position: [X, Y] position (only used when adding to root CanvasPanel)
+            parent_name: Name of an existing container widget to nest this inside. If empty, adds to root CanvasPanel.
             
         Returns:
             Dict containing widget_name
             
         Examples:
             add_spacer_to_widget("/Game/UI/WBP_Menu", "MenuSpacer", size=[200, 40])
+            add_spacer_to_widget("/Game/UI/WBP_Menu", "Gap", parent_name="MenuVBox", size=[0, 20])
         """
         from unreal_mcp_server import get_unreal_connection
         
@@ -748,6 +794,8 @@ def register_umg_tools(mcp: FastMCP):
                 "size": size,
                 "position": position
             }
+            if parent_name:
+                params["parent_name"] = parent_name
             
             response = unreal.send_command("add_spacer_to_widget", params)
             if not response:

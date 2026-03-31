@@ -12,6 +12,7 @@
 #include "Blueprint/WidgetTree.h"
 #include "Components/CanvasPanel.h"
 #include "Components/CanvasPanelSlot.h"
+#include "Components/PanelWidget.h"
 #include "JsonObjectConverter.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Components/Button.h"
@@ -112,6 +113,103 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleCommand(const FString& Comm
 	}
 
 	return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown UMG command: %s"), *CommandName));
+}
+
+// Helper: Parse a JSON [X,Y] array into FVector2D with a default value.
+static FVector2D ParseVector2D(const TSharedPtr<FJsonObject>& Params, const FString& FieldName, FVector2D Default)
+{
+	const TArray<TSharedPtr<FJsonValue>>* Arr;
+	if (Params->TryGetArrayField(FieldName, Arr) && Arr->Num() >= 2)
+	{
+		Default.X = (*Arr)[0]->AsNumber();
+		Default.Y = (*Arr)[1]->AsNumber();
+	}
+	return Default;
+}
+
+// Helper: Parse a JSON [R,G,B,A] array into FLinearColor with a default value.
+static FLinearColor ParseColor(const TSharedPtr<FJsonObject>& Params, const FString& FieldName, FLinearColor Default)
+{
+	const TArray<TSharedPtr<FJsonValue>>* Arr;
+	if (Params->TryGetArrayField(FieldName, Arr) && Arr->Num() >= 3)
+	{
+		Default.R = static_cast<float>((*Arr)[0]->AsNumber());
+		Default.G = static_cast<float>((*Arr)[1]->AsNumber());
+		Default.B = static_cast<float>((*Arr)[2]->AsNumber());
+		Default.A = Arr->Num() >= 4 ? static_cast<float>((*Arr)[3]->AsNumber()) : 1.0f;
+	}
+	return Default;
+}
+
+// Helper: Common preamble for "add X to widget" handlers.
+// Resolves blueprint, widget name, and optional parent_name.
+// If parent_name is given, OutParent is the named UPanelWidget and OutCanvas is null.
+// If parent_name is absent, OutParent is the root CanvasPanel and OutCanvas points to it too.
+static TSharedPtr<FJsonObject> LoadWidgetAndParent(
+	const TSharedPtr<FJsonObject>& Params,
+	FString& OutBlueprintName,
+	FString& OutWidgetName,
+	UWidgetBlueprint*& OutBlueprint,
+	UPanelWidget*& OutParent,
+	UCanvasPanel*& OutCanvas)
+{
+	OutParent = nullptr;
+	OutCanvas = nullptr;
+
+	if (!Params->TryGetStringField(TEXT("blueprint_name"), OutBlueprintName))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
+	if (!Params->TryGetStringField(TEXT("widget_name"), OutWidgetName))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'widget_name' parameter"));
+
+	OutBlueprint = FindWidgetBlueprint(OutBlueprintName);
+	if (!OutBlueprint)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Widget Blueprint '%s' not found"), *OutBlueprintName));
+
+	FString ParentName;
+	if (Params->TryGetStringField(TEXT("parent_name"), ParentName) && !ParentName.IsEmpty())
+	{
+		UWidget* Found = OutBlueprint->WidgetTree->FindWidget(FName(*ParentName));
+		if (!Found)
+			return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Parent widget '%s' not found"), *ParentName));
+		OutParent = Cast<UPanelWidget>(Found);
+		if (!OutParent)
+			return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Parent widget '%s' is not a panel/container — cannot add children to it"), *ParentName));
+	}
+	else
+	{
+		OutCanvas = Cast<UCanvasPanel>(OutBlueprint->WidgetTree->RootWidget);
+		if (!OutCanvas)
+			return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Root Canvas Panel not found"));
+		OutParent = OutCanvas;
+	}
+	return nullptr;
+}
+
+// Helper: Add a child widget to a parent panel. If the parent is a CanvasPanel, set position/size.
+// Otherwise use generic AddChild (VBox, HBox, Overlay, Border, etc. manage layout themselves).
+static void AddChildToParent(UWidget* Child, UPanelWidget* Parent, UCanvasPanel* Canvas,
+	const TSharedPtr<FJsonObject>& Params, FVector2D DefaultSize = FVector2D(200, 50))
+{
+	if (Canvas)
+	{
+		FVector2D Position = ParseVector2D(Params, TEXT("position"), FVector2D(0, 0));
+		FVector2D Size = ParseVector2D(Params, TEXT("size"), DefaultSize);
+		UCanvasPanelSlot* Slot = Canvas->AddChildToCanvas(Child);
+		Slot->SetPosition(Position);
+		Slot->SetSize(Size);
+	}
+	else
+	{
+		Parent->AddChild(Child);
+	}
+}
+
+// Helper: Compile, mark dirty, and save to disk.
+static void CompileWidget(UWidgetBlueprint* WidgetBlueprint)
+{
+	WidgetBlueprint->MarkPackageDirty();
+	FKismetEditorUtilities::CompileBlueprint(WidgetBlueprint);
+	UEditorAssetLibrary::SaveLoadedAsset(WidgetBlueprint);
 }
 
 TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleCreateUMGWidgetBlueprint(const TSharedPtr<FJsonObject>& Params)
@@ -252,66 +350,30 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleCreateUMGWidgetBlueprint(co
 
 TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleAddTextBlockToWidget(const TSharedPtr<FJsonObject>& Params)
 {
-	// Get required parameters
-	FString BlueprintName;
-	if (!Params->TryGetStringField(TEXT("blueprint_name"), BlueprintName))
-	{
-		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
-	}
-
-	FString WidgetName;
-	if (!Params->TryGetStringField(TEXT("widget_name"), WidgetName))
-	{
-		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'widget_name' parameter"));
-	}
-
-	// Find the Widget Blueprint
-	UWidgetBlueprint* WidgetBlueprint = FindWidgetBlueprint(BlueprintName);
-	if (!WidgetBlueprint)
-	{
-		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Widget Blueprint '%s' not found"), *BlueprintName));
-	}
+	FString BlueprintName, WidgetName;
+	UWidgetBlueprint* WidgetBlueprint = nullptr;
+	UPanelWidget* ParentWidget = nullptr;
+	UCanvasPanel* RootCanvas = nullptr;
+	if (auto Err = LoadWidgetAndParent(Params, BlueprintName, WidgetName, WidgetBlueprint, ParentWidget, RootCanvas))
+		return Err;
 
 	// Get optional parameters
 	FString InitialText = TEXT("New Text Block");
 	Params->TryGetStringField(TEXT("text"), InitialText);
 
-	FVector2D Position(0.0f, 0.0f);
-	if (Params->HasField(TEXT("position")))
-	{
-		const TArray<TSharedPtr<FJsonValue>>* PosArray;
-		if (Params->TryGetArrayField(TEXT("position"), PosArray) && PosArray->Num() >= 2)
-		{
-			Position.X = (*PosArray)[0]->AsNumber();
-			Position.Y = (*PosArray)[1]->AsNumber();
-		}
-	}
-
 	// Create Text Block widget
 	UTextBlock* TextBlock = WidgetBlueprint->WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), *WidgetName);
 	if (!TextBlock)
-	{
 		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create Text Block widget"));
-	}
 
 	// Set initial text
 	TextBlock->SetText(FText::FromString(InitialText));
 
-	// Add to canvas panel
-	UCanvasPanel* RootCanvas = Cast<UCanvasPanel>(WidgetBlueprint->WidgetTree->RootWidget);
-	if (!RootCanvas)
-	{
-		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Root Canvas Panel not found"));
-	}
+	// Add to parent
+	AddChildToParent(TextBlock, ParentWidget, RootCanvas, Params, FVector2D(200, 50));
 
-	UCanvasPanelSlot* PanelSlot = RootCanvas->AddChildToCanvas(TextBlock);
-	PanelSlot->SetPosition(Position);
+	CompileWidget(WidgetBlueprint);
 
-	// Mark the package dirty and compile
-	WidgetBlueprint->MarkPackageDirty();
-	FKismetEditorUtilities::CompileBlueprint(WidgetBlueprint);
-
-	// Create success response
 	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
 	ResultObj->SetStringField(TEXT("widget_name"), WidgetName);
 	ResultObj->SetStringField(TEXT("text"), InitialText);
@@ -392,8 +454,26 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleAddButtonToWidget(const TSh
 		return Response;
 	}
 
+	// Resolve parent
+	UPanelWidget* ParentWidget = nullptr;
+	UCanvasPanel* RootCanvas = nullptr;
+	FString ParentName;
+	if (Params->TryGetStringField(TEXT("parent_name"), ParentName) && !ParentName.IsEmpty())
+	{
+		UWidget* Found = WidgetBlueprint->WidgetTree->FindWidget(FName(*ParentName));
+		if (!Found) { Response->SetStringField(TEXT("error"), FString::Printf(TEXT("Parent widget '%s' not found"), *ParentName)); return Response; }
+		ParentWidget = Cast<UPanelWidget>(Found);
+		if (!ParentWidget) { Response->SetStringField(TEXT("error"), FString::Printf(TEXT("Parent widget '%s' is not a panel/container"), *ParentName)); return Response; }
+	}
+	else
+	{
+		RootCanvas = Cast<UCanvasPanel>(WidgetBlueprint->WidgetTree->RootWidget);
+		if (!RootCanvas) { Response->SetStringField(TEXT("error"), TEXT("Root widget is not a Canvas Panel")); return Response; }
+		ParentWidget = RootCanvas;
+	}
+
 	// Create Button widget
-	UButton* Button = NewObject<UButton>(WidgetBlueprint->GeneratedClass->GetDefaultObject(), UButton::StaticClass(), *WidgetName);
+	UButton* Button = WidgetBlueprint->WidgetTree->ConstructWidget<UButton>(UButton::StaticClass(), *WidgetName);
 	if (!Button)
 	{
 		Response->SetStringField(TEXT("error"), TEXT("Failed to create Button widget"));
@@ -401,39 +481,17 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleAddButtonToWidget(const TSh
 	}
 
 	// Set button text
-	UTextBlock* ButtonTextBlock = NewObject<UTextBlock>(Button, UTextBlock::StaticClass(), *(WidgetName + TEXT("_Text")));
+	UTextBlock* ButtonTextBlock = WidgetBlueprint->WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), *(WidgetName + TEXT("_Text")));
 	if (ButtonTextBlock)
 	{
 		ButtonTextBlock->SetText(FText::FromString(ButtonText));
 		Button->AddChild(ButtonTextBlock);
 	}
 
-	// Get canvas panel and add button
-	UCanvasPanel* RootCanvas = Cast<UCanvasPanel>(WidgetBlueprint->WidgetTree->RootWidget);
-	if (!RootCanvas)
-	{
-		Response->SetStringField(TEXT("error"), TEXT("Root widget is not a Canvas Panel"));
-		return Response;
-	}
+	// Add to parent
+	AddChildToParent(Button, ParentWidget, RootCanvas, Params, FVector2D(200, 50));
 
-	// Add to canvas and set position
-	UCanvasPanelSlot* ButtonSlot = RootCanvas->AddChildToCanvas(Button);
-	if (ButtonSlot)
-	{
-		const TArray<TSharedPtr<FJsonValue>>* Position;
-		if (Params->TryGetArrayField(TEXT("position"), Position) && Position->Num() >= 2)
-		{
-			FVector2D Pos(
-				(*Position)[0]->AsNumber(),
-				(*Position)[1]->AsNumber()
-			);
-			ButtonSlot->SetPosition(Pos);
-		}
-	}
-
-	// Save the Widget Blueprint
-	FKismetEditorUtilities::CompileBlueprint(WidgetBlueprint);
-	UEditorAssetLibrary::SaveAsset(BlueprintName, false);
+	CompileWidget(WidgetBlueprint);
 
 	Response->SetBoolField(TEXT("success"), true);
 	Response->SetStringField(TEXT("widget_name"), WidgetName);
@@ -664,25 +722,12 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleSetTextBlockBinding(const T
 
 TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleAddProgressBarToWidget(const TSharedPtr<FJsonObject>& Params)
 {
-	// Get required parameters
-	FString BlueprintName;
-	if (!Params->TryGetStringField(TEXT("blueprint_name"), BlueprintName))
-	{
-		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
-	}
-
-	FString WidgetName;
-	if (!Params->TryGetStringField(TEXT("widget_name"), WidgetName))
-	{
-		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'widget_name' parameter"));
-	}
-
-	// Find the Widget Blueprint
-	UWidgetBlueprint* WidgetBlueprint = FindWidgetBlueprint(BlueprintName);
-	if (!WidgetBlueprint)
-	{
-		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Widget Blueprint '%s' not found"), *BlueprintName));
-	}
+	FString BlueprintName, WidgetName;
+	UWidgetBlueprint* WidgetBlueprint = nullptr;
+	UPanelWidget* ParentWidget = nullptr;
+	UCanvasPanel* RootCanvas = nullptr;
+	if (auto Err = LoadWidgetAndParent(Params, BlueprintName, WidgetName, WidgetBlueprint, ParentWidget, RootCanvas))
+		return Err;
 
 	// Get optional parameters
 	float Percent = 1.0f;
@@ -701,28 +746,6 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleAddProgressBarToWidget(cons
 			FillColor.G = static_cast<float>((*ColorArray)[1]->AsNumber());
 			FillColor.B = static_cast<float>((*ColorArray)[2]->AsNumber());
 			FillColor.A = ColorArray->Num() >= 4 ? static_cast<float>((*ColorArray)[3]->AsNumber()) : 1.0f;
-		}
-	}
-
-	FVector2D Position(0.0f, 0.0f);
-	if (Params->HasField(TEXT("position")))
-	{
-		const TArray<TSharedPtr<FJsonValue>>* PosArray;
-		if (Params->TryGetArrayField(TEXT("position"), PosArray) && PosArray->Num() >= 2)
-		{
-			Position.X = (*PosArray)[0]->AsNumber();
-			Position.Y = (*PosArray)[1]->AsNumber();
-		}
-	}
-
-	FVector2D Size(200.0f, 20.0f); // Default size for a progress bar
-	if (Params->HasField(TEXT("size")))
-	{
-		const TArray<TSharedPtr<FJsonValue>>* SizeArray;
-		if (Params->TryGetArrayField(TEXT("size"), SizeArray) && SizeArray->Num() >= 2)
-		{
-			Size.X = (*SizeArray)[0]->AsNumber();
-			Size.Y = (*SizeArray)[1]->AsNumber();
 		}
 	}
 
@@ -767,20 +790,10 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleAddProgressBarToWidget(cons
 	}
 	// else default LeftToRight
 
-	// Add to canvas panel
-	UCanvasPanel* RootCanvas = Cast<UCanvasPanel>(WidgetBlueprint->WidgetTree->RootWidget);
-	if (!RootCanvas)
-	{
-		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Root Canvas Panel not found"));
-	}
+	// Add to parent
+	AddChildToParent(ProgressBar, ParentWidget, RootCanvas, Params, FVector2D(200, 20));
 
-	UCanvasPanelSlot* PanelSlot = RootCanvas->AddChildToCanvas(ProgressBar);
-	PanelSlot->SetPosition(Position);
-	PanelSlot->SetSize(Size);
-
-	// Mark dirty and compile
-	WidgetBlueprint->MarkPackageDirty();
-	FKismetEditorUtilities::CompileBlueprint(WidgetBlueprint);
+	CompileWidget(WidgetBlueprint);
 
 	// Create success response
 	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
@@ -794,78 +807,16 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleAddProgressBarToWidget(cons
 	ColorArr.Add(MakeShared<FJsonValueNumber>(FillColor.A));
 	ResultObj->SetArrayField(TEXT("fill_color"), ColorArr);
 
-	TArray<TSharedPtr<FJsonValue>> SizeArr;
-	SizeArr.Add(MakeShared<FJsonValueNumber>(Size.X));
-	SizeArr.Add(MakeShared<FJsonValueNumber>(Size.Y));
-	ResultObj->SetArrayField(TEXT("size"), SizeArr);
-
 	return ResultObj;
-}
-
-// Helper: Parse a JSON [X,Y] array into FVector2D with a default value.
-static FVector2D ParseVector2D(const TSharedPtr<FJsonObject>& Params, const FString& FieldName, FVector2D Default)
-{
-	const TArray<TSharedPtr<FJsonValue>>* Arr;
-	if (Params->TryGetArrayField(FieldName, Arr) && Arr->Num() >= 2)
-	{
-		Default.X = (*Arr)[0]->AsNumber();
-		Default.Y = (*Arr)[1]->AsNumber();
-	}
-	return Default;
-}
-
-// Helper: Parse a JSON [R,G,B,A] array into FLinearColor with a default value.
-static FLinearColor ParseColor(const TSharedPtr<FJsonObject>& Params, const FString& FieldName, FLinearColor Default)
-{
-	const TArray<TSharedPtr<FJsonValue>>* Arr;
-	if (Params->TryGetArrayField(FieldName, Arr) && Arr->Num() >= 3)
-	{
-		Default.R = static_cast<float>((*Arr)[0]->AsNumber());
-		Default.G = static_cast<float>((*Arr)[1]->AsNumber());
-		Default.B = static_cast<float>((*Arr)[2]->AsNumber());
-		Default.A = Arr->Num() >= 4 ? static_cast<float>((*Arr)[3]->AsNumber()) : 1.0f;
-	}
-	return Default;
-}
-
-// Helper: Common preamble for "add X to widget" handlers.
-// Returns nullptr on success (fills out WidgetBlueprint, RootCanvas), or an error response.
-static TSharedPtr<FJsonObject> LoadWidgetAndCanvas(
-	const TSharedPtr<FJsonObject>& Params,
-	FString& OutBlueprintName,
-	FString& OutWidgetName,
-	UWidgetBlueprint*& OutBlueprint,
-	UCanvasPanel*& OutCanvas)
-{
-	if (!Params->TryGetStringField(TEXT("blueprint_name"), OutBlueprintName))
-		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
-	if (!Params->TryGetStringField(TEXT("widget_name"), OutWidgetName))
-		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'widget_name' parameter"));
-
-	OutBlueprint = FindWidgetBlueprint(OutBlueprintName);
-	if (!OutBlueprint)
-		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Widget Blueprint '%s' not found"), *OutBlueprintName));
-
-	OutCanvas = Cast<UCanvasPanel>(OutBlueprint->WidgetTree->RootWidget);
-	if (!OutCanvas)
-		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Root Canvas Panel not found"));
-
-	return nullptr; // Success
-}
-
-// Helper: Compile, mark dirty. Does NOT save to disk (callers opt-in).
-static void CompileWidget(UWidgetBlueprint* WidgetBlueprint)
-{
-	WidgetBlueprint->MarkPackageDirty();
-	FKismetEditorUtilities::CompileBlueprint(WidgetBlueprint);
 }
 
 TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleAddImageToWidget(const TSharedPtr<FJsonObject>& Params)
 {
 	FString BlueprintName, WidgetName;
 	UWidgetBlueprint* WidgetBlueprint = nullptr;
+	UPanelWidget* ParentWidget = nullptr;
 	UCanvasPanel* RootCanvas = nullptr;
-	if (auto Err = LoadWidgetAndCanvas(Params, BlueprintName, WidgetName, WidgetBlueprint, RootCanvas))
+	if (auto Err = LoadWidgetAndParent(Params, BlueprintName, WidgetName, WidgetBlueprint, ParentWidget, RootCanvas))
 		return Err;
 
 	// Create Image widget
@@ -888,12 +839,8 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleAddImageToWidget(const TSha
 		}
 	}
 
-	// Add to canvas
-	FVector2D Position = ParseVector2D(Params, TEXT("position"), FVector2D(0, 0));
-	FVector2D Size = ParseVector2D(Params, TEXT("size"), FVector2D(100, 100));
-	UCanvasPanelSlot* Slot = RootCanvas->AddChildToCanvas(ImageWidget);
-	Slot->SetPosition(Position);
-	Slot->SetSize(Size);
+	// Add to parent
+	AddChildToParent(ImageWidget, ParentWidget, RootCanvas, Params, FVector2D(100, 100));
 
 	CompileWidget(WidgetBlueprint);
 
@@ -907,19 +854,16 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleAddVerticalBoxToWidget(cons
 {
 	FString BlueprintName, WidgetName;
 	UWidgetBlueprint* WidgetBlueprint = nullptr;
+	UPanelWidget* ParentWidget = nullptr;
 	UCanvasPanel* RootCanvas = nullptr;
-	if (auto Err = LoadWidgetAndCanvas(Params, BlueprintName, WidgetName, WidgetBlueprint, RootCanvas))
+	if (auto Err = LoadWidgetAndParent(Params, BlueprintName, WidgetName, WidgetBlueprint, ParentWidget, RootCanvas))
 		return Err;
 
 	UVerticalBox* VBox = WidgetBlueprint->WidgetTree->ConstructWidget<UVerticalBox>(UVerticalBox::StaticClass(), *WidgetName);
 	if (!VBox)
 		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create VerticalBox widget"));
 
-	FVector2D Position = ParseVector2D(Params, TEXT("position"), FVector2D(0, 0));
-	FVector2D Size = ParseVector2D(Params, TEXT("size"), FVector2D(200, 400));
-	UCanvasPanelSlot* Slot = RootCanvas->AddChildToCanvas(VBox);
-	Slot->SetPosition(Position);
-	Slot->SetSize(Size);
+	AddChildToParent(VBox, ParentWidget, RootCanvas, Params, FVector2D(200, 400));
 
 	CompileWidget(WidgetBlueprint);
 
@@ -932,19 +876,16 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleAddHorizontalBoxToWidget(co
 {
 	FString BlueprintName, WidgetName;
 	UWidgetBlueprint* WidgetBlueprint = nullptr;
+	UPanelWidget* ParentWidget = nullptr;
 	UCanvasPanel* RootCanvas = nullptr;
-	if (auto Err = LoadWidgetAndCanvas(Params, BlueprintName, WidgetName, WidgetBlueprint, RootCanvas))
+	if (auto Err = LoadWidgetAndParent(Params, BlueprintName, WidgetName, WidgetBlueprint, ParentWidget, RootCanvas))
 		return Err;
 
 	UHorizontalBox* HBox = WidgetBlueprint->WidgetTree->ConstructWidget<UHorizontalBox>(UHorizontalBox::StaticClass(), *WidgetName);
 	if (!HBox)
 		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create HorizontalBox widget"));
 
-	FVector2D Position = ParseVector2D(Params, TEXT("position"), FVector2D(0, 0));
-	FVector2D Size = ParseVector2D(Params, TEXT("size"), FVector2D(400, 200));
-	UCanvasPanelSlot* Slot = RootCanvas->AddChildToCanvas(HBox);
-	Slot->SetPosition(Position);
-	Slot->SetSize(Size);
+	AddChildToParent(HBox, ParentWidget, RootCanvas, Params, FVector2D(400, 200));
 
 	CompileWidget(WidgetBlueprint);
 
@@ -957,19 +898,16 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleAddOverlayToWidget(const TS
 {
 	FString BlueprintName, WidgetName;
 	UWidgetBlueprint* WidgetBlueprint = nullptr;
+	UPanelWidget* ParentWidget = nullptr;
 	UCanvasPanel* RootCanvas = nullptr;
-	if (auto Err = LoadWidgetAndCanvas(Params, BlueprintName, WidgetName, WidgetBlueprint, RootCanvas))
+	if (auto Err = LoadWidgetAndParent(Params, BlueprintName, WidgetName, WidgetBlueprint, ParentWidget, RootCanvas))
 		return Err;
 
 	UOverlay* OverlayWidget = WidgetBlueprint->WidgetTree->ConstructWidget<UOverlay>(UOverlay::StaticClass(), *WidgetName);
 	if (!OverlayWidget)
 		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create Overlay widget"));
 
-	FVector2D Position = ParseVector2D(Params, TEXT("position"), FVector2D(0, 0));
-	FVector2D Size = ParseVector2D(Params, TEXT("size"), FVector2D(300, 300));
-	UCanvasPanelSlot* Slot = RootCanvas->AddChildToCanvas(OverlayWidget);
-	Slot->SetPosition(Position);
-	Slot->SetSize(Size);
+	AddChildToParent(OverlayWidget, ParentWidget, RootCanvas, Params, FVector2D(300, 300));
 
 	CompileWidget(WidgetBlueprint);
 
@@ -982,8 +920,9 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleAddSizeBoxToWidget(const TS
 {
 	FString BlueprintName, WidgetName;
 	UWidgetBlueprint* WidgetBlueprint = nullptr;
+	UPanelWidget* ParentWidget = nullptr;
 	UCanvasPanel* RootCanvas = nullptr;
-	if (auto Err = LoadWidgetAndCanvas(Params, BlueprintName, WidgetName, WidgetBlueprint, RootCanvas))
+	if (auto Err = LoadWidgetAndParent(Params, BlueprintName, WidgetName, WidgetBlueprint, ParentWidget, RootCanvas))
 		return Err;
 
 	USizeBox* SizeBoxWidget = WidgetBlueprint->WidgetTree->ConstructWidget<USizeBox>(USizeBox::StaticClass(), *WidgetName);
@@ -1003,14 +942,9 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleAddSizeBoxToWidget(const TS
 		SizeBoxWidget->SetHeightOverride(static_cast<float>(HeightOverride));
 	}
 
-	FVector2D Position = ParseVector2D(Params, TEXT("position"), FVector2D(0, 0));
-	UCanvasPanelSlot* Slot = RootCanvas->AddChildToCanvas(SizeBoxWidget);
-	Slot->SetPosition(Position);
-	// If overrides are set, use them as slot size; otherwise use default
-	FVector2D Size = ParseVector2D(Params, TEXT("size"), FVector2D(
+	AddChildToParent(SizeBoxWidget, ParentWidget, RootCanvas, Params, FVector2D(
 		WidthOverride > 0 ? WidthOverride : 200,
 		HeightOverride > 0 ? HeightOverride : 200));
-	Slot->SetSize(Size);
 
 	CompileWidget(WidgetBlueprint);
 
@@ -1025,8 +959,9 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleAddBorderToWidget(const TSh
 {
 	FString BlueprintName, WidgetName;
 	UWidgetBlueprint* WidgetBlueprint = nullptr;
+	UPanelWidget* ParentWidget = nullptr;
 	UCanvasPanel* RootCanvas = nullptr;
-	if (auto Err = LoadWidgetAndCanvas(Params, BlueprintName, WidgetName, WidgetBlueprint, RootCanvas))
+	if (auto Err = LoadWidgetAndParent(Params, BlueprintName, WidgetName, WidgetBlueprint, ParentWidget, RootCanvas))
 		return Err;
 
 	UBorder* BorderWidget = WidgetBlueprint->WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass(), *WidgetName);
@@ -1037,11 +972,7 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleAddBorderToWidget(const TSh
 	FLinearColor BgColor = ParseColor(Params, TEXT("background_color"), FLinearColor(0.1f, 0.1f, 0.1f, 1.0f));
 	BorderWidget->SetBrushColor(BgColor);
 
-	FVector2D Position = ParseVector2D(Params, TEXT("position"), FVector2D(0, 0));
-	FVector2D Size = ParseVector2D(Params, TEXT("size"), FVector2D(200, 200));
-	UCanvasPanelSlot* Slot = RootCanvas->AddChildToCanvas(BorderWidget);
-	Slot->SetPosition(Position);
-	Slot->SetSize(Size);
+	AddChildToParent(BorderWidget, ParentWidget, RootCanvas, Params, FVector2D(200, 200));
 
 	CompileWidget(WidgetBlueprint);
 
@@ -1054,8 +985,9 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleAddSpacerToWidget(const TSh
 {
 	FString BlueprintName, WidgetName;
 	UWidgetBlueprint* WidgetBlueprint = nullptr;
+	UPanelWidget* ParentWidget = nullptr;
 	UCanvasPanel* RootCanvas = nullptr;
-	if (auto Err = LoadWidgetAndCanvas(Params, BlueprintName, WidgetName, WidgetBlueprint, RootCanvas))
+	if (auto Err = LoadWidgetAndParent(Params, BlueprintName, WidgetName, WidgetBlueprint, ParentWidget, RootCanvas))
 		return Err;
 
 	USpacer* SpacerWidget = WidgetBlueprint->WidgetTree->ConstructWidget<USpacer>(USpacer::StaticClass(), *WidgetName);
@@ -1065,10 +997,7 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleAddSpacerToWidget(const TSh
 	FVector2D SpacerSize = ParseVector2D(Params, TEXT("size"), FVector2D(100, 20));
 	SpacerWidget->SetSize(SpacerSize);
 
-	FVector2D Position = ParseVector2D(Params, TEXT("position"), FVector2D(0, 0));
-	UCanvasPanelSlot* Slot = RootCanvas->AddChildToCanvas(SpacerWidget);
-	Slot->SetPosition(Position);
-	Slot->SetSize(SpacerSize);
+	AddChildToParent(SpacerWidget, ParentWidget, RootCanvas, Params, SpacerSize);
 
 	CompileWidget(WidgetBlueprint);
 
