@@ -29,4 +29,25 @@ private:
 
 	/** Create a new Niagara system asset (empty or duplicated from a template). */
 	TSharedPtr<FJsonObject> HandleCreateNiagaraSystem(const TSharedPtr<FJsonObject>& Params);
+
+	/** Set a rapid-iteration parameter on an emitter's spawn or update script (asset-level edit). */
+	TSharedPtr<FJsonObject> HandleSetNiagaraRapidParameter(const TSharedPtr<FJsonObject>& Params);
+
+	/** Modify emitter-level properties (sim target, local space, determinism, enabled, etc.). */
+	TSharedPtr<FJsonObject> HandleModifyEmitterProperties(const TSharedPtr<FJsonObject>& Params);
+
+	/** List available Niagara emitter templates (engine built-in). */
+	TSharedPtr<FJsonObject> HandleListNiagaraEmitterTemplates(const TSharedPtr<FJsonObject>& Params);
+
+	/** Add an emitter to a system by copying from another system, engine template, or duplicating within the same system. */
+	TSharedPtr<FJsonObject> HandleAddEmitterToSystem(const TSharedPtr<FJsonObject>& Params);
+
+	/** Remove an emitter from a system by name. */
+	TSharedPtr<FJsonObject> HandleRemoveEmitterFromSystem(const TSharedPtr<FJsonObject>& Params);
+
+	/** Add a module script to an emitter's spawn or update stack. */
+	TSharedPtr<FJsonObject> HandleAddModuleToEmitter(const TSharedPtr<FJsonObject>& Params);
+
+	/** Remove a module from an emitter's spawn or update stack. */
+	TSharedPtr<FJsonObject> HandleRemoveModuleFromEmitter(const TSharedPtr<FJsonObject>& Params);
 };
