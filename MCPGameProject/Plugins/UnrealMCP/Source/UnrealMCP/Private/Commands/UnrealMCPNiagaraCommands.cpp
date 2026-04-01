@@ -15,6 +15,7 @@
 #include "NiagaraNodeOutput.h"
 #include "NiagaraNodeFunctionCall.h"
 #include "ViewModels/Stack/NiagaraStackGraphUtilities.h"
+#include "EdGraphSchema_Niagara.h"
 #include "NiagaraEditorUtilities.h"
 #include "NiagaraSystemEditorData.h"
 #include "NiagaraOverviewNode.h"
@@ -368,6 +369,8 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleReadNiagaraSystem(const
 				EmitterObj->SetObjectField(SectionName, ScriptSection);
 			};
 
+			AddScriptModules(TEXT("emitter_spawn_script"), EmitterData->EmitterSpawnScriptProps.Script);
+			AddScriptModules(TEXT("emitter_update_script"), EmitterData->EmitterUpdateScriptProps.Script);
 			AddScriptModules(TEXT("spawn_script"), EmitterData->SpawnScriptProps.Script);
 			AddScriptModules(TEXT("update_script"), EmitterData->UpdateScriptProps.Script);
 
@@ -996,8 +999,12 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleSetNiagaraRapidParamete
 		Script = EmitterData->SpawnScriptProps.Script;
 	else if (ScriptType == TEXT("update"))
 		Script = EmitterData->UpdateScriptProps.Script;
+	else if (ScriptType == TEXT("emitter_spawn"))
+		Script = EmitterData->EmitterSpawnScriptProps.Script;
+	else if (ScriptType == TEXT("emitter_update"))
+		Script = EmitterData->EmitterUpdateScriptProps.Script;
 	else
-		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Invalid script_type '%s'. Must be 'spawn' or 'update'."), *ScriptType));
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Invalid script_type '%s'. Must be 'spawn', 'update', 'emitter_spawn', or 'emitter_update'."), *ScriptType));
 
 	if (!Script)
 		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("No %s script found on emitter '%s'"), *ScriptType, *EmitterName));
@@ -1628,8 +1635,12 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleAddModuleToEmitter(cons
 	UNiagaraScript* TargetScript = nullptr;
 	if (Usage == ENiagaraScriptUsage::ParticleSpawnScript)
 		TargetScript = EmitterData->SpawnScriptProps.Script;
-	else
+	else if (Usage == ENiagaraScriptUsage::ParticleUpdateScript)
 		TargetScript = EmitterData->UpdateScriptProps.Script;
+	else if (Usage == ENiagaraScriptUsage::EmitterSpawnScript)
+		TargetScript = EmitterData->EmitterSpawnScriptProps.Script;
+	else if (Usage == ENiagaraScriptUsage::EmitterUpdateScript)
+		TargetScript = EmitterData->EmitterUpdateScriptProps.Script;
 
 	if (!TargetScript)
 		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("No %s script found on emitter '%s'"), *ScriptType, *EmitterName));
@@ -1668,6 +1679,47 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleAddModuleToEmitter(cons
 	}
 	if (!ModuleScript)
 		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Module script '%s' not found. Check available modules in the engine Niagara content."), *ModuleName));
+
+	// Smart insertion: if no index specified and we're in the update stack,
+	// insert before SolveForcesAndVelocity so force modules are evaluated correctly.
+	if (TargetIndex == INDEX_NONE && Usage == ENiagaraScriptUsage::ParticleUpdateScript)
+	{
+		// Walk backward from OutputNode through parameter-map pin links to build ordered module list
+		TArray<UNiagaraNodeFunctionCall*> OrderedModules;
+		UEdGraphNode* WalkNode = OutputNode;
+		while (WalkNode != nullptr)
+		{
+			UEdGraphPin* InputMapPin = nullptr;
+			for (UEdGraphPin* Pin : WalkNode->Pins)
+			{
+				if (Pin->Direction == EGPD_Input)
+				{
+					FNiagaraTypeDefinition PinDef = UEdGraphSchema_Niagara::PinToTypeDefinition(Pin);
+					if (PinDef == FNiagaraTypeDefinition::GetParameterMapDef())
+					{
+						InputMapPin = Pin;
+						break;
+					}
+				}
+			}
+			if (!InputMapPin || InputMapPin->LinkedTo.Num() == 0)
+				break;
+			UEdGraphNode* PrevNode = InputMapPin->LinkedTo[0]->GetOwningNode();
+			UNiagaraNodeFunctionCall* FuncNode = Cast<UNiagaraNodeFunctionCall>(PrevNode);
+			if (FuncNode)
+				OrderedModules.Insert(FuncNode, 0);
+			WalkNode = PrevNode;
+		}
+
+		for (int32 i = 0; i < OrderedModules.Num(); ++i)
+		{
+			if (OrderedModules[i]->GetFunctionName().Contains(TEXT("SolveForcesAndVelocity")))
+			{
+				TargetIndex = i;
+				break;
+			}
+		}
+	}
 
 	// Add the module to the stack
 	Source->NodeGraph->Modify();
@@ -1722,8 +1774,12 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleRemoveModuleFromEmitter
 		Usage = ENiagaraScriptUsage::ParticleSpawnScript;
 	else if (ScriptType == TEXT("update"))
 		Usage = ENiagaraScriptUsage::ParticleUpdateScript;
+	else if (ScriptType == TEXT("emitter_spawn"))
+		Usage = ENiagaraScriptUsage::EmitterSpawnScript;
+	else if (ScriptType == TEXT("emitter_update"))
+		Usage = ENiagaraScriptUsage::EmitterUpdateScript;
 	else
-		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unsupported script_type: '%s'. Use 'spawn' or 'update'."), *ScriptType));
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unsupported script_type: '%s'. Use 'spawn', 'update', 'emitter_spawn', or 'emitter_update'."), *ScriptType));
 
 	// Find the emitter
 	const TArray<FNiagaraEmitterHandle>& EmitterHandles = System->GetEmitterHandles();
@@ -1752,8 +1808,12 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleRemoveModuleFromEmitter
 	UNiagaraScript* TargetScript = nullptr;
 	if (Usage == ENiagaraScriptUsage::ParticleSpawnScript)
 		TargetScript = EmitterData->SpawnScriptProps.Script;
-	else
+	else if (Usage == ENiagaraScriptUsage::ParticleUpdateScript)
 		TargetScript = EmitterData->UpdateScriptProps.Script;
+	else if (Usage == ENiagaraScriptUsage::EmitterSpawnScript)
+		TargetScript = EmitterData->EmitterSpawnScriptProps.Script;
+	else if (Usage == ENiagaraScriptUsage::EmitterUpdateScript)
+		TargetScript = EmitterData->EmitterUpdateScriptProps.Script;
 
 	if (!TargetScript)
 		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("No %s script found on emitter '%s'"), *ScriptType, *EmitterName));
