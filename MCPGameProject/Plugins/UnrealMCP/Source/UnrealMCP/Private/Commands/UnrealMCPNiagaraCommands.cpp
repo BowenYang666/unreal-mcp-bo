@@ -15,6 +15,7 @@
 #include "NiagaraNodeOutput.h"
 #include "NiagaraNodeFunctionCall.h"
 #include "ViewModels/Stack/NiagaraStackGraphUtilities.h"
+#include "NiagaraEditorUtilities.h"
 #include "NiagaraSystemEditorData.h"
 #include "NiagaraOverviewNode.h"
 
@@ -1381,9 +1382,20 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleAddEmitterToSystem(cons
 		if (!TemplateEmitter)
 			return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Template emitter '%s' not found. Use list_niagara_emitter_templates to see available templates."), *TemplateName));
 
-		FNiagaraEmitterHandle NewHandle = TargetSystem->AddEmitterHandle(*TemplateEmitter, FName(*NewEmitterName), TemplateEmitter->GetExposedVersion().VersionGuid);
+		// Use the editor utility which properly rebuilds emitter nodes for compilation
+		FGuid NewHandleId = FNiagaraEditorUtilities::AddEmitterToSystem(*TargetSystem, *TemplateEmitter, TemplateEmitter->GetExposedVersion().VersionGuid);
 
-		SyncOverviewGraph(TargetSystem);
+		// Find the new handle by ID to get the actual assigned name
+		FString ActualEmitterName;
+		for (const FNiagaraEmitterHandle& Handle : TargetSystem->GetEmitterHandles())
+		{
+			if (Handle.GetId() == NewHandleId)
+			{
+				ActualEmitterName = Handle.GetName().ToString();
+				break;
+			}
+		}
+
 		TargetSystem->RequestCompile(true);
 		TargetSystem->WaitForCompilationComplete();
 		TargetSystem->MarkPackageDirty();
@@ -1395,7 +1407,7 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleAddEmitterToSystem(cons
 		ResultJson->SetStringField(TEXT("message"), TEXT("Emitter added from engine template"));
 		ResultJson->SetStringField(TEXT("system"), TargetSystem->GetName());
 		ResultJson->SetStringField(TEXT("template"), TemplateName);
-		ResultJson->SetStringField(TEXT("new_emitter"), NewHandle.GetName().ToString());
+		ResultJson->SetStringField(TEXT("new_emitter"), ActualEmitterName);
 		ResultJson->SetNumberField(TEXT("emitter_count"), TargetSystem->GetEmitterHandles().Num());
 		return ResultJson;
 	}
@@ -1442,6 +1454,7 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleAddEmitterToSystem(cons
 		FNiagaraEmitterHandle NewHandle = TargetSystem->DuplicateEmitterHandle(*SourceHandle, FName(*NewEmitterName));
 
 		SyncOverviewGraph(TargetSystem);
+		TargetSystem->InvalidateCachedData();
 		TargetSystem->RequestCompile(true);
 		TargetSystem->WaitForCompilationComplete();
 		TargetSystem->MarkPackageDirty();
@@ -1462,9 +1475,20 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleAddEmitterToSystem(cons
 	if (!SourceInstance.Emitter)
 		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Source emitter instance is null"));
 
-	FNiagaraEmitterHandle NewHandle = TargetSystem->AddEmitterHandle(*SourceInstance.Emitter, FName(*NewEmitterName), SourceInstance.Version);
+	// Use the editor utility which properly rebuilds emitter nodes for compilation
+	FGuid NewHandleId = FNiagaraEditorUtilities::AddEmitterToSystem(*TargetSystem, *SourceInstance.Emitter, SourceInstance.Version);
 
-	SyncOverviewGraph(TargetSystem);
+	// Find the new handle by ID to get the actual assigned name
+	FString ActualEmitterName;
+	for (const FNiagaraEmitterHandle& Handle : TargetSystem->GetEmitterHandles())
+	{
+		if (Handle.GetId() == NewHandleId)
+		{
+			ActualEmitterName = Handle.GetName().ToString();
+			break;
+		}
+	}
+
 	TargetSystem->RequestCompile(true);
 	TargetSystem->WaitForCompilationComplete();
 	TargetSystem->MarkPackageDirty();
@@ -1477,7 +1501,7 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleAddEmitterToSystem(cons
 	ResultJson->SetStringField(TEXT("system"), TargetSystem->GetName());
 	ResultJson->SetStringField(TEXT("source_system"), SourceSystem->GetName());
 	ResultJson->SetStringField(TEXT("source_emitter"), SourceEmitterName);
-	ResultJson->SetStringField(TEXT("new_emitter"), NewHandle.GetName().ToString());
+	ResultJson->SetStringField(TEXT("new_emitter"), ActualEmitterName);
 	ResultJson->SetNumberField(TEXT("emitter_count"), TargetSystem->GetEmitterHandles().Num());
 	return ResultJson;
 }
@@ -1517,6 +1541,7 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleRemoveEmitterFromSystem
 	System->RemoveEmitterHandle(*TargetHandle);
 
 	SyncOverviewGraph(System);
+	System->InvalidateCachedData();
 	System->RequestCompile(true);
 	System->WaitForCompilationComplete();
 	System->MarkPackageDirty();
