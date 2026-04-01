@@ -443,3 +443,123 @@ def register_niagara_tools(mcp: FastMCP):
         except Exception as e:
             logger.error(f"Error modifying emitter properties: {e}")
             return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def add_emitter_to_system(
+        ctx: Context,
+        system_name: str,
+        source_emitter_name: str,
+        new_emitter_name: str = "",
+        source_system_name: str = "",
+        source_system_path: str = ""
+    ) -> Dict[str, Any]:
+        """Add an emitter to a Niagara system by copying from another system or duplicating within the same system.
+
+        If source_system_name/path is specified, copies the emitter from that system.
+        If omitted, duplicates the emitter within the same system.
+        The system is automatically recompiled after the change.
+
+        Args:
+            ctx: The MCP context
+            system_name: Name of the target system to add the emitter to (e.g. "NS_MyExplosion")
+            source_emitter_name: Name of the emitter to copy (e.g. "Flare")
+            new_emitter_name: Name for the new emitter (default: same as source)
+            source_system_name: Name of the system to copy from (omit to duplicate within same system)
+            source_system_path: Path of the system to copy from (alternative to source_system_name)
+
+        Returns:
+            Dict with status, system, new_emitter name, emitter_count
+
+        Examples:
+            add_emitter_to_system(system_name="NS_MyExplosion",
+                source_emitter_name="Flare", source_system_name="NS_Explosion_Cannon",
+                new_emitter_name="MyFlare")
+            add_emitter_to_system(system_name="NS_MyExplosion",
+                source_emitter_name="SimpleSpriteBurst", new_emitter_name="SpriteBurst_Copy")
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                logger.error("Failed to connect to Unreal Engine")
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            params = {
+                "system_name": system_name,
+                "source_emitter_name": source_emitter_name,
+            }
+            if new_emitter_name:
+                params["new_emitter_name"] = new_emitter_name
+            if source_system_name:
+                params["source_system_name"] = source_system_name
+            if source_system_path:
+                params["source_system_path"] = source_system_path
+
+            response = unreal.send_command("add_emitter_to_system", params)
+
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+
+            result = response.get("result", response)
+            logger.info(f"Added emitter: {result.get('new_emitter', '?')} to {result.get('system', '?')}")
+            return result
+
+        except Exception as e:
+            logger.error(f"Error adding emitter: {e}")
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def remove_emitter_from_system(
+        ctx: Context,
+        system_name: str,
+        emitter_name: str
+    ) -> Dict[str, Any]:
+        """Remove an emitter from a Niagara system by name.
+
+        The system is automatically recompiled after the removal.
+        Use save_asset to persist the change to disk.
+
+        Args:
+            ctx: The MCP context
+            system_name: Name of the Niagara system (e.g. "NS_MyExplosion")
+            emitter_name: Name of the emitter to remove (e.g. "SimpleSpriteBurst")
+
+        Returns:
+            Dict with status, system, removed_emitter, old/new emitter counts
+
+        Examples:
+            remove_emitter_from_system(system_name="NS_MyExplosion",
+                emitter_name="SimpleSpriteBurst")
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                logger.error("Failed to connect to Unreal Engine")
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            params = {
+                "system_name": system_name,
+                "emitter_name": emitter_name,
+            }
+
+            response = unreal.send_command("remove_emitter_from_system", params)
+
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+
+            result = response.get("result", response)
+            logger.info(f"Removed emitter: {emitter_name} from {result.get('system', '?')}")
+            return result
+
+        except Exception as e:
+            logger.error(f"Error removing emitter: {e}")
+            return {"success": False, "message": str(e)}

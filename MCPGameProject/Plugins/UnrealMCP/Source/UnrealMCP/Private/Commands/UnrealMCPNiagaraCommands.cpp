@@ -162,6 +162,14 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleCommand(const FString& 
 	{
 		return HandleModifyEmitterProperties(Params);
 	}
+	else if (CommandType == TEXT("add_emitter_to_system"))
+	{
+		return HandleAddEmitterToSystem(Params);
+	}
+	else if (CommandType == TEXT("remove_emitter_from_system"))
+	{
+		return HandleRemoveEmitterFromSystem(Params);
+	}
 
 	return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown Niagara command: %s"), *CommandType));
 }
@@ -1217,5 +1225,143 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleModifyEmitterProperties
 	ResultJson->SetNumberField(TEXT("changes_count"), ChangeCount);
 	ResultJson->SetObjectField(TEXT("changes"), ChangesObj);
 
+	return ResultJson;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// add_emitter_to_system
+// ─────────────────────────────────────────────────────────────────────────────
+
+TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleAddEmitterToSystem(const TSharedPtr<FJsonObject>& Params)
+{
+	if (!Params->HasField(TEXT("source_emitter_name")))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing required parameter: 'source_emitter_name'"));
+
+	FString LoadError;
+	UNiagaraSystem* TargetSystem = LoadNiagaraSystemByNameOrPath(Params, LoadError);
+	if (!TargetSystem)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(LoadError);
+
+	FString SourceEmitterName = Params->GetStringField(TEXT("source_emitter_name"));
+	FString NewEmitterName = SourceEmitterName;
+	if (Params->HasField(TEXT("new_emitter_name")))
+		NewEmitterName = Params->GetStringField(TEXT("new_emitter_name"));
+
+	// Determine source: same system (duplicate) or different system (copy)
+	UNiagaraSystem* SourceSystem = TargetSystem;
+	if (Params->HasField(TEXT("source_system_name")) || Params->HasField(TEXT("source_system_path")))
+	{
+		// Build a temp params object for loading the source system
+		TSharedPtr<FJsonObject> SourceParams = MakeShared<FJsonObject>();
+		if (Params->HasField(TEXT("source_system_path")))
+			SourceParams->SetStringField(TEXT("path"), Params->GetStringField(TEXT("source_system_path")));
+		else
+			SourceParams->SetStringField(TEXT("system_name"), Params->GetStringField(TEXT("source_system_name")));
+
+		FString SourceError;
+		SourceSystem = LoadNiagaraSystemByNameOrPath(SourceParams, SourceError);
+		if (!SourceSystem)
+			return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Source system error: %s"), *SourceError));
+	}
+
+	// Find source emitter handle
+	const TArray<FNiagaraEmitterHandle>& SourceHandles = SourceSystem->GetEmitterHandles();
+	const FNiagaraEmitterHandle* SourceHandle = nullptr;
+	for (const FNiagaraEmitterHandle& Handle : SourceHandles)
+	{
+		if (Handle.GetName().ToString().Equals(SourceEmitterName, ESearchCase::IgnoreCase))
+		{
+			SourceHandle = &Handle;
+			break;
+		}
+	}
+	if (!SourceHandle)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Emitter '%s' not found in source system '%s'"), *SourceEmitterName, *SourceSystem->GetName()));
+
+	// If duplicating within same system, use DuplicateEmitterHandle
+	if (SourceSystem == TargetSystem)
+	{
+		FNiagaraEmitterHandle NewHandle = TargetSystem->DuplicateEmitterHandle(*SourceHandle, FName(*NewEmitterName));
+
+		TargetSystem->RequestCompile(true);
+		TargetSystem->WaitForCompilationComplete();
+		TargetSystem->MarkPackageDirty();
+
+		TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
+		ResultJson->SetStringField(TEXT("status"), TEXT("success"));
+		ResultJson->SetStringField(TEXT("message"), TEXT("Emitter duplicated within system"));
+		ResultJson->SetStringField(TEXT("system"), TargetSystem->GetName());
+		ResultJson->SetStringField(TEXT("new_emitter"), NewHandle.GetName().ToString());
+		ResultJson->SetNumberField(TEXT("emitter_count"), TargetSystem->GetEmitterHandles().Num());
+		return ResultJson;
+	}
+
+	// Copy from different system using AddEmitterHandle
+	FVersionedNiagaraEmitter SourceInstance = SourceHandle->GetInstance();
+	if (!SourceInstance.Emitter)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Source emitter instance is null"));
+
+	FNiagaraEmitterHandle NewHandle = TargetSystem->AddEmitterHandle(*SourceInstance.Emitter, FName(*NewEmitterName), SourceInstance.Version);
+
+	TargetSystem->RequestCompile(true);
+	TargetSystem->WaitForCompilationComplete();
+	TargetSystem->MarkPackageDirty();
+
+	TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
+	ResultJson->SetStringField(TEXT("status"), TEXT("success"));
+	ResultJson->SetStringField(TEXT("message"), TEXT("Emitter copied from source system"));
+	ResultJson->SetStringField(TEXT("system"), TargetSystem->GetName());
+	ResultJson->SetStringField(TEXT("source_system"), SourceSystem->GetName());
+	ResultJson->SetStringField(TEXT("source_emitter"), SourceEmitterName);
+	ResultJson->SetStringField(TEXT("new_emitter"), NewHandle.GetName().ToString());
+	ResultJson->SetNumberField(TEXT("emitter_count"), TargetSystem->GetEmitterHandles().Num());
+	return ResultJson;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// remove_emitter_from_system
+// ─────────────────────────────────────────────────────────────────────────────
+
+TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleRemoveEmitterFromSystem(const TSharedPtr<FJsonObject>& Params)
+{
+	if (!Params->HasField(TEXT("emitter_name")))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing required parameter: 'emitter_name'"));
+
+	FString LoadError;
+	UNiagaraSystem* System = LoadNiagaraSystemByNameOrPath(Params, LoadError);
+	if (!System)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(LoadError);
+
+	FString EmitterName = Params->GetStringField(TEXT("emitter_name"));
+
+	// Find emitter handle
+	TArray<FNiagaraEmitterHandle>& EmitterHandles = System->GetEmitterHandles();
+	const FNiagaraEmitterHandle* TargetHandle = nullptr;
+	for (const FNiagaraEmitterHandle& Handle : EmitterHandles)
+	{
+		if (Handle.GetName().ToString().Equals(EmitterName, ESearchCase::IgnoreCase))
+		{
+			TargetHandle = &Handle;
+			break;
+		}
+	}
+	if (!TargetHandle)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Emitter '%s' not found in system '%s'"), *EmitterName, *System->GetName()));
+
+	int32 OldCount = EmitterHandles.Num();
+
+	System->RemoveEmitterHandle(*TargetHandle);
+
+	System->RequestCompile(true);
+	System->WaitForCompilationComplete();
+	System->MarkPackageDirty();
+
+	TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
+	ResultJson->SetStringField(TEXT("status"), TEXT("success"));
+	ResultJson->SetStringField(TEXT("message"), FString::Printf(TEXT("Emitter '%s' removed from system"), *EmitterName));
+	ResultJson->SetStringField(TEXT("system"), System->GetName());
+	ResultJson->SetStringField(TEXT("removed_emitter"), EmitterName);
+	ResultJson->SetNumberField(TEXT("old_emitter_count"), OldCount);
+	ResultJson->SetNumberField(TEXT("new_emitter_count"), System->GetEmitterHandles().Num());
 	return ResultJson;
 }
