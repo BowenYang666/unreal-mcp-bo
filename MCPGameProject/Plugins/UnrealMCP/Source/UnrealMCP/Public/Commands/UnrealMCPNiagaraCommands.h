@@ -44,4 +44,10 @@ private:
 
 	/** Remove an emitter from a system by name. */
 	TSharedPtr<FJsonObject> HandleRemoveEmitterFromSystem(const TSharedPtr<FJsonObject>& Params);
+
+	/** Add a module script to an emitter's spawn or update stack. */
+	TSharedPtr<FJsonObject> HandleAddModuleToEmitter(const TSharedPtr<FJsonObject>& Params);
+
+	/** Remove a module from an emitter's spawn or update stack. */
+	TSharedPtr<FJsonObject> HandleRemoveModuleFromEmitter(const TSharedPtr<FJsonObject>& Params);
 };

@@ -623,3 +623,123 @@ def register_niagara_tools(mcp: FastMCP):
         except Exception as e:
             logger.error(f"Error listing emitter templates: {e}")
             return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def add_module_to_emitter(
+        ctx: Context,
+        system_name: str = "",
+        path: str = "",
+        emitter_name: str = "",
+        module_name: str = "",
+        script_type: str = "update",
+        index: int = -1
+    ) -> Dict[str, Any]:
+        """Add a module script to an emitter's spawn or update stack.
+
+        Adds a Niagara module (e.g. GravityForce, ScaleColor, Drag) to the
+        specified emitter stage. Use read_niagara_system to see existing modules.
+
+        Args:
+            ctx: The MCP context
+            system_name: Name of the Niagara system (e.g. "NS_MyExplosion")
+            path: Content path of the system (alternative to system_name)
+            emitter_name: Name of the emitter within the system
+            module_name: Name of the module script to add (e.g. "GravityForce", "ScaleColor")
+            script_type: Target stage - "spawn" or "update" (default: "update")
+            index: Position in the stack (-1 = append to end)
+
+        Returns:
+            Dict with status, module name, and placement info
+
+        Examples:
+            add_module_to_emitter(system_name="NS_MyExplosion", emitter_name="Burst", module_name="GravityForce", script_type="update")
+            add_module_to_emitter(system_name="NS_MyExplosion", emitter_name="Burst", module_name="ScaleColor", script_type="update", index=0)
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            params = {"emitter_name": emitter_name, "module_name": module_name, "script_type": script_type}
+            if system_name:
+                params["system_name"] = system_name
+            if path:
+                params["path"] = path
+            if index >= 0:
+                params["index"] = index
+
+            response = unreal.send_command("add_module_to_emitter", params)
+
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+
+            result = response.get("result", response)
+            logger.info(f"Added module {module_name} to {emitter_name}/{script_type}")
+            return result
+
+        except Exception as e:
+            logger.error(f"Error adding module: {e}")
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def remove_module_from_emitter(
+        ctx: Context,
+        system_name: str = "",
+        path: str = "",
+        emitter_name: str = "",
+        module_name: str = "",
+        script_type: str = "update"
+    ) -> Dict[str, Any]:
+        """Remove a module from an emitter's spawn or update stack.
+
+        Removes a Niagara module by name from the specified emitter stage.
+        Use read_niagara_system to see module names.
+
+        Args:
+            ctx: The MCP context
+            system_name: Name of the Niagara system (e.g. "NS_MyExplosion")
+            path: Content path of the system (alternative to system_name)
+            emitter_name: Name of the emitter within the system
+            module_name: Name of the module to remove (display name or script name)
+            script_type: Target stage - "spawn" or "update" (default: "update")
+
+        Returns:
+            Dict with status and removed module info
+
+        Examples:
+            remove_module_from_emitter(system_name="NS_MyExplosion", emitter_name="Burst", module_name="GravityForce", script_type="update")
+            remove_module_from_emitter(system_name="NS_MyExplosion", emitter_name="Burst", module_name="Gravity Force")
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            params = {"emitter_name": emitter_name, "module_name": module_name, "script_type": script_type}
+            if system_name:
+                params["system_name"] = system_name
+            if path:
+                params["path"] = path
+
+            response = unreal.send_command("remove_module_from_emitter", params)
+
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+
+            result = response.get("result", response)
+            logger.info(f"Removed module {module_name} from {emitter_name}/{script_type}")
+            return result
+
+        except Exception as e:
+            logger.error(f"Error removing module: {e}")
+            return {"success": False, "message": str(e)}

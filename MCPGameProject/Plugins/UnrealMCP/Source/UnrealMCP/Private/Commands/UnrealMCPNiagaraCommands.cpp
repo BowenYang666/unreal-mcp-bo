@@ -14,6 +14,7 @@
 #include "NiagaraGraph.h"
 #include "NiagaraNodeOutput.h"
 #include "NiagaraNodeFunctionCall.h"
+#include "ViewModels/Stack/NiagaraStackGraphUtilities.h"
 
 // Editor includes
 #include "AssetRegistry/AssetRegistryModule.h"
@@ -173,6 +174,14 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleCommand(const FString& 
 	else if (CommandType == TEXT("remove_emitter_from_system"))
 	{
 		return HandleRemoveEmitterFromSystem(Params);
+	}
+	else if (CommandType == TEXT("add_module_to_emitter"))
+	{
+		return HandleAddModuleToEmitter(Params);
+	}
+	else if (CommandType == TEXT("remove_module_from_emitter"))
+	{
+		return HandleRemoveModuleFromEmitter(Params);
 	}
 
 	return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown Niagara command: %s"), *CommandType));
@@ -1498,5 +1507,239 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleRemoveEmitterFromSystem
 	ResultJson->SetStringField(TEXT("removed_emitter"), EmitterName);
 	ResultJson->SetNumberField(TEXT("old_emitter_count"), OldCount);
 	ResultJson->SetNumberField(TEXT("new_emitter_count"), System->GetEmitterHandles().Num());
+	return ResultJson;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// add_module_to_emitter
+// ─────────────────────────────────────────────────────────────────────────────
+
+TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleAddModuleToEmitter(const TSharedPtr<FJsonObject>& Params)
+{
+	if (!Params->HasField(TEXT("emitter_name")))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing required parameter: 'emitter_name'"));
+	if (!Params->HasField(TEXT("module_name")))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing required parameter: 'module_name'"));
+
+	FString LoadError;
+	UNiagaraSystem* System = LoadNiagaraSystemByNameOrPath(Params, LoadError);
+	if (!System)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(LoadError);
+
+	FString EmitterName = Params->GetStringField(TEXT("emitter_name"));
+	FString ModuleName = Params->GetStringField(TEXT("module_name"));
+	FString ScriptType = TEXT("update");
+	if (Params->HasField(TEXT("script_type")))
+		ScriptType = Params->GetStringField(TEXT("script_type")).ToLower();
+
+	int32 TargetIndex = INDEX_NONE;
+	if (Params->HasField(TEXT("index")))
+		TargetIndex = static_cast<int32>(Params->GetNumberField(TEXT("index")));
+
+	// Determine script usage
+	ENiagaraScriptUsage Usage;
+	if (ScriptType == TEXT("spawn"))
+		Usage = ENiagaraScriptUsage::ParticleSpawnScript;
+	else if (ScriptType == TEXT("update"))
+		Usage = ENiagaraScriptUsage::ParticleUpdateScript;
+	else
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unsupported script_type: '%s'. Use 'spawn' or 'update'."), *ScriptType));
+
+	// Find the emitter
+	const TArray<FNiagaraEmitterHandle>& EmitterHandles = System->GetEmitterHandles();
+	const FNiagaraEmitterHandle* TargetHandle = nullptr;
+	for (const FNiagaraEmitterHandle& Handle : EmitterHandles)
+	{
+		if (Handle.GetName().ToString().Equals(EmitterName, ESearchCase::IgnoreCase))
+		{
+			TargetHandle = &Handle;
+			break;
+		}
+	}
+	if (!TargetHandle)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Emitter '%s' not found in system '%s'"), *EmitterName, *System->GetName()));
+
+	FVersionedNiagaraEmitter VersionedEmitter = TargetHandle->GetInstance();
+	UNiagaraEmitter* Emitter = VersionedEmitter.Emitter;
+	if (!Emitter)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Emitter instance is null"));
+
+	FVersionedNiagaraEmitterData* EmitterData = VersionedEmitter.GetEmitterData();
+	if (!EmitterData)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get emitter data"));
+
+	// Get the script for the target stage
+	UNiagaraScript* TargetScript = nullptr;
+	if (Usage == ENiagaraScriptUsage::ParticleSpawnScript)
+		TargetScript = EmitterData->SpawnScriptProps.Script;
+	else
+		TargetScript = EmitterData->UpdateScriptProps.Script;
+
+	if (!TargetScript)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("No %s script found on emitter '%s'"), *ScriptType, *EmitterName));
+
+	// Get the graph and find the output node
+	UNiagaraScriptSource* Source = Cast<UNiagaraScriptSource>(TargetScript->GetLatestSource());
+	if (!Source || !Source->NodeGraph)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get script graph"));
+
+	UNiagaraNodeOutput* OutputNode = Source->NodeGraph->FindEquivalentOutputNode(Usage);
+	if (!OutputNode)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("No output node found for %s script"), *ScriptType));
+
+	// Find the module script asset by name
+	IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+	FARFilter Filter;
+	Filter.ClassPaths.Add(UNiagaraScript::StaticClass()->GetClassPathName());
+	Filter.bRecursiveClasses = true;
+	Filter.bRecursivePaths = true;
+
+	TArray<FAssetData> AssetDataList;
+	AssetRegistry.GetAssets(Filter, AssetDataList);
+
+	UNiagaraScript* ModuleScript = nullptr;
+	for (const FAssetData& AssetData : AssetDataList)
+	{
+		if (AssetData.AssetName.ToString().Equals(ModuleName, ESearchCase::IgnoreCase))
+		{
+			UNiagaraScript* CandidateScript = Cast<UNiagaraScript>(AssetData.GetAsset());
+			if (CandidateScript && CandidateScript->GetUsage() == ENiagaraScriptUsage::Module)
+			{
+				ModuleScript = CandidateScript;
+				break;
+			}
+		}
+	}
+	if (!ModuleScript)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Module script '%s' not found. Check available modules in the engine Niagara content."), *ModuleName));
+
+	// Add the module to the stack
+	UNiagaraNodeFunctionCall* NewNode = FNiagaraStackGraphUtilities::AddScriptModuleToStack(ModuleScript, *OutputNode, TargetIndex);
+	if (!NewNode)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("AddScriptModuleToStack failed"));
+
+	// Recompile and save
+	System->RequestCompile(true);
+	System->WaitForCompilationComplete();
+	System->MarkPackageDirty();
+	SaveNiagaraSystemAsset(System);
+
+	TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
+	ResultJson->SetStringField(TEXT("status"), TEXT("success"));
+	ResultJson->SetStringField(TEXT("message"), FString::Printf(TEXT("Module '%s' added to %s script of emitter '%s'"), *ModuleName, *ScriptType, *EmitterName));
+	ResultJson->SetStringField(TEXT("system"), System->GetName());
+	ResultJson->SetStringField(TEXT("emitter"), EmitterName);
+	ResultJson->SetStringField(TEXT("module"), NewNode->GetNodeTitle(ENodeTitleType::ListView).ToString());
+	ResultJson->SetStringField(TEXT("script_type"), ScriptType);
+	if (TargetIndex != INDEX_NONE)
+		ResultJson->SetNumberField(TEXT("index"), TargetIndex);
+	return ResultJson;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// remove_module_from_emitter
+// ─────────────────────────────────────────────────────────────────────────────
+
+TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleRemoveModuleFromEmitter(const TSharedPtr<FJsonObject>& Params)
+{
+	if (!Params->HasField(TEXT("emitter_name")))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing required parameter: 'emitter_name'"));
+	if (!Params->HasField(TEXT("module_name")))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing required parameter: 'module_name'"));
+
+	FString LoadError;
+	UNiagaraSystem* System = LoadNiagaraSystemByNameOrPath(Params, LoadError);
+	if (!System)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(LoadError);
+
+	FString EmitterName = Params->GetStringField(TEXT("emitter_name"));
+	FString ModuleName = Params->GetStringField(TEXT("module_name"));
+	FString ScriptType = TEXT("update");
+	if (Params->HasField(TEXT("script_type")))
+		ScriptType = Params->GetStringField(TEXT("script_type")).ToLower();
+
+	// Determine script usage
+	ENiagaraScriptUsage Usage;
+	if (ScriptType == TEXT("spawn"))
+		Usage = ENiagaraScriptUsage::ParticleSpawnScript;
+	else if (ScriptType == TEXT("update"))
+		Usage = ENiagaraScriptUsage::ParticleUpdateScript;
+	else
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unsupported script_type: '%s'. Use 'spawn' or 'update'."), *ScriptType));
+
+	// Find the emitter
+	const TArray<FNiagaraEmitterHandle>& EmitterHandles = System->GetEmitterHandles();
+	const FNiagaraEmitterHandle* TargetHandle = nullptr;
+	for (const FNiagaraEmitterHandle& Handle : EmitterHandles)
+	{
+		if (Handle.GetName().ToString().Equals(EmitterName, ESearchCase::IgnoreCase))
+		{
+			TargetHandle = &Handle;
+			break;
+		}
+	}
+	if (!TargetHandle)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Emitter '%s' not found in system '%s'"), *EmitterName, *System->GetName()));
+
+	FVersionedNiagaraEmitter VersionedEmitter = TargetHandle->GetInstance();
+	UNiagaraEmitter* Emitter = VersionedEmitter.Emitter;
+	if (!Emitter)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Emitter instance is null"));
+
+	FVersionedNiagaraEmitterData* EmitterData = VersionedEmitter.GetEmitterData();
+	if (!EmitterData)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get emitter data"));
+
+	// Get the script for the target stage
+	UNiagaraScript* TargetScript = nullptr;
+	if (Usage == ENiagaraScriptUsage::ParticleSpawnScript)
+		TargetScript = EmitterData->SpawnScriptProps.Script;
+	else
+		TargetScript = EmitterData->UpdateScriptProps.Script;
+
+	if (!TargetScript)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("No %s script found on emitter '%s'"), *ScriptType, *EmitterName));
+
+	// Get the graph and find the module node
+	UNiagaraScriptSource* Source = Cast<UNiagaraScriptSource>(TargetScript->GetLatestSource());
+	if (!Source || !Source->NodeGraph)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get script graph"));
+
+	UNiagaraNodeFunctionCall* TargetModule = nullptr;
+	for (UEdGraphNode* Node : Source->NodeGraph->Nodes)
+	{
+		UNiagaraNodeFunctionCall* FuncNode = Cast<UNiagaraNodeFunctionCall>(Node);
+		if (!FuncNode) continue;
+
+		FString NodeName = FuncNode->GetNodeTitle(ENodeTitleType::ListView).ToString();
+		FString ScriptName = FuncNode->FunctionScript ? FuncNode->FunctionScript->GetName() : TEXT("");
+
+		if (NodeName.Equals(ModuleName, ESearchCase::IgnoreCase) || ScriptName.Equals(ModuleName, ESearchCase::IgnoreCase))
+		{
+			TargetModule = FuncNode;
+			break;
+		}
+	}
+	if (!TargetModule)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Module '%s' not found in %s script of emitter '%s'"), *ModuleName, *ScriptType, *EmitterName));
+
+	FString RemovedName = TargetModule->GetNodeTitle(ENodeTitleType::ListView).ToString();
+
+	// Remove the module node from the graph (Source is already in scope)
+	Source->NodeGraph->RemoveNode(TargetModule);
+
+	// Recompile and save
+	System->RequestCompile(true);
+	System->WaitForCompilationComplete();
+	System->MarkPackageDirty();
+	SaveNiagaraSystemAsset(System);
+
+	TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
+	ResultJson->SetStringField(TEXT("status"), TEXT("success"));
+	ResultJson->SetStringField(TEXT("message"), FString::Printf(TEXT("Module '%s' removed from %s script of emitter '%s'"), *RemovedName, *ScriptType, *EmitterName));
+	ResultJson->SetStringField(TEXT("system"), System->GetName());
+	ResultJson->SetStringField(TEXT("emitter"), EmitterName);
+	ResultJson->SetStringField(TEXT("removed_module"), RemovedName);
+	ResultJson->SetStringField(TEXT("script_type"), ScriptType);
 	return ResultJson;
 }
