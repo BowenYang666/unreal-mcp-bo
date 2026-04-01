@@ -36,7 +36,10 @@ private:
 	/** Modify emitter-level properties (sim target, local space, determinism, enabled, etc.). */
 	TSharedPtr<FJsonObject> HandleModifyEmitterProperties(const TSharedPtr<FJsonObject>& Params);
 
-	/** Add an emitter to a system by copying from another system or duplicating within the same system. */
+	/** List available Niagara emitter templates (engine built-in). */
+	TSharedPtr<FJsonObject> HandleListNiagaraEmitterTemplates(const TSharedPtr<FJsonObject>& Params);
+
+	/** Add an emitter to a system by copying from another system, engine template, or duplicating within the same system. */
 	TSharedPtr<FJsonObject> HandleAddEmitterToSystem(const TSharedPtr<FJsonObject>& Params);
 
 	/** Remove an emitter from a system by name. */

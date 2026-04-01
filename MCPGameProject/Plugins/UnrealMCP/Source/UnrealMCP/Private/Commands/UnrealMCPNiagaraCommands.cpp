@@ -162,6 +162,10 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleCommand(const FString& 
 	{
 		return HandleModifyEmitterProperties(Params);
 	}
+	else if (CommandType == TEXT("list_niagara_emitter_templates"))
+	{
+		return HandleListNiagaraEmitterTemplates(Params);
+	}
 	else if (CommandType == TEXT("add_emitter_to_system"))
 	{
 		return HandleAddEmitterToSystem(Params);
@@ -1229,23 +1233,132 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleModifyEmitterProperties
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// list_niagara_emitter_templates
+// ─────────────────────────────────────────────────────────────────────────────
+
+TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleListNiagaraEmitterTemplates(const TSharedPtr<FJsonObject>& Params)
+{
+	// Template emitters live under /Niagara/DefaultAssets/Templates/ in engine content
+	// Categories: Emitters, BehaviorExamples, CascadeConversion, Systems
+	FString CategoryFilter;
+	if (Params.IsValid() && Params->HasField(TEXT("category")))
+		CategoryFilter = Params->GetStringField(TEXT("category"));
+
+	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+	IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
+
+	FARFilter Filter;
+	Filter.ClassPaths.Add(UNiagaraEmitter::StaticClass()->GetClassPathName());
+	Filter.PackagePaths.Add(FName(TEXT("/Niagara/DefaultAssets/Templates")));
+	Filter.bRecursivePaths = true;
+
+	TArray<FAssetData> AssetList;
+	AssetRegistry.GetAssets(Filter, AssetList);
+
+	TArray<TSharedPtr<FJsonValue>> TemplateArray;
+	for (const FAssetData& Asset : AssetList)
+	{
+		FString PackagePath = Asset.PackageName.ToString();
+
+		// Determine category from path
+		FString Category = TEXT("Unknown");
+		if (PackagePath.Contains(TEXT("/Templates/Emitters/")))
+			Category = TEXT("Emitters");
+		else if (PackagePath.Contains(TEXT("/Templates/BehaviorExamples/")))
+			Category = TEXT("BehaviorExamples");
+		else if (PackagePath.Contains(TEXT("/Templates/CascadeConversion/")))
+			Category = TEXT("CascadeConversion");
+		else if (PackagePath.Contains(TEXT("/Templates/Systems/")))
+			Category = TEXT("Systems");
+
+		if (!CategoryFilter.IsEmpty() && !Category.Equals(CategoryFilter, ESearchCase::IgnoreCase))
+			continue;
+
+		TSharedPtr<FJsonObject> TemplateObj = MakeShared<FJsonObject>();
+		TemplateObj->SetStringField(TEXT("name"), Asset.AssetName.ToString());
+		TemplateObj->SetStringField(TEXT("category"), Category);
+		TemplateObj->SetStringField(TEXT("path"), PackagePath);
+		TemplateArray.Add(MakeShared<FJsonValueObject>(TemplateObj));
+	}
+
+	TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
+	ResultJson->SetStringField(TEXT("status"), TEXT("success"));
+	ResultJson->SetNumberField(TEXT("count"), TemplateArray.Num());
+	ResultJson->SetArrayField(TEXT("templates"), TemplateArray);
+	return ResultJson;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // add_emitter_to_system
 // ─────────────────────────────────────────────────────────────────────────────
 
 TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleAddEmitterToSystem(const TSharedPtr<FJsonObject>& Params)
 {
-	if (!Params->HasField(TEXT("source_emitter_name")))
-		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing required parameter: 'source_emitter_name'"));
-
 	FString LoadError;
 	UNiagaraSystem* TargetSystem = LoadNiagaraSystemByNameOrPath(Params, LoadError);
 	if (!TargetSystem)
 		return FUnrealMCPCommonUtils::CreateErrorResponse(LoadError);
 
-	FString SourceEmitterName = Params->GetStringField(TEXT("source_emitter_name"));
-	FString NewEmitterName = SourceEmitterName;
+	bool bHasTemplate = Params->HasField(TEXT("template_name"));
+	bool bHasSourceEmitter = Params->HasField(TEXT("source_emitter_name"));
+	if (!bHasTemplate && !bHasSourceEmitter)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Must specify either 'template_name' or 'source_emitter_name'"));
+
+	FString NewEmitterName;
 	if (Params->HasField(TEXT("new_emitter_name")))
 		NewEmitterName = Params->GetStringField(TEXT("new_emitter_name"));
+
+	// ── Path 1: Add from engine template ──────────────────────────────────
+	if (bHasTemplate)
+	{
+		FString TemplateName = Params->GetStringField(TEXT("template_name"));
+		if (NewEmitterName.IsEmpty())
+			NewEmitterName = TemplateName;
+
+		// Search for the template emitter asset under /Niagara/DefaultAssets/Templates/
+		FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+		IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
+
+		FARFilter Filter;
+		Filter.ClassPaths.Add(UNiagaraEmitter::StaticClass()->GetClassPathName());
+		Filter.PackagePaths.Add(FName(TEXT("/Niagara/DefaultAssets/Templates")));
+		Filter.bRecursivePaths = true;
+
+		TArray<FAssetData> AssetList;
+		AssetRegistry.GetAssets(Filter, AssetList);
+
+		UNiagaraEmitter* TemplateEmitter = nullptr;
+		for (const FAssetData& Asset : AssetList)
+		{
+			if (Asset.AssetName.ToString().Equals(TemplateName, ESearchCase::IgnoreCase))
+			{
+				TemplateEmitter = Cast<UNiagaraEmitter>(Asset.GetAsset());
+				break;
+			}
+		}
+		if (!TemplateEmitter)
+			return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Template emitter '%s' not found. Use list_niagara_emitter_templates to see available templates."), *TemplateName));
+
+		FNiagaraEmitterHandle NewHandle = TargetSystem->AddEmitterHandle(*TemplateEmitter, FName(*NewEmitterName), TemplateEmitter->GetExposedVersion().VersionGuid);
+
+		TargetSystem->RequestCompile(true);
+		TargetSystem->WaitForCompilationComplete();
+		TargetSystem->MarkPackageDirty();
+
+		TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
+		ResultJson->SetStringField(TEXT("status"), TEXT("success"));
+		ResultJson->SetStringField(TEXT("message"), TEXT("Emitter added from engine template"));
+		ResultJson->SetStringField(TEXT("system"), TargetSystem->GetName());
+		ResultJson->SetStringField(TEXT("template"), TemplateName);
+		ResultJson->SetStringField(TEXT("new_emitter"), NewHandle.GetName().ToString());
+		ResultJson->SetNumberField(TEXT("emitter_count"), TargetSystem->GetEmitterHandles().Num());
+		return ResultJson;
+	}
+
+	// ── Path 2: Copy from another system or duplicate within same system ──
+	FString SourceEmitterName = Params->GetStringField(TEXT("source_emitter_name"));
+	if (NewEmitterName.IsEmpty())
+		NewEmitterName = SourceEmitterName;
 
 	// Determine source: same system (duplicate) or different system (copy)
 	UNiagaraSystem* SourceSystem = TargetSystem;

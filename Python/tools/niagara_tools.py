@@ -448,34 +448,41 @@ def register_niagara_tools(mcp: FastMCP):
     def add_emitter_to_system(
         ctx: Context,
         system_name: str,
-        source_emitter_name: str,
+        source_emitter_name: str = "",
         new_emitter_name: str = "",
         source_system_name: str = "",
-        source_system_path: str = ""
+        source_system_path: str = "",
+        template_name: str = ""
     ) -> Dict[str, Any]:
-        """Add an emitter to a Niagara system by copying from another system or duplicating within the same system.
+        """Add an emitter to a Niagara system from an engine template, another system, or by duplicating within the same system.
 
-        If source_system_name/path is specified, copies the emitter from that system.
-        If omitted, duplicates the emitter within the same system.
+        Three modes:
+        1. template_name: Add from engine built-in template (e.g. "Fountain", "SimpleSpriteBurst", "Empty")
+        2. source_system_name + source_emitter_name: Copy emitter from another system
+        3. source_emitter_name only: Duplicate emitter within the same system
+
+        Use list_niagara_emitter_templates() to see available templates.
         The system is automatically recompiled after the change.
 
         Args:
             ctx: The MCP context
-            system_name: Name of the target system to add the emitter to (e.g. "NS_MyExplosion")
-            source_emitter_name: Name of the emitter to copy (e.g. "Flare")
-            new_emitter_name: Name for the new emitter (default: same as source)
-            source_system_name: Name of the system to copy from (omit to duplicate within same system)
-            source_system_path: Path of the system to copy from (alternative to source_system_name)
+            system_name: Name of the target system (e.g. "NS_MyExplosion")
+            source_emitter_name: Name of emitter to copy/duplicate (modes 2 & 3)
+            new_emitter_name: Name for the new emitter (default: same as source/template)
+            source_system_name: System to copy from (mode 2)
+            source_system_path: Path to system to copy from (alternative to source_system_name)
+            template_name: Engine template name (mode 1, e.g. "Fountain", "SimpleSpriteBurst")
 
         Returns:
             Dict with status, system, new_emitter name, emitter_count
 
         Examples:
+            add_emitter_to_system(system_name="NS_MyExplosion", template_name="Fountain",
+                new_emitter_name="MyFountain")
             add_emitter_to_system(system_name="NS_MyExplosion",
-                source_emitter_name="Flare", source_system_name="NS_Explosion_Cannon",
-                new_emitter_name="MyFlare")
+                source_emitter_name="Flare", source_system_name="NS_Explosion_Cannon")
             add_emitter_to_system(system_name="NS_MyExplosion",
-                source_emitter_name="SimpleSpriteBurst", new_emitter_name="SpriteBurst_Copy")
+                source_emitter_name="SimpleSpriteBurst", new_emitter_name="SpriteCopy")
         """
         from unreal_mcp_server import get_unreal_connection
 
@@ -487,8 +494,11 @@ def register_niagara_tools(mcp: FastMCP):
 
             params = {
                 "system_name": system_name,
-                "source_emitter_name": source_emitter_name,
             }
+            if template_name:
+                params["template_name"] = template_name
+            if source_emitter_name:
+                params["source_emitter_name"] = source_emitter_name
             if new_emitter_name:
                 params["new_emitter_name"] = new_emitter_name
             if source_system_name:
@@ -562,4 +572,54 @@ def register_niagara_tools(mcp: FastMCP):
 
         except Exception as e:
             logger.error(f"Error removing emitter: {e}")
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def list_niagara_emitter_templates(
+        ctx: Context,
+        category: str = ""
+    ) -> Dict[str, Any]:
+        """List available Niagara emitter templates from the engine.
+
+        Returns built-in templates that can be used with add_emitter_to_system(template_name=...).
+        Categories: Emitters (common presets), BehaviorExamples (advanced demos),
+        Systems (system-level templates), CascadeConversion (legacy conversion).
+
+        Args:
+            ctx: The MCP context
+            category: Filter by category (e.g. "Emitters"). Empty returns all.
+
+        Returns:
+            Dict with templates list containing name, category, path
+
+        Examples:
+            list_niagara_emitter_templates()
+            list_niagara_emitter_templates(category="Emitters")
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                logger.error("Failed to connect to Unreal Engine")
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            params = {}
+            if category:
+                params["category"] = category
+
+            response = unreal.send_command("list_niagara_emitter_templates", params)
+
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+
+            result = response.get("result", response)
+            logger.info(f"Found {result.get('count', 0)} emitter templates")
+            return result
+
+        except Exception as e:
+            logger.error(f"Error listing emitter templates: {e}")
             return {"success": False, "message": str(e)}
