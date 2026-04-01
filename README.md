@@ -4,7 +4,7 @@ Fork of [chongdashu/unreal-mcp](https://github.com/chongdashu/unreal-mcp) with a
 
 > **What's different from the original?** This fork adds read-only tools (blueprint reading, editor log capture, material inspection) and a read-only mode so AI can safely understand your project without modifying it.
 
-## Supported Tools (46 total)
+## Supported Tools (59 total)
 
 ### Actor Tools (Original)
 
@@ -84,6 +84,23 @@ Fork of [chongdashu/unreal-mcp](https://github.com/chongdashu/unreal-mcp) with a
 | **`set_widget_anchor`** | **Set anchor, alignment, offset, and size on any existing widget in a CanvasPanel.** | **Added** |
 | **`read_widget_layout`** | **Read the full widget tree layout (recursive: name, type, slot, properties, children). Read-only.** | **Added** |
 
+### Niagara / VFX Tools (Added)
+
+| Tool | Description |
+|------|-------------|
+| **`create_niagara_system`** | **Create an empty Niagara particle system asset** |
+| **`list_niagara_systems`** | **List all Niagara systems in the project** |
+| **`read_niagara_system`** | **Read full system structure: emitters, modules, rapid iteration params** |
+| **`add_emitter_to_system`** | **Add emitter from template, duplicate, or cross-system copy** |
+| **`remove_emitter_from_system`** | **Remove an emitter from a system** |
+| **`list_niagara_emitter_templates`** | **List available engine emitter templates** |
+| **`add_module_to_emitter`** | **Add a module script to an emitter's stack** |
+| **`remove_module_from_emitter`** | **Remove a module with automatic pin chain bridging** |
+| **`set_niagara_rapid_parameter`** | **Set rapid iteration parameter (spawn/update script)** |
+| **`set_niagara_parameter`** | **Set system/emitter-level parameter** |
+| **`get_niagara_parameters`** | **Get all parameters for a Niagara component** |
+| **`modify_emitter_properties`** | **Modify emitter sim target, determinism, local space** |
+
 ### Project Tools (Original)
 
 | Tool | Description |
@@ -126,8 +143,12 @@ Set the `UNREAL_MCP_READ_ONLY` environment variable to restrict the AI to query-
 | `read_material` | Material |
 | `get_material_instance_parameters` | Material |
 | `read_widget_layout` | UMG / Widget |
+| `list_niagara_systems` | Niagara |
+| `read_niagara_system` | Niagara |
+| `list_niagara_emitter_templates` | Niagara |
+| `get_niagara_parameters` | Niagara |
 
-Set `UNREAL_MCP_READ_ONLY=0` or remove the `env` block to enable all 46 tools.
+Set `UNREAL_MCP_READ_ONLY=0` or remove the `env` block to enable all 59 tools.
 
 ## Setup
 

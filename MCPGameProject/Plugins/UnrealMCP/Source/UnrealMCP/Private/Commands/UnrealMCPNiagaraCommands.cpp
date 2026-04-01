@@ -1385,12 +1385,16 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleAddEmitterToSystem(cons
 		// Use the editor utility which properly rebuilds emitter nodes for compilation
 		FGuid NewHandleId = FNiagaraEditorUtilities::AddEmitterToSystem(*TargetSystem, *TemplateEmitter, TemplateEmitter->GetExposedVersion().VersionGuid);
 
-		// Find the new handle by ID to get the actual assigned name
+		// Find the new handle by ID and optionally rename it
 		FString ActualEmitterName;
-		for (const FNiagaraEmitterHandle& Handle : TargetSystem->GetEmitterHandles())
+		for (FNiagaraEmitterHandle& Handle : TargetSystem->GetEmitterHandles())
 		{
 			if (Handle.GetId() == NewHandleId)
 			{
+				if (!NewEmitterName.IsEmpty())
+				{
+					Handle.SetName(FName(*NewEmitterName), *TargetSystem);
+				}
 				ActualEmitterName = Handle.GetName().ToString();
 				break;
 			}
@@ -1478,12 +1482,16 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleAddEmitterToSystem(cons
 	// Use the editor utility which properly rebuilds emitter nodes for compilation
 	FGuid NewHandleId = FNiagaraEditorUtilities::AddEmitterToSystem(*TargetSystem, *SourceInstance.Emitter, SourceInstance.Version);
 
-	// Find the new handle by ID to get the actual assigned name
+	// Find the new handle by ID and optionally rename it
 	FString ActualEmitterName;
-	for (const FNiagaraEmitterHandle& Handle : TargetSystem->GetEmitterHandles())
+	for (FNiagaraEmitterHandle& Handle : TargetSystem->GetEmitterHandles())
 	{
 		if (Handle.GetId() == NewHandleId)
 		{
+			if (!NewEmitterName.IsEmpty())
+			{
+				Handle.SetName(FName(*NewEmitterName), *TargetSystem);
+			}
 			ActualEmitterName = Handle.GetName().ToString();
 			break;
 		}

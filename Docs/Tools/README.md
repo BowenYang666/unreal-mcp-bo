@@ -7,3 +7,4 @@ This document is an index to all the tools supported.
 - [Blueprint Tools](blueprint_tools.md)
 - [Reading Blueprints](reading_blueprints.md) - How to discover and inspect existing Blueprints
 - [Node Tools](node_tools.md)
+- [Niagara Tools](niagara_tools.md)
