@@ -154,6 +154,14 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleCommand(const FString& 
 	{
 		return HandleCreateNiagaraSystem(Params);
 	}
+	else if (CommandType == TEXT("set_niagara_rapid_parameter"))
+	{
+		return HandleSetNiagaraRapidParameter(Params);
+	}
+	else if (CommandType == TEXT("modify_emitter_properties"))
+	{
+		return HandleModifyEmitterProperties(Params);
+	}
 
 	return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown Niagara command: %s"), *CommandType));
 }
@@ -847,4 +855,367 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleCreateNiagaraSystem(con
 		ResultJson->SetNumberField(TEXT("emitter_count"), NewSystem->GetEmitterHandles().Num());
 		return ResultJson;
 	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// set_niagara_rapid_parameter
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Helper: Load a UNiagaraSystem by name or path (shared by multiple handlers)
+static UNiagaraSystem* LoadNiagaraSystemByNameOrPath(const TSharedPtr<FJsonObject>& Params, FString& OutError)
+{
+	if (Params->HasField(TEXT("path")))
+	{
+		FString AssetPath = Params->GetStringField(TEXT("path"));
+		UObject* LoadedObj = UEditorAssetLibrary::LoadAsset(AssetPath);
+		UNiagaraSystem* System = Cast<UNiagaraSystem>(LoadedObj);
+		if (!System) OutError = FString::Printf(TEXT("Niagara system not found at path: %s"), *AssetPath);
+		return System;
+	}
+	else if (Params->HasField(TEXT("system_name")))
+	{
+		FString Name = Params->GetStringField(TEXT("system_name"));
+		IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+		FARFilter Filter;
+		Filter.ClassPaths.Add(UNiagaraSystem::StaticClass()->GetClassPathName());
+		Filter.bRecursiveClasses = true;
+		Filter.bRecursivePaths = true;
+
+		TArray<FAssetData> AssetDataList;
+		AssetRegistry.GetAssets(Filter, AssetDataList);
+
+		for (const FAssetData& AssetData : AssetDataList)
+		{
+			if (AssetData.AssetName.ToString().Equals(Name, ESearchCase::IgnoreCase))
+			{
+				UNiagaraSystem* System = Cast<UNiagaraSystem>(AssetData.GetAsset());
+				if (System) return System;
+			}
+		}
+		OutError = FString::Printf(TEXT("Niagara system not found: %s"), *Name);
+		return nullptr;
+	}
+	OutError = TEXT("Missing required parameter: 'system_name' or 'path'");
+	return nullptr;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleSetNiagaraRapidParameter(const TSharedPtr<FJsonObject>& Params)
+{
+	// Validate required parameters
+	if (!Params->HasField(TEXT("emitter_name")))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing required parameter: 'emitter_name'"));
+	if (!Params->HasField(TEXT("parameter_name")))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing required parameter: 'parameter_name'"));
+	if (!Params->HasField(TEXT("value")))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing required parameter: 'value'"));
+
+	// Load the system
+	FString LoadError;
+	UNiagaraSystem* System = LoadNiagaraSystemByNameOrPath(Params, LoadError);
+	if (!System)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(LoadError);
+
+	FString EmitterName = Params->GetStringField(TEXT("emitter_name"));
+	FString ParameterName = Params->GetStringField(TEXT("parameter_name"));
+	FString ScriptType = TEXT("spawn");
+	if (Params->HasField(TEXT("script_type")))
+		ScriptType = Params->GetStringField(TEXT("script_type")).ToLower();
+
+	// Find the emitter handle
+	TArray<FNiagaraEmitterHandle>& EmitterHandles = System->GetEmitterHandles();
+	FNiagaraEmitterHandle* TargetHandle = nullptr;
+	for (FNiagaraEmitterHandle& Handle : EmitterHandles)
+	{
+		if (Handle.GetName().ToString().Equals(EmitterName, ESearchCase::IgnoreCase))
+		{
+			TargetHandle = &Handle;
+			break;
+		}
+	}
+	if (!TargetHandle)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Emitter '%s' not found in system '%s'"), *EmitterName, *System->GetName()));
+
+	FVersionedNiagaraEmitterData* EmitterData = TargetHandle->GetEmitterData();
+	if (!EmitterData)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get emitter data"));
+
+	// Get the appropriate script
+	UNiagaraScript* Script = nullptr;
+	if (ScriptType == TEXT("spawn"))
+		Script = EmitterData->SpawnScriptProps.Script;
+	else if (ScriptType == TEXT("update"))
+		Script = EmitterData->UpdateScriptProps.Script;
+	else
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Invalid script_type '%s'. Must be 'spawn' or 'update'."), *ScriptType));
+
+	if (!Script)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("No %s script found on emitter '%s'"), *ScriptType, *EmitterName));
+
+	// Find the parameter in the store
+	FNiagaraParameterStore& RapidParams = Script->RapidIterationParameters;
+	TArray<FNiagaraVariable> AllParams;
+	RapidParams.GetParameters(AllParams);
+
+	FNiagaraVariable* TargetVar = nullptr;
+	for (FNiagaraVariable& Var : AllParams)
+	{
+		if (Var.GetName().ToString().Equals(ParameterName, ESearchCase::IgnoreCase))
+		{
+			TargetVar = &Var;
+			break;
+		}
+	}
+
+	// Also try partial match: user may pass "InitializeParticle.Lifetime" instead of full "Constants.Smoke.InitializeParticle.Lifetime"
+	if (!TargetVar)
+	{
+		for (FNiagaraVariable& Var : AllParams)
+		{
+			if (Var.GetName().ToString().Contains(ParameterName))
+			{
+				TargetVar = &Var;
+				break;
+			}
+		}
+	}
+
+	if (!TargetVar)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Parameter '%s' not found in %s script rapid iteration parameters of emitter '%s'"), *ParameterName, *ScriptType, *EmitterName));
+
+	// Set the value based on type
+	FNiagaraTypeDefinition TypeDef = TargetVar->GetType();
+	FString TypeName = TypeDef.GetName();
+	TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
+	ResultJson->SetStringField(TEXT("parameter"), TargetVar->GetName().ToString());
+	ResultJson->SetStringField(TEXT("type"), TypeName);
+
+	if (TypeDef == FNiagaraTypeDefinition::GetFloatDef())
+	{
+		float OldValue = RapidParams.GetParameterValue<float>(*TargetVar);
+		float NewValue = static_cast<float>(Params->GetNumberField(TEXT("value")));
+		RapidParams.SetParameterValue(NewValue, *TargetVar);
+		ResultJson->SetNumberField(TEXT("old_value"), OldValue);
+		ResultJson->SetNumberField(TEXT("new_value"), NewValue);
+	}
+	else if (TypeDef == FNiagaraTypeDefinition::GetIntDef())
+	{
+		int32 OldValue = RapidParams.GetParameterValue<int32>(*TargetVar);
+		int32 NewValue = static_cast<int32>(Params->GetNumberField(TEXT("value")));
+		RapidParams.SetParameterValue(NewValue, *TargetVar);
+		ResultJson->SetNumberField(TEXT("old_value"), OldValue);
+		ResultJson->SetNumberField(TEXT("new_value"), NewValue);
+	}
+	else if (TypeDef == FNiagaraTypeDefinition::GetBoolDef())
+	{
+		FNiagaraBool OldValue = RapidParams.GetParameterValue<FNiagaraBool>(*TargetVar);
+		bool bNewValue = Params->GetBoolField(TEXT("value"));
+		FNiagaraBool NewValue;
+		NewValue.SetValue(bNewValue);
+		RapidParams.SetParameterValue(NewValue, *TargetVar);
+		ResultJson->SetBoolField(TEXT("old_value"), OldValue.GetValue());
+		ResultJson->SetBoolField(TEXT("new_value"), bNewValue);
+	}
+	else if (TypeDef == FNiagaraTypeDefinition::GetVec2Def())
+	{
+		FVector2f OldValue = RapidParams.GetParameterValue<FVector2f>(*TargetVar);
+		const TArray<TSharedPtr<FJsonValue>>& Arr = Params->GetArrayField(TEXT("value"));
+		if (Arr.Num() < 2) return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("vec2 value requires array of 2 numbers"));
+		FVector2f NewValue(Arr[0]->AsNumber(), Arr[1]->AsNumber());
+		RapidParams.SetParameterValue(NewValue, *TargetVar);
+		TArray<TSharedPtr<FJsonValue>> OldArr, NewArr;
+		OldArr.Add(MakeShared<FJsonValueNumber>(OldValue.X)); OldArr.Add(MakeShared<FJsonValueNumber>(OldValue.Y));
+		NewArr.Add(MakeShared<FJsonValueNumber>(NewValue.X)); NewArr.Add(MakeShared<FJsonValueNumber>(NewValue.Y));
+		ResultJson->SetArrayField(TEXT("old_value"), OldArr);
+		ResultJson->SetArrayField(TEXT("new_value"), NewArr);
+	}
+	else if (TypeDef == FNiagaraTypeDefinition::GetVec3Def() || TypeDef == FNiagaraTypeDefinition::GetPositionDef())
+	{
+		FVector3f OldValue = RapidParams.GetParameterValue<FVector3f>(*TargetVar);
+		const TArray<TSharedPtr<FJsonValue>>& Arr = Params->GetArrayField(TEXT("value"));
+		if (Arr.Num() < 3) return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("vec3 value requires array of 3 numbers"));
+		FVector3f NewValue(Arr[0]->AsNumber(), Arr[1]->AsNumber(), Arr[2]->AsNumber());
+		RapidParams.SetParameterValue(NewValue, *TargetVar);
+		TArray<TSharedPtr<FJsonValue>> OldArr, NewArr;
+		OldArr.Add(MakeShared<FJsonValueNumber>(OldValue.X)); OldArr.Add(MakeShared<FJsonValueNumber>(OldValue.Y)); OldArr.Add(MakeShared<FJsonValueNumber>(OldValue.Z));
+		NewArr.Add(MakeShared<FJsonValueNumber>(NewValue.X)); NewArr.Add(MakeShared<FJsonValueNumber>(NewValue.Y)); NewArr.Add(MakeShared<FJsonValueNumber>(NewValue.Z));
+		ResultJson->SetArrayField(TEXT("old_value"), OldArr);
+		ResultJson->SetArrayField(TEXT("new_value"), NewArr);
+	}
+	else if (TypeDef == FNiagaraTypeDefinition::GetVec4Def())
+	{
+		FVector4f OldValue = RapidParams.GetParameterValue<FVector4f>(*TargetVar);
+		const TArray<TSharedPtr<FJsonValue>>& Arr = Params->GetArrayField(TEXT("value"));
+		if (Arr.Num() < 4) return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("vec4 value requires array of 4 numbers"));
+		FVector4f NewValue(Arr[0]->AsNumber(), Arr[1]->AsNumber(), Arr[2]->AsNumber(), Arr[3]->AsNumber());
+		RapidParams.SetParameterValue(NewValue, *TargetVar);
+		TArray<TSharedPtr<FJsonValue>> OldArr, NewArr;
+		OldArr.Add(MakeShared<FJsonValueNumber>(OldValue.X)); OldArr.Add(MakeShared<FJsonValueNumber>(OldValue.Y)); OldArr.Add(MakeShared<FJsonValueNumber>(OldValue.Z)); OldArr.Add(MakeShared<FJsonValueNumber>(OldValue.W));
+		NewArr.Add(MakeShared<FJsonValueNumber>(NewValue.X)); NewArr.Add(MakeShared<FJsonValueNumber>(NewValue.Y)); NewArr.Add(MakeShared<FJsonValueNumber>(NewValue.Z)); NewArr.Add(MakeShared<FJsonValueNumber>(NewValue.W));
+		ResultJson->SetArrayField(TEXT("old_value"), OldArr);
+		ResultJson->SetArrayField(TEXT("new_value"), NewArr);
+	}
+	else if (TypeDef == FNiagaraTypeDefinition::GetColorDef())
+	{
+		FLinearColor OldValue = RapidParams.GetParameterValue<FLinearColor>(*TargetVar);
+		const TSharedPtr<FJsonObject>& ColorObj = Params->GetObjectField(TEXT("value"));
+		FLinearColor NewValue(
+			ColorObj->GetNumberField(TEXT("r")),
+			ColorObj->GetNumberField(TEXT("g")),
+			ColorObj->GetNumberField(TEXT("b")),
+			ColorObj->HasField(TEXT("a")) ? ColorObj->GetNumberField(TEXT("a")) : 1.0f
+		);
+		RapidParams.SetParameterValue(NewValue, *TargetVar);
+		TSharedPtr<FJsonObject> OldObj = MakeShared<FJsonObject>();
+		OldObj->SetNumberField(TEXT("r"), OldValue.R); OldObj->SetNumberField(TEXT("g"), OldValue.G);
+		OldObj->SetNumberField(TEXT("b"), OldValue.B); OldObj->SetNumberField(TEXT("a"), OldValue.A);
+		TSharedPtr<FJsonObject> NewObj = MakeShared<FJsonObject>();
+		NewObj->SetNumberField(TEXT("r"), NewValue.R); NewObj->SetNumberField(TEXT("g"), NewValue.G);
+		NewObj->SetNumberField(TEXT("b"), NewValue.B); NewObj->SetNumberField(TEXT("a"), NewValue.A);
+		ResultJson->SetObjectField(TEXT("old_value"), OldObj);
+		ResultJson->SetObjectField(TEXT("new_value"), NewObj);
+	}
+	else
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unsupported parameter type: %s"), *TypeName));
+	}
+
+	// Recompile the system so changes take effect
+	System->RequestCompile(true);
+	System->WaitForCompilationComplete();
+
+	// Mark package dirty so save_asset can persist it
+	System->MarkPackageDirty();
+
+	ResultJson->SetStringField(TEXT("status"), TEXT("success"));
+	ResultJson->SetStringField(TEXT("system"), System->GetName());
+	ResultJson->SetStringField(TEXT("emitter"), EmitterName);
+	ResultJson->SetStringField(TEXT("script_type"), ScriptType);
+
+	return ResultJson;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// modify_emitter_properties
+// ─────────────────────────────────────────────────────────────────────────────
+
+TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleModifyEmitterProperties(const TSharedPtr<FJsonObject>& Params)
+{
+	if (!Params->HasField(TEXT("emitter_name")))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing required parameter: 'emitter_name'"));
+
+	FString LoadError;
+	UNiagaraSystem* System = LoadNiagaraSystemByNameOrPath(Params, LoadError);
+	if (!System)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(LoadError);
+
+	FString EmitterName = Params->GetStringField(TEXT("emitter_name"));
+
+	// Find emitter handle
+	TArray<FNiagaraEmitterHandle>& EmitterHandles = System->GetEmitterHandles();
+	FNiagaraEmitterHandle* TargetHandle = nullptr;
+	for (FNiagaraEmitterHandle& Handle : EmitterHandles)
+	{
+		if (Handle.GetName().ToString().Equals(EmitterName, ESearchCase::IgnoreCase))
+		{
+			TargetHandle = &Handle;
+			break;
+		}
+	}
+	if (!TargetHandle)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Emitter '%s' not found in system '%s'"), *EmitterName, *System->GetName()));
+
+	FVersionedNiagaraEmitterData* EmitterData = TargetHandle->GetEmitterData();
+	if (!EmitterData)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get emitter data"));
+
+	TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
+	TSharedPtr<FJsonObject> ChangesObj = MakeShared<FJsonObject>();
+	int32 ChangeCount = 0;
+
+	// enabled (on the handle, not emitter data)
+	if (Params->HasField(TEXT("enabled")))
+	{
+		bool bOld = TargetHandle->GetIsEnabled();
+		bool bNew = Params->GetBoolField(TEXT("enabled"));
+		TargetHandle->SetIsEnabled(bNew, *System, false);
+		TSharedPtr<FJsonObject> Change = MakeShared<FJsonObject>();
+		Change->SetBoolField(TEXT("old"), bOld);
+		Change->SetBoolField(TEXT("new"), bNew);
+		ChangesObj->SetObjectField(TEXT("enabled"), Change);
+		ChangeCount++;
+	}
+
+	// local_space
+	if (Params->HasField(TEXT("local_space")))
+	{
+		bool bOld = EmitterData->bLocalSpace;
+		bool bNew = Params->GetBoolField(TEXT("local_space"));
+		EmitterData->bLocalSpace = bNew;
+		TSharedPtr<FJsonObject> Change = MakeShared<FJsonObject>();
+		Change->SetBoolField(TEXT("old"), bOld);
+		Change->SetBoolField(TEXT("new"), bNew);
+		ChangesObj->SetObjectField(TEXT("local_space"), Change);
+		ChangeCount++;
+	}
+
+	// determinism
+	if (Params->HasField(TEXT("determinism")))
+	{
+		bool bOld = EmitterData->bDeterminism;
+		bool bNew = Params->GetBoolField(TEXT("determinism"));
+		EmitterData->bDeterminism = bNew;
+		TSharedPtr<FJsonObject> Change = MakeShared<FJsonObject>();
+		Change->SetBoolField(TEXT("old"), bOld);
+		Change->SetBoolField(TEXT("new"), bNew);
+		ChangesObj->SetObjectField(TEXT("determinism"), Change);
+		ChangeCount++;
+	}
+
+	// random_seed
+	if (Params->HasField(TEXT("random_seed")))
+	{
+		int32 Old = EmitterData->RandomSeed;
+		int32 New = static_cast<int32>(Params->GetNumberField(TEXT("random_seed")));
+		EmitterData->RandomSeed = New;
+		TSharedPtr<FJsonObject> Change = MakeShared<FJsonObject>();
+		Change->SetNumberField(TEXT("old"), Old);
+		Change->SetNumberField(TEXT("new"), New);
+		ChangesObj->SetObjectField(TEXT("random_seed"), Change);
+		ChangeCount++;
+	}
+
+	// sim_target
+	if (Params->HasField(TEXT("sim_target")))
+	{
+		FString OldStr = EmitterData->SimTarget == ENiagaraSimTarget::CPUSim ? TEXT("CPU") : TEXT("GPU");
+		FString NewStr = Params->GetStringField(TEXT("sim_target")).ToUpper();
+		if (NewStr == TEXT("CPU"))
+			EmitterData->SimTarget = ENiagaraSimTarget::CPUSim;
+		else if (NewStr == TEXT("GPU"))
+			EmitterData->SimTarget = ENiagaraSimTarget::GPUComputeSim;
+		else
+			return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Invalid sim_target '%s'. Must be 'CPU' or 'GPU'."), *NewStr));
+
+		TSharedPtr<FJsonObject> Change = MakeShared<FJsonObject>();
+		Change->SetStringField(TEXT("old"), OldStr);
+		Change->SetStringField(TEXT("new"), NewStr);
+		ChangesObj->SetObjectField(TEXT("sim_target"), Change);
+		ChangeCount++;
+	}
+
+	if (ChangeCount == 0)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No properties specified. Supported: enabled, local_space, determinism, random_seed, sim_target"));
+
+	// Recompile and mark dirty
+	System->RequestCompile(true);
+	System->WaitForCompilationComplete();
+	System->MarkPackageDirty();
+
+	ResultJson->SetStringField(TEXT("status"), TEXT("success"));
+	ResultJson->SetStringField(TEXT("system"), System->GetName());
+	ResultJson->SetStringField(TEXT("emitter"), EmitterName);
+	ResultJson->SetNumberField(TEXT("changes_count"), ChangeCount);
+	ResultJson->SetObjectField(TEXT("changes"), ChangesObj);
+
+	return ResultJson;
 }

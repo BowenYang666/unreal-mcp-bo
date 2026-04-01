@@ -29,4 +29,10 @@ private:
 
 	/** Create a new Niagara system asset (empty or duplicated from a template). */
 	TSharedPtr<FJsonObject> HandleCreateNiagaraSystem(const TSharedPtr<FJsonObject>& Params);
+
+	/** Set a rapid-iteration parameter on an emitter's spawn or update script (asset-level edit). */
+	TSharedPtr<FJsonObject> HandleSetNiagaraRapidParameter(const TSharedPtr<FJsonObject>& Params);
+
+	/** Modify emitter-level properties (sim target, local space, determinism, enabled, etc.). */
+	TSharedPtr<FJsonObject> HandleModifyEmitterProperties(const TSharedPtr<FJsonObject>& Params);
 };

@@ -295,3 +295,151 @@ def register_niagara_tools(mcp: FastMCP):
         except Exception as e:
             logger.error(f"Error creating Niagara system: {e}")
             return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def set_niagara_rapid_parameter(
+        ctx: Context,
+        system_name: str,
+        emitter_name: str,
+        parameter_name: str,
+        value: Any,
+        script_type: str = "spawn"
+    ) -> Dict[str, Any]:
+        """Set a rapid-iteration parameter on a Niagara emitter's spawn or update script.
+
+        This modifies the asset-level parameter value (the value you see in the Niagara editor),
+        NOT a runtime override on a placed actor. After modifying, the system is automatically
+        recompiled. Use save_asset to persist changes to disk.
+
+        Args:
+            ctx: The MCP context
+            system_name: Name of the Niagara system asset (e.g. "NS_Explosion_Cannon")
+            emitter_name: Name of the emitter within the system (e.g. "Smoke")
+            parameter_name: Full or partial parameter name. Partial matching is supported,
+                e.g. "InitializeParticle.Lifetime" matches "Constants.Smoke.InitializeParticle.Lifetime"
+            value: The new value. Type depends on parameter:
+                - float/int: a number (e.g. 500)
+                - bool: true/false
+                - vec2: [x, y]
+                - vec3: [x, y, z]
+                - vec4: [x, y, z, w]
+                - color: {"r": 1.0, "g": 0.5, "b": 0.0, "a": 1.0}
+            script_type: "spawn" or "update" (default: "spawn")
+
+        Returns:
+            Dict with old_value, new_value, parameter name, type, etc.
+
+        Examples:
+            set_niagara_rapid_parameter(system_name="NS_Explosion_Cannon",
+                emitter_name="Smoke", parameter_name="AddVelocity.Velocity Speed",
+                value=500)
+            set_niagara_rapid_parameter(system_name="NS_Explosion_Cannon",
+                emitter_name="Flare", parameter_name="InitializeParticle.Color",
+                value={"r": 5.0, "g": 2.0, "b": 0.5, "a": 1.0})
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                logger.error("Failed to connect to Unreal Engine")
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            params = {
+                "system_name": system_name,
+                "emitter_name": emitter_name,
+                "parameter_name": parameter_name,
+                "value": value,
+                "script_type": script_type,
+            }
+
+            response = unreal.send_command("set_niagara_rapid_parameter", params)
+
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+
+            result = response.get("result", response)
+            logger.info(f"Set rapid parameter: {result.get('parameter', '?')} = {result.get('new_value', '?')}")
+            return result
+
+        except Exception as e:
+            logger.error(f"Error setting rapid parameter: {e}")
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def modify_emitter_properties(
+        ctx: Context,
+        system_name: str,
+        emitter_name: str,
+        enabled: bool = None,
+        local_space: bool = None,
+        determinism: bool = None,
+        random_seed: int = None,
+        sim_target: str = None
+    ) -> Dict[str, Any]:
+        """Modify emitter-level properties in a Niagara system asset.
+
+        Only specified properties will be changed; omitted ones remain unchanged.
+        The system is automatically recompiled after modifications.
+        Use save_asset to persist changes to disk.
+
+        Args:
+            ctx: The MCP context
+            system_name: Name of the Niagara system asset (e.g. "NS_MyExplosion")
+            emitter_name: Name of the emitter to modify (e.g. "SimpleSpriteBurst")
+            enabled: Enable or disable the emitter (default: None = no change)
+            local_space: True for local-space simulation, False for world-space (default: None)
+            determinism: True for deterministic RNG (default: None)
+            random_seed: Integer seed for deterministic mode (default: None)
+            sim_target: "CPU" or "GPU" simulation target (default: None)
+
+        Returns:
+            Dict with status, system, emitter, changes_count, and per-property old/new values
+
+        Examples:
+            modify_emitter_properties(system_name="NS_MyExplosion",
+                emitter_name="SimpleSpriteBurst", local_space=True)
+            modify_emitter_properties(system_name="NS_MyExplosion",
+                emitter_name="Smoke", sim_target="GPU", determinism=True, random_seed=42)
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                logger.error("Failed to connect to Unreal Engine")
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            params = {
+                "system_name": system_name,
+                "emitter_name": emitter_name,
+            }
+            if enabled is not None:
+                params["enabled"] = enabled
+            if local_space is not None:
+                params["local_space"] = local_space
+            if determinism is not None:
+                params["determinism"] = determinism
+            if random_seed is not None:
+                params["random_seed"] = random_seed
+            if sim_target is not None:
+                params["sim_target"] = sim_target
+
+            response = unreal.send_command("modify_emitter_properties", params)
+
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+
+            result = response.get("result", response)
+            logger.info(f"Modified emitter properties: {result.get('emitter', '?')} ({result.get('changes_count', 0)} changes)")
+            return result
+
+        except Exception as e:
+            logger.error(f"Error modifying emitter properties: {e}")
+            return {"success": False, "message": str(e)}
