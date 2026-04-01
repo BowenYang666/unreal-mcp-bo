@@ -15,6 +15,8 @@
 #include "NiagaraNodeOutput.h"
 #include "NiagaraNodeFunctionCall.h"
 #include "ViewModels/Stack/NiagaraStackGraphUtilities.h"
+#include "NiagaraSystemEditorData.h"
+#include "NiagaraOverviewNode.h"
 
 // Editor includes
 #include "AssetRegistry/AssetRegistryModule.h"
@@ -936,6 +938,17 @@ static bool SaveNiagaraSystemAsset(UNiagaraSystem* System)
 	return UPackage::SavePackage(Package, System, *PackageFilename, SaveArgs);
 }
 
+// Helper: synchronize the System Overview graph with emitter handles
+static void SyncOverviewGraph(UNiagaraSystem* System)
+{
+	if (!System) return;
+	UNiagaraSystemEditorData* EditorData = Cast<UNiagaraSystemEditorData>(System->GetEditorData());
+	if (EditorData)
+	{
+		EditorData->SynchronizeOverviewGraphWithSystem(*System);
+	}
+}
+
 TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleSetNiagaraRapidParameter(const TSharedPtr<FJsonObject>& Params)
 {
 	// Validate required parameters
@@ -1123,6 +1136,7 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleSetNiagaraRapidParamete
 	// Save the asset
 	System->MarkPackageDirty();
 	SaveNiagaraSystemAsset(System);
+	System->PostEditChange();
 
 	ResultJson->SetStringField(TEXT("status"), TEXT("success"));
 	ResultJson->SetStringField(TEXT("system"), System->GetName());
@@ -1249,6 +1263,7 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleModifyEmitterProperties
 	System->WaitForCompilationComplete();
 	System->MarkPackageDirty();
 	SaveNiagaraSystemAsset(System);
+	System->PostEditChange();
 
 	ResultJson->SetStringField(TEXT("status"), TEXT("success"));
 	ResultJson->SetStringField(TEXT("system"), System->GetName());
@@ -1368,10 +1383,12 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleAddEmitterToSystem(cons
 
 		FNiagaraEmitterHandle NewHandle = TargetSystem->AddEmitterHandle(*TemplateEmitter, FName(*NewEmitterName), TemplateEmitter->GetExposedVersion().VersionGuid);
 
+		SyncOverviewGraph(TargetSystem);
 		TargetSystem->RequestCompile(true);
 		TargetSystem->WaitForCompilationComplete();
 		TargetSystem->MarkPackageDirty();
 		SaveNiagaraSystemAsset(TargetSystem);
+		TargetSystem->PostEditChange();
 
 		TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
 		ResultJson->SetStringField(TEXT("status"), TEXT("success"));
@@ -1424,10 +1441,12 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleAddEmitterToSystem(cons
 	{
 		FNiagaraEmitterHandle NewHandle = TargetSystem->DuplicateEmitterHandle(*SourceHandle, FName(*NewEmitterName));
 
+		SyncOverviewGraph(TargetSystem);
 		TargetSystem->RequestCompile(true);
 		TargetSystem->WaitForCompilationComplete();
 		TargetSystem->MarkPackageDirty();
 		SaveNiagaraSystemAsset(TargetSystem);
+		TargetSystem->PostEditChange();
 
 		TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
 		ResultJson->SetStringField(TEXT("status"), TEXT("success"));
@@ -1445,10 +1464,12 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleAddEmitterToSystem(cons
 
 	FNiagaraEmitterHandle NewHandle = TargetSystem->AddEmitterHandle(*SourceInstance.Emitter, FName(*NewEmitterName), SourceInstance.Version);
 
+	SyncOverviewGraph(TargetSystem);
 	TargetSystem->RequestCompile(true);
 	TargetSystem->WaitForCompilationComplete();
 	TargetSystem->MarkPackageDirty();
 	SaveNiagaraSystemAsset(TargetSystem);
+	TargetSystem->PostEditChange();
 
 	TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
 	ResultJson->SetStringField(TEXT("status"), TEXT("success"));
@@ -1495,10 +1516,12 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleRemoveEmitterFromSystem
 
 	System->RemoveEmitterHandle(*TargetHandle);
 
+	SyncOverviewGraph(System);
 	System->RequestCompile(true);
 	System->WaitForCompilationComplete();
 	System->MarkPackageDirty();
 	SaveNiagaraSystemAsset(System);
+	System->PostEditChange();
 
 	TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
 	ResultJson->SetStringField(TEXT("status"), TEXT("success"));
@@ -1614,6 +1637,7 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleAddModuleToEmitter(cons
 		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Module script '%s' not found. Check available modules in the engine Niagara content."), *ModuleName));
 
 	// Add the module to the stack
+	Source->NodeGraph->Modify();
 	UNiagaraNodeFunctionCall* NewNode = FNiagaraStackGraphUtilities::AddScriptModuleToStack(ModuleScript, *OutputNode, TargetIndex);
 	if (!NewNode)
 		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("AddScriptModuleToStack failed"));
@@ -1623,6 +1647,7 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleAddModuleToEmitter(cons
 	System->WaitForCompilationComplete();
 	System->MarkPackageDirty();
 	SaveNiagaraSystemAsset(System);
+	System->PostEditChange();
 
 	TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
 	ResultJson->SetStringField(TEXT("status"), TEXT("success"));
@@ -1725,14 +1750,39 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleRemoveModuleFromEmitter
 
 	FString RemovedName = TargetModule->GetNodeTitle(ENodeTitleType::ListView).ToString();
 
-	// Remove the module node from the graph (Source is already in scope)
-	Source->NodeGraph->RemoveNode(TargetModule);
+	// Bridge the execution chain before removing the module.
+	// Niagara modules are connected in a chain via parameter map pins.
+	// We must reconnect neighbors to avoid corrupting the stack.
+	Source->NodeGraph->Modify();
+	for (UEdGraphPin* OutPin : TargetModule->Pins)
+	{
+		if (OutPin->Direction != EGPD_Output || OutPin->LinkedTo.Num() == 0) continue;
+
+		for (UEdGraphPin* InPin : TargetModule->Pins)
+		{
+			if (InPin->Direction != EGPD_Input || InPin->LinkedTo.Num() == 0) continue;
+			if (InPin->PinType != OutPin->PinType) continue;
+
+			// Bridge: connect upstream outputs to downstream inputs
+			TArray<UEdGraphPin*> UpstreamPins = InPin->LinkedTo;
+			TArray<UEdGraphPin*> DownstreamPins = OutPin->LinkedTo;
+			for (UEdGraphPin* Up : UpstreamPins)
+				for (UEdGraphPin* Down : DownstreamPins)
+					Up->MakeLinkTo(Down);
+			break; // one match per output pin
+		}
+	}
+
+	// Now safely remove the disconnected node
+	TargetModule->BreakAllNodeLinks();
+	Source->NodeGraph->RemoveNode(TargetModule, false);
 
 	// Recompile and save
 	System->RequestCompile(true);
 	System->WaitForCompilationComplete();
 	System->MarkPackageDirty();
 	SaveNiagaraSystemAsset(System);
+	System->PostEditChange();
 
 	TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
 	ResultJson->SetStringField(TEXT("status"), TEXT("success"));
