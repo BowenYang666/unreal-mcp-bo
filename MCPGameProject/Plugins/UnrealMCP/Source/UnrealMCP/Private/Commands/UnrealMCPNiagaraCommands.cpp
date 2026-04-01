@@ -911,6 +911,22 @@ static UNiagaraSystem* LoadNiagaraSystemByNameOrPath(const TSharedPtr<FJsonObjec
 	return nullptr;
 }
 
+// Helper: auto-save a Niagara system asset after modification
+static bool SaveNiagaraSystemAsset(UNiagaraSystem* System)
+{
+	if (!System) return false;
+	UPackage* Package = System->GetOutermost();
+	if (!Package) return false;
+
+	FString PackageFilename;
+	if (!FPackageName::TryConvertLongPackageNameToFilename(Package->GetName(), PackageFilename, FPackageName::GetAssetPackageExtension()))
+		return false;
+
+	FSavePackageArgs SaveArgs;
+	SaveArgs.TopLevelFlags = RF_Standalone;
+	return UPackage::SavePackage(Package, System, *PackageFilename, SaveArgs);
+}
+
 TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleSetNiagaraRapidParameter(const TSharedPtr<FJsonObject>& Params)
 {
 	// Validate required parameters
@@ -1095,8 +1111,9 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleSetNiagaraRapidParamete
 	System->RequestCompile(true);
 	System->WaitForCompilationComplete();
 
-	// Mark package dirty so save_asset can persist it
+	// Save the asset
 	System->MarkPackageDirty();
+	SaveNiagaraSystemAsset(System);
 
 	ResultJson->SetStringField(TEXT("status"), TEXT("success"));
 	ResultJson->SetStringField(TEXT("system"), System->GetName());
@@ -1218,10 +1235,11 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleModifyEmitterProperties
 	if (ChangeCount == 0)
 		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No properties specified. Supported: enabled, local_space, determinism, random_seed, sim_target"));
 
-	// Recompile and mark dirty
+	// Recompile and save
 	System->RequestCompile(true);
 	System->WaitForCompilationComplete();
 	System->MarkPackageDirty();
+	SaveNiagaraSystemAsset(System);
 
 	ResultJson->SetStringField(TEXT("status"), TEXT("success"));
 	ResultJson->SetStringField(TEXT("system"), System->GetName());
@@ -1344,6 +1362,7 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleAddEmitterToSystem(cons
 		TargetSystem->RequestCompile(true);
 		TargetSystem->WaitForCompilationComplete();
 		TargetSystem->MarkPackageDirty();
+		SaveNiagaraSystemAsset(TargetSystem);
 
 		TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
 		ResultJson->SetStringField(TEXT("status"), TEXT("success"));
@@ -1399,6 +1418,7 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleAddEmitterToSystem(cons
 		TargetSystem->RequestCompile(true);
 		TargetSystem->WaitForCompilationComplete();
 		TargetSystem->MarkPackageDirty();
+		SaveNiagaraSystemAsset(TargetSystem);
 
 		TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
 		ResultJson->SetStringField(TEXT("status"), TEXT("success"));
@@ -1419,6 +1439,7 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleAddEmitterToSystem(cons
 	TargetSystem->RequestCompile(true);
 	TargetSystem->WaitForCompilationComplete();
 	TargetSystem->MarkPackageDirty();
+	SaveNiagaraSystemAsset(TargetSystem);
 
 	TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
 	ResultJson->SetStringField(TEXT("status"), TEXT("success"));
@@ -1468,6 +1489,7 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleRemoveEmitterFromSystem
 	System->RequestCompile(true);
 	System->WaitForCompilationComplete();
 	System->MarkPackageDirty();
+	SaveNiagaraSystemAsset(System);
 
 	TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
 	ResultJson->SetStringField(TEXT("status"), TEXT("success"));
