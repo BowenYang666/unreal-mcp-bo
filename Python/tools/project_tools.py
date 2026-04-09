@@ -60,5 +60,47 @@ def register_project_tools(mcp: FastMCP):
             error_msg = f"Error creating input mapping: {e}"
             logger.error(error_msg)
             return {"success": False, "message": error_msg}
-    
+
+    @mcp.tool()
+    def read_data_asset(
+        ctx: Context,
+        asset_path: str
+    ) -> Dict[str, Any]:
+        """Read all properties from a DataAsset (or any UObject asset) via Unreal reflection.
+
+        Returns the full set of BlueprintVisible UPROPERTY fields serialized as JSON.
+        Works with any UDataAsset, UPrimaryDataAsset subclass, or other UObject-based assets.
+
+        Args:
+            ctx: The MCP context
+            asset_path: Asset path, e.g. "/Game/Data/TowerConfig/DA_HoneyBarrel"
+
+        Returns:
+            Dict with asset_name, asset_path, class_name, and properties object
+
+        Examples:
+            read_data_asset(asset_path="/Game/Data/TowerConfig/DA_HoneyBarrel")
+            read_data_asset(asset_path="/Game/Data/EnemyConfig/DA_Goblin")
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            response = unreal.send_command("read_data_asset", {"asset_path": asset_path})
+
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+
+            return response.get("result", response)
+
+        except Exception as e:
+            logger.error(f"Error reading data asset: {e}")
+            return {"success": False, "message": str(e)}
+
     logger.info("Project tools registered successfully") 

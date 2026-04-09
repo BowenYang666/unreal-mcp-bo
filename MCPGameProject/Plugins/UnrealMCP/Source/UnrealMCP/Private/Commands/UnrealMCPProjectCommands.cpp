@@ -1,6 +1,8 @@
 #include "Commands/UnrealMCPProjectCommands.h"
 #include "Commands/UnrealMCPCommonUtils.h"
 #include "GameFramework/InputSettings.h"
+#include "EditorAssetLibrary.h"
+#include "JsonObjectConverter.h"
 
 FUnrealMCPProjectCommands::FUnrealMCPProjectCommands()
 {
@@ -11,6 +13,10 @@ TSharedPtr<FJsonObject> FUnrealMCPProjectCommands::HandleCommand(const FString& 
     if (CommandType == TEXT("create_input_mapping"))
     {
         return HandleCreateInputMapping(Params);
+    }
+    else if (CommandType == TEXT("read_data_asset"))
+    {
+        return HandleReadDataAsset(Params);
     }
     
     return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown project command: %s"), *CommandType));
@@ -69,4 +75,50 @@ TSharedPtr<FJsonObject> FUnrealMCPProjectCommands::HandleCreateInputMapping(cons
     ResultObj->SetStringField(TEXT("action_name"), ActionName);
     ResultObj->SetStringField(TEXT("key"), Key);
     return ResultObj;
-} 
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// read_data_asset
+// ─────────────────────────────────────────────────────────────────────────────
+
+TSharedPtr<FJsonObject> FUnrealMCPProjectCommands::HandleReadDataAsset(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing required parameter: 'asset_path'"));
+    }
+
+    // Load the asset
+    UObject* LoadedAsset = UEditorAssetLibrary::LoadAsset(AssetPath);
+    if (!LoadedAsset)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Failed to load asset at path '%s'"), *AssetPath));
+    }
+
+    // Serialize all BlueprintVisible properties to JSON via reflection
+    TSharedPtr<FJsonObject> PropertiesJson = MakeShared<FJsonObject>();
+    UClass* AssetClass = LoadedAsset->GetClass();
+
+    for (TFieldIterator<FProperty> PropIt(AssetClass); PropIt; ++PropIt)
+    {
+        FProperty* Prop = *PropIt;
+        if (!Prop->HasAnyPropertyFlags(CPF_BlueprintVisible))
+            continue;
+
+        const void* ValuePtr = Prop->ContainerPtrToValuePtr<void>(LoadedAsset);
+        TSharedPtr<FJsonValue> JsonValue = FJsonObjectConverter::UPropertyToJsonValue(Prop, ValuePtr, 0, 0);
+        if (JsonValue.IsValid())
+        {
+            PropertiesJson->SetField(Prop->GetNameCPP(), JsonValue);
+        }
+    }
+
+    TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
+    ResultJson->SetStringField(TEXT("status"), TEXT("success"));
+    ResultJson->SetStringField(TEXT("asset_name"), LoadedAsset->GetName());
+    ResultJson->SetStringField(TEXT("asset_path"), AssetPath);
+    ResultJson->SetStringField(TEXT("class_name"), AssetClass->GetName());
+    ResultJson->SetObjectField(TEXT("properties"), PropertiesJson);
+    return ResultJson;
+}
