@@ -301,7 +301,17 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
             // Material Commands
             else if (CommandType == TEXT("list_materials") ||
                      CommandType == TEXT("read_material") ||
-                     CommandType == TEXT("get_material_instance_parameters"))
+                     CommandType == TEXT("get_material_instance_parameters") ||
+                     CommandType == TEXT("create_material") ||
+                     CommandType == TEXT("add_material_expression") ||
+                     CommandType == TEXT("set_material_expression_property") ||
+                     CommandType == TEXT("connect_material_expressions") ||
+                     CommandType == TEXT("connect_material_to_property") ||
+                     CommandType == TEXT("add_custom_hlsl_expression") ||
+                     CommandType == TEXT("create_material_instance") ||
+                     CommandType == TEXT("add_material_comment") ||
+                     CommandType == TEXT("reset_material_node_layout") ||
+                     CommandType == TEXT("set_expression_position"))
             {
                 ResultJson = MaterialCommands->HandleCommand(CommandType, Params);
             }

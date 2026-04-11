@@ -54,7 +54,8 @@ public class UnrealMCP : ModuleRules
 				"Projects",
 				"AssetRegistry",
 				"NiagaraCore",
-				"NiagaraEditor"
+				"NiagaraEditor",
+				"MaterialEditor"
 			}
 		);
 		

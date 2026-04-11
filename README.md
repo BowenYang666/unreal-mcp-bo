@@ -1,10 +1,10 @@
 # Unreal MCP (Fork)
 
-Fork of [chongdashu/unreal-mcp](https://github.com/chongdashu/unreal-mcp) with additional read/query tools for AI-assisted Unreal Engine development.
+Fork of [chongdashu/unreal-mcp](https://github.com/chongdashu/unreal-mcp) with additional read/query tools for AI-assisted Unreal Engine development. 
 
-> **What's different from the original?** This fork adds read-only tools (blueprint reading, editor log capture, material inspection) and a read-only mode so AI can safely understand your project without modifying it.
+> **What's different from the original?** Add more tools to cover more cases, make it support 5.7.
 
-## Supported Tools (59 total)
+## Supported Tools (73 total)
 
 ### Actor Tools (Original)
 
@@ -62,6 +62,16 @@ Fork of [chongdashu/unreal-mcp](https://github.com/chongdashu/unreal-mcp) with a
 | **`list_materials`** | List all Material and MaterialInstance assets |
 | **`read_material`** | Read a Material's node graph, expressions, connections, and input pins |
 | **`get_material_instance_parameters`** | Read a MaterialInstance's scalar, vector, and texture parameter overrides |
+| **`create_material`** | **Create a new Material asset with blend mode, shading model, domain options** |
+| **`add_material_expression`** | **Add a material expression node (Constant, Multiply, Noise, Parameter, etc.)** |
+| **`set_material_expression_property`** | **Set properties on a material node (float, color, vector, enum, string)** |
+| **`connect_material_expressions`** | **Connect two material expression nodes (output → input)** |
+| **`connect_material_to_property`** | **Connect a node to a material property (BaseColor, Normal, Roughness, etc.)** |
+| **`add_custom_hlsl_expression`** | **Add a Custom HLSL node with code, output type, and named inputs** |
+| **`create_material_instance`** | **Create a MaterialInstanceConstant with scalar/vector parameter overrides** |
+| **`add_material_comment`** | **Add a comment box (group) to the material editor graph** |
+| **`set_expression_position`** | **Move a material expression node to a specific (x, y) position** |
+| **`reset_material_node_layout`** | **Auto-layout material nodes in horizontal rows per property chain** |
 
 ### UMG / Widget Tools (Original + Added)
 
@@ -101,11 +111,12 @@ Fork of [chongdashu/unreal-mcp](https://github.com/chongdashu/unreal-mcp) with a
 | **`get_niagara_parameters`** | **Get all parameters for a Niagara component** |
 | **`modify_emitter_properties`** | **Modify emitter sim target, determinism, local space** |
 
-### Project Tools (Original)
+### Project Tools (Original + Added)
 
-| Tool | Description |
-|------|-------------|
-| `create_input_mapping` | Create an input action mapping |
+| Tool | Description | Status |
+|------|-------------|--------|
+| `create_input_mapping` | Create an input action mapping | Original |
+| **`read_data_asset`** | **Read any DataAsset's properties via reflection (generic, works on all UDataAsset subclasses)** | **Added** |
 
 ## Read-Only Mode
 
@@ -148,7 +159,7 @@ Set the `UNREAL_MCP_READ_ONLY` environment variable to restrict the AI to query-
 | `list_niagara_emitter_templates` | Niagara |
 | `get_niagara_parameters` | Niagara |
 
-Set `UNREAL_MCP_READ_ONLY=0` or remove the `env` block to enable all 59 tools.
+Set `UNREAL_MCP_READ_ONLY=0` or remove the `env` block to enable all 73 tools.
 
 ## Setup
 
