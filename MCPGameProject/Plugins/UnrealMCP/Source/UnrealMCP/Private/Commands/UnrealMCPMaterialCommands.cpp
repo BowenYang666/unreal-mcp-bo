@@ -279,6 +279,8 @@ TSharedPtr<FJsonObject> FUnrealMCPMaterialCommands::HandleReadMaterial(const TSh
             continue;
         }
 
+        UE_LOG(LogTemp, Display, TEXT("ReadMaterial: Processing node %d / %d — %s"), i, Expressions.Num(), *Expr->GetClass()->GetName());
+
         TSharedPtr<FJsonObject> NodeObj = MakeShareable(new FJsonObject);
         NodeObj->SetNumberField(TEXT("index"), i);
         NodeObj->SetStringField(TEXT("type"), Expr->GetClass()->GetName());
@@ -328,7 +330,9 @@ TSharedPtr<FJsonObject> FUnrealMCPMaterialCommands::HandleReadMaterial(const TSh
         // Input connections — use FExpressionInputIterator (UE 5.5+ recommended API)
         {
             TArray<TSharedPtr<FJsonValue>> InputArray;
-            for (FExpressionInputIterator It(Expr); It; ++It)
+            int32 SafetyCounter = 0;
+            const int32 MaxInputs = 64; // safety limit
+            for (FExpressionInputIterator It(Expr); It && SafetyCounter < MaxInputs; ++It, ++SafetyCounter)
             {
                 FExpressionInput* Input = It.Input;
                 int32 InputIndex = It.Index;
