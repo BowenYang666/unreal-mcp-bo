@@ -345,6 +345,22 @@ TSharedPtr<FJsonObject> FUnrealMCPMaterialCommands::HandleReadMaterial(const TSh
                     else
                     {
                         InputObj->SetField(TEXT("connection"), MakeShareable(new FJsonValueNull()));
+
+                        // When no connection, try to read the inline default value (e.g. ConstA, ConstB)
+                        FString InputName = Expr->GetInputName(InputIndex).ToString();
+                        FString ConstPropName = FString::Printf(TEXT("Const%s"), *InputName);
+                        FProperty* ConstProp = Expr->GetClass()->FindPropertyByName(FName(*ConstPropName));
+                        if (ConstProp)
+                        {
+                            if (FFloatProperty* FloatProp = CastField<FFloatProperty>(ConstProp))
+                            {
+                                InputObj->SetNumberField(TEXT("default_value"), FloatProp->GetPropertyValue_InContainer(Expr));
+                            }
+                            else if (FDoubleProperty* DoubleProp = CastField<FDoubleProperty>(ConstProp))
+                            {
+                                InputObj->SetNumberField(TEXT("default_value"), DoubleProp->GetPropertyValue_InContainer(Expr));
+                            }
+                        }
                     }
                 }
                 else
@@ -1631,6 +1647,11 @@ TSharedPtr<FJsonObject> FUnrealMCPMaterialCommands::HandleResetMaterialNodeLayou
         CurrentY += RowHeight + SpacingY + RowGap;
     }
 
+    // Position the material output node to the right of all expression nodes, vertically centered
+    int32 TotalHeight = FMath::Max(0, CurrentY - SpacingY - RowGap);
+    Material->EditorX = SpacingX;
+    Material->EditorY = TotalHeight / 2 - 200; // offset up slightly since the output node is tall
+
     Material->PostEditChange();
     Material->MarkPackageDirty();
 
@@ -1639,6 +1660,8 @@ TSharedPtr<FJsonObject> FUnrealMCPMaterialCommands::HandleResetMaterialNodeLayou
     ResultJson->SetBoolField(TEXT("success"), true);
     ResultJson->SetNumberField(TEXT("nodes_laid_out"), NumExprs);
     ResultJson->SetNumberField(TEXT("rows"), Rows.Num());
+    ResultJson->SetNumberField(TEXT("output_node_x"), Material->EditorX);
+    ResultJson->SetNumberField(TEXT("output_node_y"), Material->EditorY);
 
     TArray<TSharedPtr<FJsonValue>> RowArray;
     for (int32 RowIdx = 0; RowIdx < Rows.Num(); ++RowIdx)

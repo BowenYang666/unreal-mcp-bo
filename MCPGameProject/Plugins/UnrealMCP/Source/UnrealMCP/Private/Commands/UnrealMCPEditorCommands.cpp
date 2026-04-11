@@ -691,6 +691,9 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSaveAsset(const TSharedP
         return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Failed to save asset: %s"), *AssetPath));
     }
 
+    // Clear dirty flag so editor doesn't prompt "unsaved changes" after MCP save
+    Package->SetDirtyFlag(false);
+
     TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
     ResultJson->SetStringField(TEXT("message"), FString::Printf(TEXT("Asset saved successfully: %s"), *AssetPath));
     ResultJson->SetStringField(TEXT("path"), AssetPath);
