@@ -25,7 +25,7 @@ logger = logging.getLogger("UnrealMCP")
 
 # Configuration
 UNREAL_HOST = "127.0.0.1"
-UNREAL_PORT = 55556
+UNREAL_PORT = 13090
 
 class UnrealConnection:
     """Connection to an Unreal Engine instance."""
