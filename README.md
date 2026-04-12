@@ -92,6 +92,7 @@ Fork of [chongdashu/unreal-mcp](https://github.com/chongdashu/unreal-mcp) with a
 | **`add_border_to_widget`** | **Add a Border widget (background color/brush with one child slot).** | **Added** |
 | **`add_spacer_to_widget`** | **Add a Spacer for padding/spacing between elements in layout containers.** | **Added** |
 | **`set_widget_anchor`** | **Set anchor, alignment, offset, and size on any existing widget in a CanvasPanel.** | **Added** |
+| **`set_widget_slot_property`** | **Set slot properties (size_rule, padding, h/v alignment) on any widget in any slot type (Canvas, HBox, VBox, Overlay).** | **Added** |
 | **`read_widget_layout`** | **Read the full widget tree layout (recursive: name, type, slot, properties, children). Read-only.** | **Added** |
 
 ### Niagara / VFX Tools (Added)
@@ -159,7 +160,7 @@ Set the `UNREAL_MCP_READ_ONLY` environment variable to restrict the AI to query-
 | `list_niagara_emitter_templates` | Niagara |
 | `get_niagara_parameters` | Niagara |
 
-Set `UNREAL_MCP_READ_ONLY=0` or remove the `env` block to enable all 73 tools.
+Set `UNREAL_MCP_READ_ONLY=0` or remove the `env` block to enable all 74 tools.
 
 ## Setup
 

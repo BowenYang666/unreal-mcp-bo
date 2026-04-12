@@ -107,6 +107,10 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleCommand(const FString& Comm
 	{
 		return HandleSetWidgetAnchor(Params);
 	}
+	else if (CommandName == TEXT("set_widget_slot_property"))
+	{
+		return HandleSetWidgetSlotProperty(Params);
+	}
 	else if (CommandName == TEXT("read_widget_layout"))
 	{
 		return HandleReadWidgetLayout(Params);
@@ -187,6 +191,62 @@ static TSharedPtr<FJsonObject> LoadWidgetAndParent(
 
 // Helper: Add a child widget to a parent panel. If the parent is a CanvasPanel, set position/size.
 // Otherwise use generic AddChild (VBox, HBox, Overlay, Border, etc. manage layout themselves).
+// Helper: Parse a "size_rule" string param into ESlateSizeRule.
+static ESlateSizeRule::Type ParseSizeRule(const TSharedPtr<FJsonObject>& Params, ESlateSizeRule::Type Default = ESlateSizeRule::Automatic)
+{
+	FString SizeRuleStr;
+	if (Params->TryGetStringField(TEXT("size_rule"), SizeRuleStr))
+	{
+		if (SizeRuleStr.Equals(TEXT("Fill"), ESearchCase::IgnoreCase))
+			return ESlateSizeRule::Fill;
+		if (SizeRuleStr.Equals(TEXT("Auto"), ESearchCase::IgnoreCase))
+			return ESlateSizeRule::Automatic;
+	}
+	return Default;
+}
+
+// Helper: Parse a "padding" array [L,T,R,B] into FMargin.
+static FMargin ParsePadding(const TSharedPtr<FJsonObject>& Params, FMargin Default = FMargin(0))
+{
+	const TArray<TSharedPtr<FJsonValue>>* PadArr;
+	if (Params->TryGetArrayField(TEXT("padding"), PadArr) && PadArr->Num() >= 4)
+	{
+		return FMargin(
+			(*PadArr)[0]->AsNumber(),
+			(*PadArr)[1]->AsNumber(),
+			(*PadArr)[2]->AsNumber(),
+			(*PadArr)[3]->AsNumber());
+	}
+	return Default;
+}
+
+// Helper: Parse an alignment string like "HAlign_Center" / "Center" / "Left" etc.
+static EHorizontalAlignment ParseHAlign(const TSharedPtr<FJsonObject>& Params, EHorizontalAlignment Default = EHorizontalAlignment::HAlign_Fill)
+{
+	FString Str;
+	if (Params->TryGetStringField(TEXT("h_align"), Str))
+	{
+		if (Str.Contains(TEXT("Left"))) return EHorizontalAlignment::HAlign_Left;
+		if (Str.Contains(TEXT("Center"))) return EHorizontalAlignment::HAlign_Center;
+		if (Str.Contains(TEXT("Right"))) return EHorizontalAlignment::HAlign_Right;
+		if (Str.Contains(TEXT("Fill"))) return EHorizontalAlignment::HAlign_Fill;
+	}
+	return Default;
+}
+
+static EVerticalAlignment ParseVAlign(const TSharedPtr<FJsonObject>& Params, EVerticalAlignment Default = EVerticalAlignment::VAlign_Fill)
+{
+	FString Str;
+	if (Params->TryGetStringField(TEXT("v_align"), Str))
+	{
+		if (Str.Contains(TEXT("Top"))) return EVerticalAlignment::VAlign_Top;
+		if (Str.Contains(TEXT("Center"))) return EVerticalAlignment::VAlign_Center;
+		if (Str.Contains(TEXT("Bottom"))) return EVerticalAlignment::VAlign_Bottom;
+		if (Str.Contains(TEXT("Fill"))) return EVerticalAlignment::VAlign_Fill;
+	}
+	return Default;
+}
+
 static void AddChildToParent(UWidget* Child, UPanelWidget* Parent, UCanvasPanel* Canvas,
 	const TSharedPtr<FJsonObject>& Params, FVector2D DefaultSize = FVector2D(200, 50))
 {
@@ -201,6 +261,38 @@ static void AddChildToParent(UWidget* Child, UPanelWidget* Parent, UCanvasPanel*
 	else
 	{
 		Parent->AddChild(Child);
+
+		// Configure HorizontalBox / VerticalBox slot properties if provided
+		if (UHorizontalBoxSlot* HSlot = Cast<UHorizontalBoxSlot>(Child->Slot))
+		{
+			ESlateSizeRule::Type Rule = ParseSizeRule(Params);
+			FSlateChildSize ChildSize(Rule);
+			double FillVal = 1.0;
+			if (Params->TryGetNumberField(TEXT("fill_size"), FillVal))
+				ChildSize.Value = static_cast<float>(FillVal);
+			HSlot->SetSize(ChildSize);
+			HSlot->SetPadding(ParsePadding(Params));
+			HSlot->SetHorizontalAlignment(ParseHAlign(Params));
+			HSlot->SetVerticalAlignment(ParseVAlign(Params));
+		}
+		else if (UVerticalBoxSlot* VSlot = Cast<UVerticalBoxSlot>(Child->Slot))
+		{
+			ESlateSizeRule::Type Rule = ParseSizeRule(Params);
+			FSlateChildSize ChildSize(Rule);
+			double FillVal = 1.0;
+			if (Params->TryGetNumberField(TEXT("fill_size"), FillVal))
+				ChildSize.Value = static_cast<float>(FillVal);
+			VSlot->SetSize(ChildSize);
+			VSlot->SetPadding(ParsePadding(Params));
+			VSlot->SetHorizontalAlignment(ParseHAlign(Params));
+			VSlot->SetVerticalAlignment(ParseVAlign(Params));
+		}
+		else if (UOverlaySlot* OSlot = Cast<UOverlaySlot>(Child->Slot))
+		{
+			OSlot->SetPadding(ParsePadding(Params));
+			OSlot->SetHorizontalAlignment(ParseHAlign(Params));
+			OSlot->SetVerticalAlignment(ParseVAlign(Params));
+		}
 	}
 }
 
@@ -357,9 +449,16 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleAddTextBlockToWidget(const 
 	if (auto Err = LoadWidgetAndParent(Params, BlueprintName, WidgetName, WidgetBlueprint, ParentWidget, RootCanvas))
 		return Err;
 
-	// Get optional parameters
+	// Get optional parameters — handle both string and number JSON values
 	FString InitialText = TEXT("New Text Block");
-	Params->TryGetStringField(TEXT("text"), InitialText);
+	if (!Params->TryGetStringField(TEXT("text"), InitialText))
+	{
+		double NumVal;
+		if (Params->TryGetNumberField(TEXT("text"), NumVal))
+		{
+			InitialText = FString::Printf(TEXT("%g"), NumVal);
+		}
+	}
 
 	// Create Text Block widget
 	UTextBlock* TextBlock = WidgetBlueprint->WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), *WidgetName);
@@ -1081,6 +1180,142 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleSetWidgetAnchor(const TShar
 
 	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
 	Result->SetStringField(TEXT("widget_name"), WidgetName);
+	Result->SetBoolField(TEXT("success"), true);
+	return Result;
+}
+
+// ============================================================================
+// set_widget_slot_property — universal slot property setter for any slot type
+// ============================================================================
+TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleSetWidgetSlotProperty(const TSharedPtr<FJsonObject>& Params)
+{
+	FString BlueprintName;
+	if (!Params->TryGetStringField(TEXT("blueprint_name"), BlueprintName))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
+
+	FString WidgetName;
+	if (!Params->TryGetStringField(TEXT("widget_name"), WidgetName))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'widget_name' parameter"));
+
+	UWidgetBlueprint* WidgetBlueprint = FindWidgetBlueprint(BlueprintName);
+	if (!WidgetBlueprint)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Widget Blueprint '%s' not found"), *BlueprintName));
+
+	UWidget* Widget = WidgetBlueprint->WidgetTree->FindWidget(FName(*WidgetName));
+	if (!Widget)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Widget '%s' not found"), *WidgetName));
+
+	if (!Widget->Slot)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Widget '%s' has no slot (not parented)"), *WidgetName));
+
+	FString SlotType;
+
+	if (UCanvasPanelSlot* CSlot = Cast<UCanvasPanelSlot>(Widget->Slot))
+	{
+		SlotType = TEXT("CanvasPanelSlot");
+
+		const TArray<TSharedPtr<FJsonValue>>* AnchorArr;
+		if (Params->TryGetArrayField(TEXT("anchor"), AnchorArr) && AnchorArr->Num() >= 4)
+		{
+			FAnchors Anchors;
+			Anchors.Minimum.X = (*AnchorArr)[0]->AsNumber();
+			Anchors.Minimum.Y = (*AnchorArr)[1]->AsNumber();
+			Anchors.Maximum.X = (*AnchorArr)[2]->AsNumber();
+			Anchors.Maximum.Y = (*AnchorArr)[3]->AsNumber();
+			CSlot->SetAnchors(Anchors);
+		}
+
+		const TArray<TSharedPtr<FJsonValue>>* AlignArr;
+		if (Params->TryGetArrayField(TEXT("alignment"), AlignArr) && AlignArr->Num() >= 2)
+		{
+			CSlot->SetAlignment(FVector2D((*AlignArr)[0]->AsNumber(), (*AlignArr)[1]->AsNumber()));
+		}
+
+		const TArray<TSharedPtr<FJsonValue>>* OffsetArr;
+		if (Params->TryGetArrayField(TEXT("offset"), OffsetArr) && OffsetArr->Num() >= 4)
+		{
+			CSlot->SetOffsets(FMargin(
+				(*OffsetArr)[0]->AsNumber(), (*OffsetArr)[1]->AsNumber(),
+				(*OffsetArr)[2]->AsNumber(), (*OffsetArr)[3]->AsNumber()));
+		}
+
+		FVector2D Position = ParseVector2D(Params, TEXT("position"), FVector2D(-1, -1));
+		if (Position.X >= 0 || Position.Y >= 0)
+			CSlot->SetPosition(Position);
+
+		FVector2D Size = ParseVector2D(Params, TEXT("size"), FVector2D(-1, -1));
+		if (Size.X >= 0 || Size.Y >= 0)
+			CSlot->SetSize(Size);
+	}
+	else if (UHorizontalBoxSlot* HSlot = Cast<UHorizontalBoxSlot>(Widget->Slot))
+	{
+		SlotType = TEXT("HorizontalBoxSlot");
+
+		if (Params->HasField(TEXT("size_rule")))
+		{
+			FSlateChildSize ChildSize(ParseSizeRule(Params));
+			double FillVal = 1.0;
+			if (Params->TryGetNumberField(TEXT("fill_size"), FillVal))
+				ChildSize.Value = static_cast<float>(FillVal);
+			HSlot->SetSize(ChildSize);
+		}
+
+		if (Params->HasField(TEXT("padding")))
+			HSlot->SetPadding(ParsePadding(Params));
+
+		if (Params->HasField(TEXT("h_align")))
+			HSlot->SetHorizontalAlignment(ParseHAlign(Params));
+
+		if (Params->HasField(TEXT("v_align")))
+			HSlot->SetVerticalAlignment(ParseVAlign(Params));
+	}
+	else if (UVerticalBoxSlot* VSlot = Cast<UVerticalBoxSlot>(Widget->Slot))
+	{
+		SlotType = TEXT("VerticalBoxSlot");
+
+		if (Params->HasField(TEXT("size_rule")))
+		{
+			FSlateChildSize ChildSize(ParseSizeRule(Params));
+			double FillVal = 1.0;
+			if (Params->TryGetNumberField(TEXT("fill_size"), FillVal))
+				ChildSize.Value = static_cast<float>(FillVal);
+			VSlot->SetSize(ChildSize);
+		}
+
+		if (Params->HasField(TEXT("padding")))
+			VSlot->SetPadding(ParsePadding(Params));
+
+		if (Params->HasField(TEXT("h_align")))
+			VSlot->SetHorizontalAlignment(ParseHAlign(Params));
+
+		if (Params->HasField(TEXT("v_align")))
+			VSlot->SetVerticalAlignment(ParseVAlign(Params));
+	}
+	else if (UOverlaySlot* OSlot = Cast<UOverlaySlot>(Widget->Slot))
+	{
+		SlotType = TEXT("OverlaySlot");
+
+		if (Params->HasField(TEXT("padding")))
+			OSlot->SetPadding(ParsePadding(Params));
+
+		if (Params->HasField(TEXT("h_align")))
+			OSlot->SetHorizontalAlignment(ParseHAlign(Params));
+
+		if (Params->HasField(TEXT("v_align")))
+			OSlot->SetVerticalAlignment(ParseVAlign(Params));
+	}
+	else
+	{
+		SlotType = Widget->Slot->GetClass()->GetName();
+		return FUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Unsupported slot type '%s' for widget '%s'"), *SlotType, *WidgetName));
+	}
+
+	CompileWidget(WidgetBlueprint);
+
+	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetStringField(TEXT("widget_name"), WidgetName);
+	Result->SetStringField(TEXT("slot_type"), SlotType);
 	Result->SetBoolField(TEXT("success"), true);
 	return Result;
 }

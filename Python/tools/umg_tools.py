@@ -5,8 +5,12 @@ This module provides tools for creating and manipulating UMG Widget Blueprints i
 """
 
 import logging
-from typing import Dict, List, Any
+from typing import Annotated, Dict, List, Any
+from pydantic import BeforeValidator
 from mcp.server.fastmcp import FastMCP, Context
+
+# Coerced string type: accepts int/float and auto-converts to str before validation
+CoercedStr = Annotated[str, BeforeValidator(str)]
 
 # Get logger
 logger = logging.getLogger("UnrealMCP")
@@ -75,7 +79,7 @@ def register_umg_tools(mcp: FastMCP):
         ctx: Context,
         path: str,
         text_block_name: str,
-        text: str = "",
+        text: CoercedStr = "",
         position: List[float] = [0.0, 0.0],
         size: List[float] = [200.0, 50.0],
         font_size: int = 12,
@@ -88,7 +92,7 @@ def register_umg_tools(mcp: FastMCP):
         Args:
             path: Full asset path of the target Widget Blueprint (e.g. "/Game/UI/WBP_HUD")
             text_block_name: Name to give the new Text Block
-            text: Initial text content
+            text: Initial text content. Accepts strings and numbers (e.g. "Hello" or "5" or 5).
             position: [X, Y] position (only used when adding to root CanvasPanel)
             size: [Width, Height] of the text block (only used when adding to root CanvasPanel)
             font_size: Font size in points
@@ -113,7 +117,7 @@ def register_umg_tools(mcp: FastMCP):
             params = {
                 "blueprint_name": path,
                 "widget_name": text_block_name,
-                "text": text,
+                "text": str(text),
                 "position": position,
                 "size": size,
                 "font_size": font_size,
@@ -142,7 +146,7 @@ def register_umg_tools(mcp: FastMCP):
         ctx: Context,
         path: str,
         button_name: str,
-        text: str = "",
+        text: CoercedStr = "",
         position: List[float] = [0.0, 0.0],
         size: List[float] = [200.0, 50.0],
         font_size: int = 12,
@@ -182,7 +186,7 @@ def register_umg_tools(mcp: FastMCP):
             params = {
                 "blueprint_name": path,
                 "widget_name": button_name,
-                "text": text,
+                "text": str(text),
                 "position": position,
                 "size": size,
                 "font_size": font_size,
@@ -866,6 +870,85 @@ def register_umg_tools(mcp: FastMCP):
             
         except Exception as e:
             return {"success": False, "message": f"Error setting widget anchor: {e}"}
+
+    @mcp.tool()
+    def set_widget_slot_property(
+        ctx: Context,
+        path: str,
+        widget_name: str,
+        size_rule: str = "",
+        fill_size: float = 1.0,
+        padding: List[float] = None,
+        h_align: str = "",
+        v_align: str = "",
+        anchor: List[float] = None,
+        alignment: List[float] = None,
+        offset: List[float] = None,
+        position: List[float] = None,
+        size: List[float] = None
+    ) -> Dict[str, Any]:
+        """Set slot properties on any existing widget. Auto-detects slot type (CanvasPanel, HBox, VBox, Overlay).
+
+        Args:
+            path: Full asset path of the Widget Blueprint (e.g. "/Game/UI/WBP_HUD")
+            widget_name: Name of the widget whose slot to modify
+            size_rule: "Fill" or "Auto" (HBox/VBox slots only)
+            fill_size: Fill weight when size_rule="Fill" (default 1.0)
+            padding: [Left, Top, Right, Bottom] padding (HBox/VBox/Overlay slots)
+            h_align: Horizontal alignment: "Left", "Center", "Right", "Fill" (HBox/VBox/Overlay)
+            v_align: Vertical alignment: "Top", "Center", "Bottom", "Fill" (HBox/VBox/Overlay)
+            anchor: [MinX, MinY, MaxX, MaxY] anchor (CanvasPanel only)
+            alignment: [X, Y] pivot alignment (CanvasPanel only)
+            offset: [Left, Top, Right, Bottom] offsets (CanvasPanel only)
+            position: [X, Y] position (CanvasPanel only)
+            size: [Width, Height] size (CanvasPanel only)
+
+        Returns:
+            Dict with widget_name, slot_type, success
+
+        Examples:
+            set_widget_slot_property("/Game/UI/WBP_HUD", "SlotBorder", size_rule="Fill")
+            set_widget_slot_property("/Game/UI/WBP_HUD", "Label", size_rule="Auto", padding=[8, 4, 8, 4])
+            set_widget_slot_property("/Game/UI/WBP_HUD", "Icon", h_align="Center", v_align="Center")
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            params = {
+                "blueprint_name": path,
+                "widget_name": widget_name,
+            }
+            if size_rule:
+                params["size_rule"] = size_rule
+                params["fill_size"] = fill_size
+            if padding is not None:
+                params["padding"] = padding
+            if h_align:
+                params["h_align"] = h_align
+            if v_align:
+                params["v_align"] = v_align
+            if anchor is not None:
+                params["anchor"] = anchor
+            if alignment is not None:
+                params["alignment"] = alignment
+            if offset is not None:
+                params["offset"] = offset
+            if position is not None:
+                params["position"] = position
+            if size is not None:
+                params["size"] = size
+
+            response = unreal.send_command("set_widget_slot_property", params)
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            return response
+
+        except Exception as e:
+            return {"success": False, "message": f"Error setting widget slot property: {e}"}
 
     @mcp.tool()
     def read_widget_layout(
