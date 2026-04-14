@@ -578,4 +578,50 @@ def register_editor_tools(mcp: FastMCP):
             logger.error(f"Error saving asset: {e}")
             return {"success": False, "message": str(e)}
 
+    @mcp.tool()
+    def close_editor(
+        ctx: Context,
+        save_all: bool = True
+    ) -> Dict[str, Any]:
+        """Gracefully close the Unreal Editor.
+
+        Optionally saves all unsaved assets and maps before requesting the editor
+        to shut down. Much safer than killing the process, as it allows the engine
+        to clean up properly.
+
+        Args:
+            save_all: If True (default), saves all dirty packages before closing.
+                      Set to False to close without saving.
+
+        Returns:
+            Dict with closing status, saved_count, and any failed_saves
+
+        Examples:
+            close_editor()
+            close_editor(save_all=False)
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                logger.error("Failed to connect to Unreal Engine")
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            response = unreal.send_command("close_editor", {"save_all": save_all})
+
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+
+            result = response.get("result", response)
+            logger.info(f"Editor close requested (save_all={save_all}), saved {result.get('saved_count', 0)} packages")
+            return result
+
+        except Exception as e:
+            logger.error(f"Error closing editor: {e}")
+            return {"success": False, "message": str(e)}
+
     logger.info("Editor tools registered successfully")

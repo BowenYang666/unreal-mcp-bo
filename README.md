@@ -54,6 +54,7 @@ Fork of [chongdashu/unreal-mcp](https://github.com/chongdashu/unreal-mcp) with a
 | `take_screenshot` | Capture a viewport screenshot | Original |
 | **`get_editor_logs`** | **Read UE output log from file (filter by verbosity, category, keyword). Set `UNREAL_PROJECT_LOG` env var or pass `log_path`.** | **Added** |
 | **`get_unsaved_changes`** | **List all unsaved (dirty) content packages and maps in the editor** | **Added** |
+| **`close_editor`** | **Gracefully close the Unreal Editor (optionally saving all unsaved work first)** | **Added** |
 
 ### Material Tools (Added)
 
@@ -151,6 +152,7 @@ Set the `UNREAL_MCP_READ_ONLY` environment variable to restrict the AI to query-
 | `find_blueprint_nodes` | Blueprint Node |
 | `get_editor_logs` | Editor |
 | `get_unsaved_changes` | Editor |
+| `close_editor` | Editor |
 | `list_materials` | Material |
 | `read_material` | Material |
 | `get_material_instance_parameters` | Material |
@@ -160,7 +162,7 @@ Set the `UNREAL_MCP_READ_ONLY` environment variable to restrict the AI to query-
 | `list_niagara_emitter_templates` | Niagara |
 | `get_niagara_parameters` | Niagara |
 
-Set `UNREAL_MCP_READ_ONLY=0` or remove the `env` block to enable all 74 tools.
+Set `UNREAL_MCP_READ_ONLY=0` or remove the `env` block to enable all 75 tools.
 
 ## Setup
 

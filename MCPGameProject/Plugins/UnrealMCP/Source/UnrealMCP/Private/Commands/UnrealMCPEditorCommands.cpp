@@ -86,6 +86,10 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleCommand(const FString& C
     {
         return HandleSaveAsset(Params);
     }
+    else if (CommandType == TEXT("close_editor"))
+    {
+        return HandleCloseEditor(Params);
+    }
     
     return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown editor command: %s"), *CommandType));
 }
@@ -697,5 +701,89 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSaveAsset(const TSharedP
     TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
     ResultJson->SetStringField(TEXT("message"), FString::Printf(TEXT("Asset saved successfully: %s"), *AssetPath));
     ResultJson->SetStringField(TEXT("path"), AssetPath);
+    return ResultJson;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleCloseEditor(const TSharedPtr<FJsonObject>& Params)
+{
+    bool bSaveAll = true;
+    Params->TryGetBoolField(TEXT("save_all"), bSaveAll);
+
+    int32 SavedCount = 0;
+    TArray<FString> FailedSaves;
+
+    if (bSaveAll)
+    {
+        TArray<UPackage*> DirtyContent;
+        TArray<UPackage*> DirtyMaps;
+        UEditorLoadingAndSavingUtils::GetDirtyContentPackages(DirtyContent);
+        UEditorLoadingAndSavingUtils::GetDirtyMapPackages(DirtyMaps);
+
+        // Save dirty content packages
+        for (UPackage* Package : DirtyContent)
+        {
+            if (Package)
+            {
+                FString PackageFilename;
+                if (FPackageName::TryConvertLongPackageNameToFilename(
+                        Package->GetName(), PackageFilename, FPackageName::GetAssetPackageExtension()))
+                {
+                    FSavePackageArgs SaveArgs;
+                    SaveArgs.TopLevelFlags = RF_Standalone;
+                    if (UPackage::SavePackage(Package, nullptr, *PackageFilename, SaveArgs))
+                    {
+                        Package->SetDirtyFlag(false);
+                        SavedCount++;
+                    }
+                    else
+                    {
+                        FailedSaves.Add(Package->GetName());
+                    }
+                }
+            }
+        }
+
+        // Save dirty map packages
+        for (UPackage* Package : DirtyMaps)
+        {
+            if (Package)
+            {
+                FString PackageFilename;
+                if (FPackageName::TryConvertLongPackageNameToFilename(
+                        Package->GetName(), PackageFilename, FPackageName::GetMapPackageExtension()))
+                {
+                    FSavePackageArgs SaveArgs;
+                    SaveArgs.TopLevelFlags = RF_Standalone;
+                    if (UPackage::SavePackage(Package, nullptr, *PackageFilename, SaveArgs))
+                    {
+                        Package->SetDirtyFlag(false);
+                        SavedCount++;
+                    }
+                    else
+                    {
+                        FailedSaves.Add(Package->GetName());
+                    }
+                }
+            }
+        }
+    }
+
+    TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
+    ResultJson->SetBoolField(TEXT("closing"), true);
+    ResultJson->SetNumberField(TEXT("saved_count"), SavedCount);
+
+    if (FailedSaves.Num() > 0)
+    {
+        TArray<TSharedPtr<FJsonValue>> FailArr;
+        for (const FString& Name : FailedSaves)
+        {
+            FailArr.Add(MakeShared<FJsonValueString>(Name));
+        }
+        ResultJson->SetArrayField(TEXT("failed_saves"), FailArr);
+    }
+
+    // Schedule engine exit after response is sent (deferred to next frame)
+    GEngine->DeferredCommands.Add(TEXT("QUIT_EDITOR"));
+
     return ResultJson;
 }
