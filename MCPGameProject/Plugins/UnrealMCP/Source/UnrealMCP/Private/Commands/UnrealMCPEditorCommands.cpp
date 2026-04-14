@@ -22,6 +22,7 @@
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "EditorAssetLibrary.h"
+#include "Subsystems/AssetEditorSubsystem.h"
 #include "UObject/SavePackage.h"
 
 FUnrealMCPEditorCommands::FUnrealMCPEditorCommands()
@@ -782,8 +783,22 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleCloseEditor(const TShare
         ResultJson->SetArrayField(TEXT("failed_saves"), FailArr);
     }
 
-    // Schedule engine exit after response is sent (deferred to next frame)
-    GEngine->DeferredCommands.Add(TEXT("QUIT_EDITOR"));
+    // Close all open asset editors first so Slate widgets (e.g. AnimationBlueprintEditor)
+    // are properly torn down before engine subsystems are destroyed during shutdown.
+    if (UAssetEditorSubsystem* AssetEditorSub = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>())
+    {
+        AssetEditorSub->CloseAllAssetEditors();
+    }
+
+    // Schedule engine exit after giving Slate a few frames to finish cleaning up.
+    FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda(
+        [](float) -> bool
+        {
+            RequestEngineExit(TEXT("MCP close_editor"));
+            return false; // one-shot
+        }),
+        0.5f // 500ms to let Slate finish widget teardown
+    );
 
     return ResultJson;
 }
