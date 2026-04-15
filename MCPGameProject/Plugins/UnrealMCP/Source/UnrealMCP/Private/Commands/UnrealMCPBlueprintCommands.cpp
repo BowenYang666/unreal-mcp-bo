@@ -1475,6 +1475,71 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleReadBlueprint(const T
     }
     ResultObj->SetArrayField(TEXT("interfaces"), InterfacesArray);
 
+    // ===== Class Defaults (CDO overrides) =====
+    if (Blueprint->GeneratedClass)
+    {
+        UObject* CDO = Blueprint->GeneratedClass->GetDefaultObject();
+        UObject* ParentCDO = Blueprint->ParentClass ? Blueprint->ParentClass->GetDefaultObject() : nullptr;
+
+        if (CDO)
+        {
+            TSharedPtr<FJsonObject> DefaultsObj = MakeShared<FJsonObject>();
+
+            // Collect engine base classes to skip their properties
+            TSet<UClass*> SkipClasses;
+            SkipClasses.Add(UObject::StaticClass());
+            SkipClasses.Add(AActor::StaticClass());
+            if (UClass* PawnClass = FindObject<UClass>(nullptr, TEXT("/Script/Engine.Pawn")))
+                SkipClasses.Add(PawnClass);
+            if (UClass* CharClass = FindObject<UClass>(nullptr, TEXT("/Script/Engine.Character")))
+                SkipClasses.Add(CharClass);
+            if (UClass* PCClass = FindObject<UClass>(nullptr, TEXT("/Script/Engine.PlayerController")))
+                SkipClasses.Add(PCClass);
+            if (UClass* CompClass = FindObject<UClass>(nullptr, TEXT("/Script/Engine.ActorComponent")))
+                SkipClasses.Add(CompClass);
+            if (UClass* SceneClass = FindObject<UClass>(nullptr, TEXT("/Script/Engine.SceneComponent")))
+                SkipClasses.Add(SceneClass);
+
+            for (TFieldIterator<FProperty> PropIt(CDO->GetClass()); PropIt; ++PropIt)
+            {
+                FProperty* Prop = *PropIt;
+                if (!Prop) continue;
+
+                // Skip properties from engine base classes
+                UClass* OwnerClass = Prop->GetOwnerClass();
+                if (SkipClasses.Contains(OwnerClass))
+                    continue;
+
+                // Skip transient / deprecated properties
+                if (Prop->HasAnyPropertyFlags(CPF_Transient | CPF_Deprecated))
+                    continue;
+
+                const void* CDOValue = Prop->ContainerPtrToValuePtr<void>(CDO);
+
+                // Only export values that differ from parent CDO (i.e. overridden in this BP)
+                if (ParentCDO)
+                {
+                    const void* ParentValue = Prop->ContainerPtrToValuePtr<void>(ParentCDO);
+                    if (Prop->Identical(CDOValue, ParentValue))
+                        continue;
+                }
+
+                FString ValueStr;
+                Prop->ExportTextItem_Direct(ValueStr, CDOValue, nullptr, nullptr, PPF_None);
+
+                if (!ValueStr.IsEmpty())
+                {
+                    DefaultsObj->SetStringField(Prop->GetName(), ValueStr);
+                }
+            }
+
+            if (DefaultsObj->Values.Num() > 0)
+            {
+                ResultObj->SetObjectField(TEXT("class_defaults"), DefaultsObj);
+            }
+        }
+    }
+
     return ResultObj;
 }
 
