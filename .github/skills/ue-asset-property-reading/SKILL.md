@@ -7,24 +7,14 @@ metadata:
 
 # Reading Any UE Asset's Properties and Values
 
-## The Problem
-
-Users often ask to read properties from a `.uasset` file (AnimSequence, BlendSpace, AnimMontage, SkeletalMesh, etc.). A common **wrong** answer is:
-
-> "MCP can't read asset instance values — `get_class_properties` only returns class definitions, not instance data."
-
-**This is incorrect.** `get_class_properties` with `asset_path` returns both property definitions AND current values.
-
-## The Solution: `get_class_properties` with `asset_path`
-
-The `get_class_properties` tool has **two modes**:
+## `get_class_properties` — Two Modes
 
 | Parameter | What it returns |
 |-----------|----------------|
 | `class_name="BlendSpace1D"` | Property definitions only (name, type, category) — **no values** |
 | `asset_path="/Game/Path/To/Asset"` | Property definitions **AND current instance values** |
 
-### To read an asset's properties and values, ALWAYS use `asset_path`:
+To read an asset's properties and values, ALWAYS use `asset_path`:
 
 ```
 get_class_properties(asset_path="/Game/Player/Animations/MM_Rifle_Fire")
