@@ -18,6 +18,10 @@ TSharedPtr<FJsonObject> FUnrealMCPProjectCommands::HandleCommand(const FString& 
     {
         return HandleReadDataAsset(Params);
     }
+    else if (CommandType == TEXT("get_class_properties"))
+    {
+        return HandleGetClassProperties(Params);
+    }
     
     return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown project command: %s"), *CommandType));
 }
@@ -121,4 +125,206 @@ TSharedPtr<FJsonObject> FUnrealMCPProjectCommands::HandleReadDataAsset(const TSh
     ResultJson->SetStringField(TEXT("class_name"), AssetClass->GetName());
     ResultJson->SetObjectField(TEXT("properties"), PropertiesJson);
     return ResultJson;
+}
+
+// Helper: Convert FProperty type info to a human-readable string
+static FString GetPropertyTypeString(FProperty* Prop)
+{
+	if (FEnumProperty* EnumProp = CastField<FEnumProperty>(Prop))
+	{
+		if (UEnum* Enum = EnumProp->GetEnum())
+			return FString::Printf(TEXT("enum (%s)"), *Enum->GetName());
+		return TEXT("enum");
+	}
+	if (FByteProperty* ByteProp = CastField<FByteProperty>(Prop))
+	{
+		if (ByteProp->Enum)
+			return FString::Printf(TEXT("enum (%s)"), *ByteProp->Enum->GetName());
+		return TEXT("byte");
+	}
+	if (CastField<FBoolProperty>(Prop)) return TEXT("bool");
+	if (CastField<FIntProperty>(Prop)) return TEXT("int");
+	if (CastField<FInt64Property>(Prop)) return TEXT("int64");
+	if (CastField<FFloatProperty>(Prop)) return TEXT("float");
+	if (CastField<FDoubleProperty>(Prop)) return TEXT("double");
+	if (CastField<FStrProperty>(Prop)) return TEXT("string");
+	if (CastField<FNameProperty>(Prop)) return TEXT("name");
+	if (CastField<FTextProperty>(Prop)) return TEXT("text");
+	if (FStructProperty* StructProp = CastField<FStructProperty>(Prop))
+	{
+		return FString::Printf(TEXT("struct (%s)"), *StructProp->Struct->GetName());
+	}
+	if (FObjectProperty* ObjProp = CastField<FObjectProperty>(Prop))
+	{
+		return FString::Printf(TEXT("object (%s)"), *ObjProp->PropertyClass->GetName());
+	}
+	if (FClassProperty* ClassProp = CastField<FClassProperty>(Prop))
+	{
+		return FString::Printf(TEXT("class (%s)"), *ClassProp->MetaClass->GetName());
+	}
+	if (FSoftObjectProperty* SoftObjProp = CastField<FSoftObjectProperty>(Prop))
+	{
+		return FString::Printf(TEXT("soft_object (%s)"), *SoftObjProp->PropertyClass->GetName());
+	}
+	if (FSoftClassProperty* SoftClassProp = CastField<FSoftClassProperty>(Prop))
+	{
+		return FString::Printf(TEXT("soft_class (%s)"), *SoftClassProp->MetaClass->GetName());
+	}
+	if (FArrayProperty* ArrayProp = CastField<FArrayProperty>(Prop))
+	{
+		return FString::Printf(TEXT("array (%s)"), *GetPropertyTypeString(ArrayProp->Inner));
+	}
+	if (FSetProperty* SetProp = CastField<FSetProperty>(Prop))
+	{
+		return FString::Printf(TEXT("set (%s)"), *GetPropertyTypeString(SetProp->ElementProp));
+	}
+	if (FMapProperty* MapProp = CastField<FMapProperty>(Prop))
+	{
+		return FString::Printf(TEXT("map (%s -> %s)"),
+			*GetPropertyTypeString(MapProp->KeyProp), *GetPropertyTypeString(MapProp->ValueProp));
+	}
+	if (CastField<FDelegateProperty>(Prop)) return TEXT("delegate");
+	if (CastField<FMulticastDelegateProperty>(Prop)) return TEXT("multicast_delegate");
+	if (CastField<FInterfaceProperty>(Prop)) return TEXT("interface");
+
+	return Prop->GetCPPType();
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPProjectCommands::HandleGetClassProperties(const TSharedPtr<FJsonObject>& Params)
+{
+	FString ClassName;
+	FString AssetPath;
+	FString CategoryFilter;
+
+	Params->TryGetStringField(TEXT("class_name"), ClassName);
+	Params->TryGetStringField(TEXT("asset_path"), AssetPath);
+	Params->TryGetStringField(TEXT("category"), CategoryFilter);
+
+	UClass* TargetClass = nullptr;
+	UObject* AssetInstance = nullptr;
+
+	// If asset_path provided, load the asset and get its class
+	if (!AssetPath.IsEmpty())
+	{
+		AssetInstance = UEditorAssetLibrary::LoadAsset(AssetPath);
+		if (!AssetInstance)
+		{
+			return FUnrealMCPCommonUtils::CreateErrorResponse(
+				FString::Printf(TEXT("Failed to load asset: %s"), *AssetPath));
+		}
+		TargetClass = AssetInstance->GetClass();
+	}
+	else if (!ClassName.IsEmpty())
+	{
+		// Search for class by name
+		TargetClass = FindFirstObject<UClass>(*ClassName, EFindFirstObjectOptions::NativeFirst);
+
+		// If not found, try common module paths
+		if (!TargetClass)
+		{
+			const FString ModulePaths[] = {
+				TEXT("/Script/Engine."),
+				TEXT("/Script/CoreUObject."),
+				TEXT("/Script/UMG."),
+				TEXT("/Script/AnimGraphRuntime."),
+				TEXT("/Script/Niagara."),
+				TEXT("/Script/EnhancedInput."),
+			};
+			for (const FString& Prefix : ModulePaths)
+			{
+				TargetClass = FindObject<UClass>(nullptr, *(Prefix + ClassName));
+				if (TargetClass) break;
+			}
+		}
+		if (!TargetClass)
+		{
+			return FUnrealMCPCommonUtils::CreateErrorResponse(
+				FString::Printf(TEXT("Class not found: %s"), *ClassName));
+		}
+	}
+	else
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(
+			TEXT("Must provide either 'class_name' or 'asset_path'"));
+	}
+
+	// Skip engine base classes
+	TSet<UClass*> SkipClasses;
+	SkipClasses.Add(UObject::StaticClass());
+
+	// Build properties array
+	TArray<TSharedPtr<FJsonValue>> PropertiesArray;
+
+	for (TFieldIterator<FProperty> PropIt(TargetClass); PropIt; ++PropIt)
+	{
+		FProperty* Prop = *PropIt;
+		if (!Prop) continue;
+
+		// Skip UObject base properties
+		if (SkipClasses.Contains(Prop->GetOwnerClass()))
+			continue;
+
+		// Skip transient/deprecated
+		if (Prop->HasAnyPropertyFlags(CPF_Transient | CPF_Deprecated))
+			continue;
+
+		// Get category
+		FString Category = Prop->GetMetaData(TEXT("Category"));
+
+		// Category filter
+		if (!CategoryFilter.IsEmpty() && !Category.Contains(CategoryFilter))
+			continue;
+
+		TSharedPtr<FJsonObject> PropObj = MakeShared<FJsonObject>();
+		PropObj->SetStringField(TEXT("name"), Prop->GetName());
+		PropObj->SetStringField(TEXT("type"), GetPropertyTypeString(Prop));
+
+		if (!Category.IsEmpty())
+			PropObj->SetStringField(TEXT("category"), Category);
+
+		// Edit flags
+		bool bEditable = Prop->HasAnyPropertyFlags(CPF_Edit);
+		PropObj->SetBoolField(TEXT("editable"), bEditable);
+
+		bool bBlueprintVisible = Prop->HasAnyPropertyFlags(CPF_BlueprintVisible);
+		if (bBlueprintVisible)
+			PropObj->SetBoolField(TEXT("blueprint_visible"), true);
+
+		bool bBlueprintReadOnly = Prop->HasAnyPropertyFlags(CPF_BlueprintReadOnly);
+		if (bBlueprintReadOnly)
+			PropObj->SetBoolField(TEXT("blueprint_read_only"), true);
+
+		// Tooltip
+		FString Tooltip = Prop->GetMetaData(TEXT("ToolTip"));
+		if (!Tooltip.IsEmpty())
+			PropObj->SetStringField(TEXT("tooltip"), Tooltip);
+
+		// Owner class (which class defined this property)
+		if (Prop->GetOwnerClass() && Prop->GetOwnerClass() != TargetClass)
+			PropObj->SetStringField(TEXT("defined_in"), Prop->GetOwnerClass()->GetName());
+
+		// Current value (only if we have a concrete asset instance)
+		if (AssetInstance)
+		{
+			const void* ValuePtr = Prop->ContainerPtrToValuePtr<void>(AssetInstance);
+			FString ValueStr;
+			Prop->ExportTextItem_Direct(ValueStr, ValuePtr, nullptr, nullptr, PPF_None);
+			if (!ValueStr.IsEmpty())
+				PropObj->SetStringField(TEXT("value"), ValueStr);
+		}
+
+		PropertiesArray.Add(MakeShared<FJsonValueObject>(PropObj));
+	}
+
+	// Build result
+	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+	ResultObj->SetStringField(TEXT("class"), TargetClass->GetName());
+	if (TargetClass->GetSuperClass())
+		ResultObj->SetStringField(TEXT("parent_class"), TargetClass->GetSuperClass()->GetName());
+	if (!AssetPath.IsEmpty())
+		ResultObj->SetStringField(TEXT("asset_path"), AssetPath);
+	ResultObj->SetNumberField(TEXT("property_count"), PropertiesArray.Num());
+	ResultObj->SetArrayField(TEXT("properties"), PropertiesArray);
+
+	return ResultObj;
 }

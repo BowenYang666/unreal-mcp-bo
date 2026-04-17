@@ -119,6 +119,7 @@ Fork of [chongdashu/unreal-mcp](https://github.com/chongdashu/unreal-mcp) with a
 |------|-------------|--------|
 | `create_input_mapping` | Create an input action mapping | Original |
 | **`read_data_asset`** | **Read any DataAsset's properties via reflection (generic, works on all UDataAsset subclasses)** | **Added** |
+| **`get_class_properties`** | **Discover all editable properties of any UClass or asset (name, type, category, current value). Supports filtering by category.** | **Added** |
 
 ## Read-Only Mode
 
@@ -160,9 +161,9 @@ Set the `UNREAL_MCP_READ_ONLY` environment variable to restrict the AI to query-
 | `list_niagara_systems` | Niagara |
 | `read_niagara_system` | Niagara |
 | `list_niagara_emitter_templates` | Niagara |
-| `get_niagara_parameters` | Niagara |
+| `get_niagara_parameters` | Niagara |\n| `get_class_properties` | Project |
 
-Set `UNREAL_MCP_READ_ONLY=0` or remove the `env` block to enable all 75 tools.
+Set `UNREAL_MCP_READ_ONLY=0` or remove the `env` block to enable all 76 tools.
 
 ## Setup
 

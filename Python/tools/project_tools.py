@@ -103,4 +103,67 @@ def register_project_tools(mcp: FastMCP):
             logger.error(f"Error reading data asset: {e}")
             return {"success": False, "message": str(e)}
 
+    @mcp.tool()
+    def get_class_properties(
+        ctx: Context,
+        class_name: str = "",
+        asset_path: str = "",
+        category: str = ""
+    ) -> Dict[str, Any]:
+        """
+        Get all editable properties of a UClass or asset, useful for discovering
+        what properties are available before setting them.
+
+        Provide either class_name or asset_path:
+        - class_name: UClass name (e.g. "BlendSpace1D", "PlayerController", "StaticMeshActor")
+        - asset_path: Asset path to load and inspect (e.g. "/Game/Player/Animations/BS_Locomotion")
+          When asset_path is provided, current property values are also returned.
+
+        Args:
+            class_name: Name of the UClass to inspect. Supports engine and project classes.
+            asset_path: Full asset path to load and inspect. Also returns current values.
+            category: Optional filter to only return properties in this category
+                (e.g. "Axis Settings", "Physics", "Rendering").
+
+        Returns:
+            Dict with class name, parent class, property_count, and properties array.
+            Each property has: name, type, category, editable, and optionally value, tooltip.
+
+        Examples:
+            get_class_properties(class_name="BlendSpace1D")
+            get_class_properties(asset_path="/Game/Player/Animations/BS_Locomotion")
+            get_class_properties(class_name="StaticMeshComponent", category="Physics")
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            params = {}
+            if class_name:
+                params["class_name"] = class_name
+            if asset_path:
+                params["asset_path"] = asset_path
+            if category:
+                params["category"] = category
+
+            if not class_name and not asset_path:
+                return {"success": False, "message": "Must provide either class_name or asset_path"}
+
+            response = unreal.send_command("get_class_properties", params)
+
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+
+            return response.get("result", response)
+
+        except Exception as e:
+            logger.error(f"Error getting class properties: {e}")
+            return {"success": False, "message": str(e)}
+
     logger.info("Project tools registered successfully") 
