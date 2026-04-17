@@ -10,6 +10,20 @@ The following guidelines apply to any method or function marked with the @mcp.to
 When this rule is applied, please remember to explicitly mention it.
 
 
+# Reading Asset Properties and Values
+
+To read properties and current values from ANY `.uasset` file (AnimSequence, AnimMontage, BlendSpace, SkeletalMesh, Material, etc.), use `get_class_properties` with `asset_path`:
+
+```
+get_class_properties(asset_path="/Game/Path/To/Asset")
+```
+
+Convert Windows file paths to asset paths: replace everything up to and including `Content` with `/Game`, remove `.uasset`.
+Example: `D:\Projects\MyGame\Content\Player\Anims\MM_Fire.uasset` → `/Game/Player/Anims/MM_Fire`
+
+NEVER say "MCP can't read this asset's values" — `get_class_properties(asset_path=...)` reads any UObject asset.
+
+
 # Deploying the UnrealMCP Plugin to Another Project
 
 When a user asks to "copy the plugin to" or "deploy to" a project path, follow the step-by-step guide at `Docs/copy_plugin_to_project.md`. The key steps are:
