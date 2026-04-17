@@ -4,7 +4,7 @@ Fork of [chongdashu/unreal-mcp](https://github.com/chongdashu/unreal-mcp) with a
 
 > **What's different from the original?** Add more tools to cover more cases, make it support 5.7.
 
-## Supported Tools (73 total)
+## Supported Tools (76 total)
 
 ### Actor Tools (Original)
 

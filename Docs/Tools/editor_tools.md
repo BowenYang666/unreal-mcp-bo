@@ -57,6 +57,49 @@ Capture a screenshot of the viewport.
 }
 ```
 
+### get_editor_logs
+
+Read recent Unreal Editor output log entries from the log file.
+
+**Parameters:**
+- `count` (int, optional) - Number of log lines to return (default: 100)
+- `verbosity` (string, optional) - Filter by verbosity: "all", "error", "warning", "display" (default: "all")
+- `category` (string, optional) - Filter by log category (e.g. "LogTemp", "LogBlueprintUserMessages")
+- `search` (string, optional) - Filter lines containing this keyword
+- `log_path` (string, optional) - Override the log file path. Otherwise uses `UNREAL_PROJECT_LOG` env var.
+
+**Returns:**
+- Dict with `log_entries` array, `total_lines`, and applied filters
+
+### get_unsaved_changes
+
+Check for unsaved changes in the Unreal Editor.
+
+**Parameters:** None
+
+**Returns:**
+- Dict with `total_unsaved` (int), `unsaved_content` (list of package names), `unsaved_maps` (list of map names)
+
+### close_editor
+
+Gracefully close the Unreal Editor. Closes all open asset editor tabs first to avoid crashes, then schedules engine exit.
+
+**Parameters:**
+- `save_all` (bool, optional) - If true (default), saves all dirty packages before closing. Set to false to close without saving.
+
+**Returns:**
+- Dict with closing status, `saved_count`, and any `failed_saves`
+
+**Example:**
+```json
+{
+  "command": "close_editor",
+  "params": {
+    "save_all": true
+  }
+}
+```
+
 ## Error Handling
 
 All command responses include a "status" field indicating whether the operation succeeded, and an optional "message" field with details in case of failure.
