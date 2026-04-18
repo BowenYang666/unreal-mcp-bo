@@ -1510,14 +1510,16 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleReadBlueprint(const T
                 if (SkipClasses.Contains(OwnerClass))
                     continue;
 
-                // Skip transient / deprecated properties
+                // Skip transient / deprecated / compiler-generated properties
                 if (Prop->HasAnyPropertyFlags(CPF_Transient | CPF_Deprecated))
+                    continue;
+                if (Prop->GetName().StartsWith(TEXT("__")))
                     continue;
 
                 const void* CDOValue = Prop->ContainerPtrToValuePtr<void>(CDO);
 
                 // Only export values that differ from parent CDO (i.e. overridden in this BP)
-                if (ParentCDO)
+                if (ParentCDO && ParentCDO->GetClass()->IsChildOf(OwnerClass))
                 {
                     const void* ParentValue = Prop->ContainerPtrToValuePtr<void>(ParentCDO);
                     if (Prop->Identical(CDOValue, ParentValue))
