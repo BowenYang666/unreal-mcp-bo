@@ -40,6 +40,9 @@ public:
     static UBlueprint* FindBlueprint(const FString& BlueprintName);
     static UBlueprint* FindBlueprintByName(const FString& BlueprintName);
     static UEdGraph* FindOrCreateEventGraph(UBlueprint* Blueprint);
+
+    /** Try to read "blueprint_path" from Params, falling back to "blueprint_name" for backward compat. */
+    static bool GetBlueprintPath(const TSharedPtr<FJsonObject>& Params, FString& OutPath);
     
     // Blueprint node utilities
     static UK2Node_Event* CreateEventNode(UEdGraph* Graph, const FString& EventName, const FVector2D& Position);

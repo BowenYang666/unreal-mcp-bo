@@ -165,6 +165,15 @@ UBlueprint* FUnrealMCPCommonUtils::FindBlueprintByName(const FString& BlueprintN
     return LoadObject<UBlueprint>(nullptr, *AssetPath);
 }
 
+bool FUnrealMCPCommonUtils::GetBlueprintPath(const TSharedPtr<FJsonObject>& Params, FString& OutPath)
+{
+    if (Params->TryGetStringField(TEXT("blueprint_path"), OutPath))
+        return true;
+    if (Params->TryGetStringField(TEXT("blueprint_name"), OutPath))
+        return true;
+    return false;
+}
+
 UEdGraph* FUnrealMCPCommonUtils::FindOrCreateEventGraph(UBlueprint* Blueprint)
 {
     if (!Blueprint)

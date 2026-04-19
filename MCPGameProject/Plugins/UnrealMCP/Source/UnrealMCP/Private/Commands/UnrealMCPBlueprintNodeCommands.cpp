@@ -66,9 +66,9 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleConnectBlueprintN
 {
     // Get required parameters
     FString BlueprintName;
-    if (!Params->TryGetStringField(TEXT("blueprint_name"), BlueprintName))
+    if (!FUnrealMCPCommonUtils::GetBlueprintPath(Params, BlueprintName))
     {
-        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_path' parameter"));
     }
 
     FString SourceNodeId;
@@ -148,9 +148,9 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleAddBlueprintGetSe
 {
     // Get required parameters
     FString BlueprintName;
-    if (!Params->TryGetStringField(TEXT("blueprint_name"), BlueprintName))
+    if (!FUnrealMCPCommonUtils::GetBlueprintPath(Params, BlueprintName))
     {
-        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_path' parameter"));
     }
 
     FString ComponentName;
@@ -218,9 +218,9 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleAddBlueprintEvent
 {
     // Get required parameters
     FString BlueprintName;
-    if (!Params->TryGetStringField(TEXT("blueprint_name"), BlueprintName))
+    if (!FUnrealMCPCommonUtils::GetBlueprintPath(Params, BlueprintName))
     {
-        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_path' parameter"));
     }
 
     FString EventName;
@@ -269,9 +269,9 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleAddBlueprintFunct
 {
     // Get required parameters
     FString BlueprintName;
-    if (!Params->TryGetStringField(TEXT("blueprint_name"), BlueprintName))
+    if (!FUnrealMCPCommonUtils::GetBlueprintPath(Params, BlueprintName))
     {
-        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_path' parameter"));
     }
 
     FString FunctionName;
@@ -674,9 +674,9 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleAddBlueprintVaria
 {
     // Get required parameters
     FString BlueprintName;
-    if (!Params->TryGetStringField(TEXT("blueprint_name"), BlueprintName))
+    if (!FUnrealMCPCommonUtils::GetBlueprintPath(Params, BlueprintName))
     {
-        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_path' parameter"));
     }
 
     FString VariableName;
@@ -771,9 +771,9 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleAddBlueprintInput
 {
     // Get required parameters
     FString BlueprintName;
-    if (!Params->TryGetStringField(TEXT("blueprint_name"), BlueprintName))
+    if (!FUnrealMCPCommonUtils::GetBlueprintPath(Params, BlueprintName))
     {
-        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_path' parameter"));
     }
 
     FString ActionName;
@@ -822,9 +822,9 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleAddBlueprintSelfR
 {
     // Get required parameters
     FString BlueprintName;
-    if (!Params->TryGetStringField(TEXT("blueprint_name"), BlueprintName))
+    if (!FUnrealMCPCommonUtils::GetBlueprintPath(Params, BlueprintName))
     {
-        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_path' parameter"));
     }
 
     // Get position parameters (optional)
@@ -867,9 +867,9 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintNodeCommands::HandleFindBlueprintNode
 {
     // Get required parameters
     FString BlueprintName;
-    if (!Params->TryGetStringField(TEXT("blueprint_name"), BlueprintName))
+    if (!FUnrealMCPCommonUtils::GetBlueprintPath(Params, BlueprintName))
     {
-        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_path' parameter"));
     }
 
     FString NodeType;

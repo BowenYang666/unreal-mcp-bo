@@ -51,6 +51,7 @@ public class UnrealMCP : ModuleRules
 				"Kismet",
 				"KismetCompiler",
 				"BlueprintGraph",
+				"AnimGraph",
 				"Projects",
 				"AssetRegistry",
 				"NiagaraCore",

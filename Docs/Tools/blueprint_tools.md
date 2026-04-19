@@ -262,21 +262,210 @@ All command responses include a "success" field indicating whether the operation
 Read the full structure of a Blueprint asset, including its parent class, components, variables, event graph nodes, functions, and implemented interfaces. This tool is useful for understanding the structure of an existing Blueprint in your project.
 
 **Parameters:**
-- `blueprint_name` (string) - Name of the Blueprint to read. Can be a simple name (will search in /Game/Blueprints/) or a full asset path.
+- `blueprint_path` (string) - Full asset path of the Blueprint, e.g. "/Game/Player/Blueprints/BP_Player".
 - `include_nodes` (bool, optional) - Whether to include detailed event graph node info. Defaults to true.
 - `include_properties` (bool, optional) - Whether to include component property details. Defaults to true.
+- `include_anim_graph` (bool, optional) - Whether to include structured AnimGraph data (states, transitions, connections). Only applies to Animation Blueprints. Defaults to false.
 
 **Returns:**
-- Detailed Blueprint information including:
-  - `name` - Blueprint asset name
-  - `path` - Full asset path
-  - `parent_class` - Parent class name
-  - `blueprint_type` - Type of Blueprint (Normal, MacroLibrary, Interface, etc.)
-  - `components` - List of components with class, transform, parent, and properties
-  - `variables` - List of variables with types, defaults, and metadata
-  - `event_graphs` - List of event graphs with nodes, pins, and connections
-  - `functions` - List of Blueprint functions
-  - `interfaces` - List of implemented interfaces
+
+Top-level fields:
+
+| Field | Description |
+|-------|-------------|
+| `name` | Blueprint asset name |
+| `path` | Full asset path |
+| `parent_class` | Parent class name |
+| `blueprint_type` | Normal, MacroLibrary, Interface, etc. |
+| `components` | List of components with class, transform, parent, and properties |
+| `variables` | List of variables with types, defaults, and metadata |
+| `event_graphs` | Event graph nodes with pins and connections |
+| `anim_graphs` | (AnimBP only) Animation graph with structured nodes and connections |
+| `functions` | List of Blueprint functions with nodes |
+| `interfaces` | List of implemented interfaces |
+| `class_defaults` | CDO overridden values |
+
+---
+
+#### Event Graph Format
+
+Event graphs are fully expanded with nodes, pins, and connections:
+
+```json
+{
+  "event_graphs": [
+    {
+      "name": "EventGraph",
+      "nodes": [
+        {
+          "node_id": "GUID",
+          "node_class": "K2Node_Event",
+          "node_title": "Event BeginPlay",
+          "pos_x": 0,
+          "pos_y": 0,
+          "event_name": "ReceiveBeginPlay",
+          "pins": [
+            {
+              "name": "then",
+              "type": "exec",
+              "direction": "Output",
+              "is_connected": true,
+              "linked_to": [
+                { "node_id": "TARGET_GUID", "pin_name": "execute" }
+              ]
+            }
+          ]
+        },
+        {
+          "node_id": "TARGET_GUID",
+          "node_class": "K2Node_CallFunction",
+          "node_title": "Print String",
+          "function_name": "PrintString",
+          "function_class": "KismetSystemLibrary",
+          "pins": [
+            {
+              "name": "execute",
+              "type": "exec",
+              "direction": "Input",
+              "is_connected": true
+            },
+            {
+              "name": "InString",
+              "type": "string",
+              "direction": "Input",
+              "default_value": "Hello"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+---
+
+#### Animation Graph Format (AnimBP only)
+
+For Animation Blueprints, the `anim_graphs` field provides structured node and connection data.
+Each AnimGraph node uses a simplified `type` field instead of the full class name.
+
+**Top-level AnimGraph nodes:**
+
+```json
+{
+  "anim_graphs": [
+    {
+      "name": "AnimGraph",
+      "nodes": [
+        {
+          "node_id": "GUID",
+          "type": "StateMachine",
+          "name": "Locomotion",
+          "pos_x": 0,
+          "pos_y": 0,
+          "properties": {
+            "max_transitions_per_frame": 3
+          },
+          "states": [ "..." ],
+          "transitions": [ "..." ]
+        },
+        {
+          "node_id": "GUID",
+          "type": "Slot",
+          "slot_name": "DefaultSlot"
+        },
+        {
+          "node_id": "GUID",
+          "type": "AimOffset",
+          "blend_space": "/Game/Animations/AO_Rifle",
+          "alpha": 1.0
+        },
+        {
+          "node_id": "GUID",
+          "type": "OutputPose"
+        }
+      ],
+      "connections": [
+        { "from": "StateMachine_GUID", "to": "Slot_GUID", "to_pin": "Source" },
+        { "from": "Slot_GUID", "to": "AimOffset_GUID", "to_pin": "BasePose" },
+        { "from": "AimOffset_GUID", "to": "OutputPose_GUID", "to_pin": "Result" }
+      ]
+    }
+  ]
+}
+```
+
+**StateMachine states and transitions:**
+
+```json
+{
+  "type": "StateMachine",
+  "name": "Locomotion",
+  "states": [
+    {
+      "name": "Idle",
+      "nodes": [
+        {
+          "type": "SequencePlayer",
+          "sequence": "/Game/Anims/MM_Idle.MM_Idle",
+          "loop": true,
+          "play_rate": 1.0
+        }
+      ]
+    },
+    {
+      "name": "Walk",
+      "nodes": [
+        {
+          "type": "BlendSpace",
+          "blend_space": "/Game/Anims/BS_Locomotion",
+          "samples": [
+            "/Game/Anims/MM_Walk_Fwd.MM_Walk_Fwd",
+            "/Game/Anims/MM_Walk_Bwd.MM_Walk_Bwd",
+            "/Game/Anims/MM_Walk_Left.MM_Walk_Left",
+            "/Game/Anims/MM_Walk_Right.MM_Walk_Right"
+          ]
+        }
+      ]
+    }
+  ],
+  "transitions": [
+    {
+      "from": "Idle",
+      "to": "Walk",
+      "blend_time": 0.2,
+      "blend_mode": "Standard",
+      "variables_used": ["Speed"]
+    },
+    {
+      "from": "Walk",
+      "to": "Idle",
+      "blend_time": 0.2,
+      "blend_mode": "Standard",
+      "variables_used": ["Speed"]
+    }
+  ]
+}
+```
+
+**Other AnimGraph node types:**
+
+| Type | Key fields | Description |
+|------|------------|-------------|
+| `OutputPose` | — | AnimGraph output (root) |
+| `StateMachine` | `name`, `states[]`, `transitions[]` | State machine with states and transition rules |
+| `SequencePlayer` | `sequence`, `loop`, `play_rate` | Plays a single animation |
+| `BlendSpace` | `blend_space`, `samples[]` | 1D/2D blend space with sample animations |
+| `Slot` | `slot_name` | Montage slot node |
+| `AimOffset` | `blend_space`, `alpha` | Rotation offset blend space (aim offset) |
+| `LayeredBoneBlend` | `branch_filters[]`, `blend_weights[]` | Per-bone layered blend |
+| `ApplyAdditive` | `alpha` | Apply additive animation |
+| `BlendByBool` | `blend_time` | Blend between two poses by bool |
+| `SaveCachedPose` | `pose_name` | Cache a pose for reuse |
+| `UseCachedPose` | `pose_name` | Reference a cached pose |
+
+---
 
 **Example:**
 ```json

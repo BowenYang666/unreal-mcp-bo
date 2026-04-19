@@ -50,7 +50,7 @@ def register_blueprint_tools(mcp: FastMCP):
     @mcp.tool()
     def add_component_to_blueprint(
         ctx: Context,
-        blueprint_name: str,
+        blueprint_path: str,
         component_type: str,
         component_name: str,
         location: List[float] = [],
@@ -62,7 +62,7 @@ def register_blueprint_tools(mcp: FastMCP):
         Add a component to a Blueprint.
         
         Args:
-            blueprint_name: Name of the target Blueprint
+            blueprint_path: Name of the target Blueprint
             component_type: Type of component to add (use component class name without U prefix)
             component_name: Name for the new component
             location: [X, Y, Z] coordinates for component's position
@@ -78,7 +78,7 @@ def register_blueprint_tools(mcp: FastMCP):
         try:
             # Ensure all parameters are properly formatted
             params = {
-                "blueprint_name": blueprint_name,
+                "blueprint_path": blueprint_path,
                 "component_type": component_type,
                 "component_name": component_name,
                 "location": location or [0.0, 0.0, 0.0],
@@ -122,7 +122,7 @@ def register_blueprint_tools(mcp: FastMCP):
     @mcp.tool()
     def set_static_mesh_properties(
         ctx: Context,
-        blueprint_name: str,
+        blueprint_path: str,
         component_name: str,
         static_mesh: str = "/Engine/BasicShapes/Cube.Cube"
     ) -> Dict[str, Any]:
@@ -130,7 +130,7 @@ def register_blueprint_tools(mcp: FastMCP):
         Set static mesh properties on a StaticMeshComponent.
         
         Args:
-            blueprint_name: Name of the target Blueprint
+            blueprint_path: Name of the target Blueprint
             component_name: Name of the StaticMeshComponent
             static_mesh: Path to the static mesh asset (e.g., "/Engine/BasicShapes/Cube.Cube")
             
@@ -146,7 +146,7 @@ def register_blueprint_tools(mcp: FastMCP):
                 return {"success": False, "message": "Failed to connect to Unreal Engine"}
             
             params = {
-                "blueprint_name": blueprint_name,
+                "blueprint_path": blueprint_path,
                 "component_name": component_name,
                 "static_mesh": static_mesh
             }
@@ -169,7 +169,7 @@ def register_blueprint_tools(mcp: FastMCP):
     @mcp.tool()
     def set_component_property(
         ctx: Context,
-        blueprint_name: str,
+        blueprint_path: str,
         component_name: str,
         property_name: str,
         property_value,
@@ -184,7 +184,7 @@ def register_blueprint_tools(mcp: FastMCP):
                 return {"success": False, "message": "Failed to connect to Unreal Engine"}
             
             params = {
-                "blueprint_name": blueprint_name,
+                "blueprint_path": blueprint_path,
                 "component_name": component_name,
                 "property_name": property_name,
                 "property_value": property_value
@@ -208,7 +208,7 @@ def register_blueprint_tools(mcp: FastMCP):
     @mcp.tool()
     def set_physics_properties(
         ctx: Context,
-        blueprint_name: str,
+        blueprint_path: str,
         component_name: str,
         simulate_physics: bool = True,
         gravity_enabled: bool = True,
@@ -226,7 +226,7 @@ def register_blueprint_tools(mcp: FastMCP):
                 return {"success": False, "message": "Failed to connect to Unreal Engine"}
             
             params = {
-                "blueprint_name": blueprint_name,
+                "blueprint_path": blueprint_path,
                 "component_name": component_name,
                 "simulate_physics": simulate_physics,
                 "gravity_enabled": gravity_enabled,
@@ -253,7 +253,7 @@ def register_blueprint_tools(mcp: FastMCP):
     @mcp.tool()
     def compile_blueprint(
         ctx: Context,
-        blueprint_name: str
+        blueprint_path: str
     ) -> Dict[str, Any]:
         """Compile a Blueprint."""
         from unreal_mcp_server import get_unreal_connection
@@ -265,10 +265,10 @@ def register_blueprint_tools(mcp: FastMCP):
                 return {"success": False, "message": "Failed to connect to Unreal Engine"}
             
             params = {
-                "blueprint_name": blueprint_name
+                "blueprint_path": blueprint_path
             }
             
-            logger.info(f"Compiling blueprint: {blueprint_name}")
+            logger.info(f"Compiling blueprint: {blueprint_path}")
             response = unreal.send_command("compile_blueprint", params)
             
             if not response:
@@ -286,7 +286,7 @@ def register_blueprint_tools(mcp: FastMCP):
     @mcp.tool()
     def set_blueprint_property(
         ctx: Context,
-        blueprint_name: str,
+        blueprint_path: str,
         property_name: str,
         property_value
     ) -> Dict[str, Any]:
@@ -294,7 +294,7 @@ def register_blueprint_tools(mcp: FastMCP):
         Set a property on a Blueprint class default object.
         
         Args:
-            blueprint_name: Name of the target Blueprint
+            blueprint_path: Name of the target Blueprint
             property_name: Name of the property to set
             property_value: Value to set the property to
             
@@ -310,7 +310,7 @@ def register_blueprint_tools(mcp: FastMCP):
                 return {"success": False, "message": "Failed to connect to Unreal Engine"}
             
             params = {
-                "blueprint_name": blueprint_name,
+                "blueprint_path": blueprint_path,
                 "property_name": property_name,
                 "property_value": property_value
             }
@@ -333,7 +333,7 @@ def register_blueprint_tools(mcp: FastMCP):
     # @mcp.tool() commented out, just use set_component_property instead
     def set_pawn_properties(
         ctx: Context,
-        blueprint_name: str,
+        blueprint_path: str,
         auto_possess_player: str = "",
         use_controller_rotation_yaw: bool = None,
         use_controller_rotation_pitch: bool = None,
@@ -345,7 +345,7 @@ def register_blueprint_tools(mcp: FastMCP):
         This is a utility function that sets multiple pawn-related properties at once.
         
         Args:
-            blueprint_name: Name of the target Blueprint (must be a Pawn or Character)
+            blueprint_path: Name of the target Blueprint (must be a Pawn or Character)
             auto_possess_player: Auto possess player setting (None, "Disabled", "Player0", "Player1", etc.)
             use_controller_rotation_yaw: Whether the pawn should use the controller's yaw rotation
             use_controller_rotation_pitch: Whether the pawn should use the controller's pitch rotation
@@ -388,7 +388,7 @@ def register_blueprint_tools(mcp: FastMCP):
             
             for prop_name, prop_value in properties.items():
                 params = {
-                    "blueprint_name": blueprint_name,
+                    "blueprint_path": blueprint_path,
                     "property_name": prop_name,
                     "property_value": prop_value
                 }
@@ -420,9 +420,10 @@ def register_blueprint_tools(mcp: FastMCP):
     @mcp.tool()
     def read_blueprint(
         ctx: Context,
-        blueprint_name: str,
+        blueprint_path: str,
         include_nodes: bool = True,
-        include_properties: bool = True
+        include_properties: bool = True,
+        include_anim_graph: bool = False
     ) -> Dict[str, str]:
         """
         Read and return the full structure of a Blueprint asset, including its parent class,
@@ -433,7 +434,7 @@ def register_blueprint_tools(mcp: FastMCP):
         Unreal Engine project.
 
         Args:
-            blueprint_name: Name of the Blueprint to read. Can be a simple name like "MyBlueprint"
+            blueprint_path: Name of the Blueprint to read. Can be a simple name like "MyBlueprint"
                           (will search in /Game/Blueprints/), or a full asset path like
                           "/Game/MyFolder/MyBlueprint".
                           Examples: "BP_Player", "BP_Enemy", "/Game/Characters/BP_Hero"
@@ -441,6 +442,10 @@ def register_blueprint_tools(mcp: FastMCP):
                           Set to False to reduce response size for large Blueprints.
             include_properties: Whether to include component property details (default True).
                                Set to False to get a lighter overview of the Blueprint.
+            include_anim_graph: Whether to include Animation Graph data for Animation Blueprints
+                               (default False). When True, returns anim_graphs with nodes,
+                               connections, state machines (states + transitions with variables_used).
+                               Only effective on Animation Blueprints; ignored for regular Blueprints.
 
         Returns:
             A dict containing detailed Blueprint information:
@@ -452,6 +457,8 @@ def register_blueprint_tools(mcp: FastMCP):
             - event_graphs: List of event graphs with nodes, pins, and connections
             - functions: List of Blueprint functions
             - interfaces: List of implemented interfaces
+            - anim_graphs: (only when include_anim_graph=True on AnimBPs) List of animation graphs
+              with nodes, connections, and state machines containing states and transitions
         """
         from unreal_mcp_server import get_unreal_connection
 
@@ -462,10 +469,12 @@ def register_blueprint_tools(mcp: FastMCP):
                 return {"success": False, "message": "Failed to connect to Unreal Engine"}
 
             params = {
-                "blueprint_name": blueprint_name,
+                "blueprint_path": blueprint_path,
             }
+            if include_anim_graph:
+                params["include_anim_graph"] = True
 
-            logger.info(f"Reading blueprint: {blueprint_name}")
+            logger.info(f"Reading blueprint: {blueprint_path}")
             response = unreal.send_command("read_blueprint", params)
 
             if not response:

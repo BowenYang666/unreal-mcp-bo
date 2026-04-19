@@ -21,6 +21,13 @@
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "GameFramework/Actor.h"
 #include "GameFramework/Pawn.h"
+#include "Animation/AnimBlueprint.h"
+#include "AnimGraphNode_Base.h"
+#include "AnimGraphNode_StateMachine.h"
+#include "AnimStateNode.h"
+#include "AnimStateTransitionNode.h"
+#include "AnimStateEntryNode.h"
+#include "AnimationStateMachineGraph.h"
 
 FUnrealMCPBlueprintCommands::FUnrealMCPBlueprintCommands()
 {
@@ -175,9 +182,9 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleAddComponentToBluepri
 {
     // Get required parameters
     FString BlueprintName;
-    if (!Params->TryGetStringField(TEXT("blueprint_name"), BlueprintName))
+    if (!FUnrealMCPCommonUtils::GetBlueprintPath(Params, BlueprintName))
     {
-        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_path' parameter"));
     }
 
     FString ComponentType;
@@ -273,9 +280,9 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetComponentProperty(
 {
     // Get required parameters
     FString BlueprintName;
-    if (!Params->TryGetStringField(TEXT("blueprint_name"), BlueprintName))
+    if (!FUnrealMCPCommonUtils::GetBlueprintPath(Params, BlueprintName))
     {
-        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_path' parameter"));
     }
 
     FString ComponentName;
@@ -762,9 +769,9 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetPhysicsProperties(
 {
     // Get required parameters
     FString BlueprintName;
-    if (!Params->TryGetStringField(TEXT("blueprint_name"), BlueprintName))
+    if (!FUnrealMCPCommonUtils::GetBlueprintPath(Params, BlueprintName))
     {
-        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_path' parameter"));
     }
 
     FString ComponentName;
@@ -838,9 +845,9 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleCompileBlueprint(cons
 {
     // Get required parameters
     FString BlueprintName;
-    if (!Params->TryGetStringField(TEXT("blueprint_name"), BlueprintName))
+    if (!FUnrealMCPCommonUtils::GetBlueprintPath(Params, BlueprintName))
     {
-        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_path' parameter"));
     }
 
     // Find the blueprint
@@ -863,9 +870,9 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSpawnBlueprintActor(c
 {
     // Get required parameters
     FString BlueprintName;
-    if (!Params->TryGetStringField(TEXT("blueprint_name"), BlueprintName))
+    if (!FUnrealMCPCommonUtils::GetBlueprintPath(Params, BlueprintName))
     {
-        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_path' parameter"));
     }
 
     FString ActorName;
@@ -919,9 +926,9 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetBlueprintProperty(
 {
     // Get required parameters
     FString BlueprintName;
-    if (!Params->TryGetStringField(TEXT("blueprint_name"), BlueprintName))
+    if (!FUnrealMCPCommonUtils::GetBlueprintPath(Params, BlueprintName))
     {
-        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_path' parameter"));
     }
 
     FString PropertyName;
@@ -973,9 +980,9 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetStaticMeshProperti
 {
     // Get required parameters
     FString BlueprintName;
-    if (!Params->TryGetStringField(TEXT("blueprint_name"), BlueprintName))
+    if (!FUnrealMCPCommonUtils::GetBlueprintPath(Params, BlueprintName))
     {
-        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_path' parameter"));
     }
 
     FString ComponentName;
@@ -1046,9 +1053,9 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetPawnProperties(con
 {
     // Get required parameters
     FString BlueprintName;
-    if (!Params->TryGetStringField(TEXT("blueprint_name"), BlueprintName))
+    if (!FUnrealMCPCommonUtils::GetBlueprintPath(Params, BlueprintName))
     {
-        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_path' parameter"));
     }
 
     // Find the blueprint
@@ -1172,9 +1179,9 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleReadBlueprint(const T
 {
     // Get required parameters
     FString BlueprintName;
-    if (!Params->TryGetStringField(TEXT("blueprint_name"), BlueprintName))
+    if (!FUnrealMCPCommonUtils::GetBlueprintPath(Params, BlueprintName))
     {
-        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_path' parameter"));
     }
 
     // Check if a full asset path was provided
@@ -1464,6 +1471,167 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleReadBlueprint(const T
     }
     ResultObj->SetArrayField(TEXT("functions"), FunctionsArray);
 
+    // ===== Animation Graph (AnimBP only) =====
+    bool bIncludeAnimGraph = false;
+    if (Params->HasField(TEXT("include_anim_graph")))
+    {
+        bIncludeAnimGraph = Params->GetBoolField(TEXT("include_anim_graph"));
+    }
+
+    UAnimBlueprint* AnimBP = Cast<UAnimBlueprint>(Blueprint);
+    if (AnimBP && bIncludeAnimGraph)
+    {
+        TArray<TSharedPtr<FJsonValue>> AnimGraphsArray;
+
+        for (UEdGraph* FuncGraph : Blueprint->FunctionGraphs)
+        {
+            if (!FuncGraph) continue;
+            // AnimGraph graphs typically have the schema UAnimationGraphSchema
+            // but checking by name is simpler and reliable
+            if (FuncGraph->GetName() != TEXT("AnimGraph")) continue;
+
+            TSharedPtr<FJsonObject> AnimGraphObj = MakeShared<FJsonObject>();
+            AnimGraphObj->SetStringField(TEXT("name"), TEXT("AnimGraph"));
+
+            TArray<TSharedPtr<FJsonValue>> NodesArray;
+            TArray<TSharedPtr<FJsonValue>> ConnectionsArray;
+
+            for (UEdGraphNode* Node : FuncGraph->Nodes)
+            {
+                if (!Node) continue;
+                UAnimGraphNode_Base* AnimNode = Cast<UAnimGraphNode_Base>(Node);
+                if (!AnimNode) continue;
+
+                TSharedPtr<FJsonObject> NodeObj = MakeShared<FJsonObject>();
+                NodeObj->SetStringField(TEXT("node_id"), Node->NodeGuid.ToString());
+                NodeObj->SetNumberField(TEXT("pos_x"), Node->NodePosX);
+                NodeObj->SetNumberField(TEXT("pos_y"), Node->NodePosY);
+
+                // Determine simplified type from class name
+                FString ClassName = Node->GetClass()->GetName();
+                FString TypeName = ClassName;
+                if (TypeName.StartsWith(TEXT("AnimGraphNode_")))
+                {
+                    TypeName = TypeName.RightChop(14);
+                }
+                NodeObj->SetStringField(TEXT("type"), TypeName);
+                NodeObj->SetStringField(TEXT("title"), Node->GetNodeTitle(ENodeTitleType::FullTitle).ToString());
+
+                // StateMachine: expand states and transitions
+                UAnimGraphNode_StateMachine* SMNode = Cast<UAnimGraphNode_StateMachine>(Node);
+                if (SMNode && SMNode->EditorStateMachineGraph)
+                {
+                    UAnimationStateMachineGraph* SMGraph = SMNode->EditorStateMachineGraph;
+                    NodeObj->SetStringField(TEXT("name"), SMGraph->GetName());
+
+                    TArray<TSharedPtr<FJsonValue>> StatesArray;
+                    TArray<TSharedPtr<FJsonValue>> TransitionsArray;
+
+                    for (UEdGraphNode* SMGraphNode : SMGraph->Nodes)
+                    {
+                        // --- States ---
+                        UAnimStateNode* StateNode = Cast<UAnimStateNode>(SMGraphNode);
+                        if (StateNode)
+                        {
+                            TSharedPtr<FJsonObject> StateObj = MakeShared<FJsonObject>();
+                            StateObj->SetStringField(TEXT("name"), StateNode->GetStateName());
+
+                            // Nodes inside the state
+                            if (StateNode->BoundGraph)
+                            {
+                                TArray<TSharedPtr<FJsonValue>> StateNodesArray;
+                                for (UEdGraphNode* InnerNode : StateNode->BoundGraph->Nodes)
+                                {
+                                    UAnimGraphNode_Base* InnerAnimNode = Cast<UAnimGraphNode_Base>(InnerNode);
+                                    if (!InnerAnimNode) continue;
+
+                                    FString InnerClass = InnerNode->GetClass()->GetName();
+                                    // Skip StateResult nodes (they're just the output connector)
+                                    if (InnerClass.Contains(TEXT("StateResult"))) continue;
+
+                                    TSharedPtr<FJsonObject> InnerObj = MakeShared<FJsonObject>();
+                                    FString InnerType = InnerClass;
+                                    if (InnerType.StartsWith(TEXT("AnimGraphNode_")))
+                                        InnerType = InnerType.RightChop(14);
+                                    InnerObj->SetStringField(TEXT("type"), InnerType);
+                                    InnerObj->SetStringField(TEXT("title"), InnerNode->GetNodeTitle(ENodeTitleType::FullTitle).ToString());
+                                    StateNodesArray.Add(MakeShared<FJsonValueObject>(InnerObj));
+                                }
+                                StateObj->SetArrayField(TEXT("nodes"), StateNodesArray);
+                            }
+                            StatesArray.Add(MakeShared<FJsonValueObject>(StateObj));
+                        }
+
+                        // --- Transitions ---
+                        UAnimStateTransitionNode* TransNode = Cast<UAnimStateTransitionNode>(SMGraphNode);
+                        if (TransNode)
+                        {
+                            TSharedPtr<FJsonObject> TransObj = MakeShared<FJsonObject>();
+
+                            UAnimStateNodeBase* PrevState = TransNode->GetPreviousState();
+                            UAnimStateNodeBase* NextState = TransNode->GetNextState();
+                            if (PrevState)
+                                TransObj->SetStringField(TEXT("from"), PrevState->GetStateName());
+                            if (NextState)
+                                TransObj->SetStringField(TEXT("to"), NextState->GetStateName());
+
+                            TransObj->SetNumberField(TEXT("blend_time"), TransNode->CrossfadeDuration);
+
+                            // Extract variables used in transition condition
+                            if (TransNode->BoundGraph)
+                            {
+                                TArray<FString> VarsUsed;
+                                for (UEdGraphNode* CondNode : TransNode->BoundGraph->Nodes)
+                                {
+                                    UK2Node_VariableGet* VarGet = Cast<UK2Node_VariableGet>(CondNode);
+                                    if (VarGet)
+                                    {
+                                        VarsUsed.AddUnique(VarGet->VariableReference.GetMemberName().ToString());
+                                    }
+                                }
+                                if (VarsUsed.Num() > 0)
+                                {
+                                    TArray<TSharedPtr<FJsonValue>> VarsArray;
+                                    for (const FString& Var : VarsUsed)
+                                        VarsArray.Add(MakeShared<FJsonValueString>(Var));
+                                    TransObj->SetArrayField(TEXT("variables_used"), VarsArray);
+                                }
+                            }
+
+                            TransitionsArray.Add(MakeShared<FJsonValueObject>(TransObj));
+                        }
+                    }
+
+                    NodeObj->SetArrayField(TEXT("states"), StatesArray);
+                    NodeObj->SetArrayField(TEXT("transitions"), TransitionsArray);
+                }
+
+                NodesArray.Add(MakeShared<FJsonValueObject>(NodeObj));
+
+                // Build connections from output pins
+                for (UEdGraphPin* Pin : Node->Pins)
+                {
+                    if (!Pin || Pin->Direction != EGPD_Output) continue;
+                    for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
+                    {
+                        if (!LinkedPin || !LinkedPin->GetOwningNode()) continue;
+                        TSharedPtr<FJsonObject> ConnObj = MakeShared<FJsonObject>();
+                        ConnObj->SetStringField(TEXT("from"), Node->NodeGuid.ToString());
+                        ConnObj->SetStringField(TEXT("to"), LinkedPin->GetOwningNode()->NodeGuid.ToString());
+                        ConnObj->SetStringField(TEXT("to_pin"), LinkedPin->PinName.ToString());
+                        ConnectionsArray.Add(MakeShared<FJsonValueObject>(ConnObj));
+                    }
+                }
+            }
+
+            AnimGraphObj->SetArrayField(TEXT("nodes"), NodesArray);
+            AnimGraphObj->SetArrayField(TEXT("connections"), ConnectionsArray);
+            AnimGraphsArray.Add(MakeShared<FJsonValueObject>(AnimGraphObj));
+        }
+
+        ResultObj->SetArrayField(TEXT("anim_graphs"), AnimGraphsArray);
+    }
+
     // ===== Interfaces =====
     TArray<TSharedPtr<FJsonValue>> InterfacesArray;
     for (const FBPInterfaceDescription& Interface : Blueprint->ImplementedInterfaces)
@@ -1514,6 +1682,12 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleReadBlueprint(const T
                 if (Prop->HasAnyPropertyFlags(CPF_Transient | CPF_Deprecated))
                     continue;
                 if (Prop->GetName().StartsWith(TEXT("__")))
+                    continue;
+
+                // Always filter out AnimGraph internal properties from CDO
+                if (Prop->GetName().StartsWith(TEXT("AnimGraphNode_")))
+                    continue;
+                if (Prop->GetName().StartsWith(TEXT("AnimBlueprintExtension_")))
                     continue;
 
                 const void* CDOValue = Prop->ContainerPtrToValuePtr<void>(CDO);
