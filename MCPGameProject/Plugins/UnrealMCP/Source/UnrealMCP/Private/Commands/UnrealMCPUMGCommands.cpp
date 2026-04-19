@@ -27,6 +27,8 @@
 #include "Components/SizeBox.h"
 #include "Components/Border.h"
 #include "Components/Spacer.h"
+#include "Components/Slider.h"
+#include "Components/ComboBoxString.h"
 #include "K2Node_FunctionEntry.h"
 #include "K2Node_CallFunction.h"
 #include "K2Node_VariableGet.h"
@@ -114,6 +116,18 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleCommand(const FString& Comm
 	else if (CommandName == TEXT("read_widget_layout"))
 	{
 		return HandleReadWidgetLayout(Params);
+	}
+	else if (CommandName == TEXT("add_slider_to_widget"))
+	{
+		return HandleAddSliderToWidget(Params);
+	}
+	else if (CommandName == TEXT("add_combobox_to_widget"))
+	{
+		return HandleAddComboBoxToWidget(Params);
+	}
+	else if (CommandName == TEXT("set_widget_property"))
+	{
+		return HandleSetWidgetProperty(Params);
 	}
 
 	return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown UMG command: %s"), *CommandName));
@@ -1570,4 +1584,168 @@ TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleReadWidgetLayout(const TSha
 	}
 
 	return Result;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleAddSliderToWidget(const TSharedPtr<FJsonObject>& Params)
+{
+	FString BlueprintName, WidgetName;
+	UWidgetBlueprint* WidgetBlueprint = nullptr;
+	UPanelWidget* ParentWidget = nullptr;
+	UCanvasPanel* RootCanvas = nullptr;
+	if (auto Err = LoadWidgetAndParent(Params, BlueprintName, WidgetName, WidgetBlueprint, ParentWidget, RootCanvas))
+		return Err;
+
+	// Create Slider widget
+	USlider* SliderWidget = WidgetBlueprint->WidgetTree->ConstructWidget<USlider>(USlider::StaticClass(), *WidgetName);
+	if (!SliderWidget)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create Slider widget"));
+
+	// Set properties
+	double MinValue = 0.0;
+	if (Params->TryGetNumberField(TEXT("min_value"), MinValue))
+		SliderWidget->SetMinValue(static_cast<float>(MinValue));
+
+	double MaxValue = 1.0;
+	if (Params->TryGetNumberField(TEXT("max_value"), MaxValue))
+		SliderWidget->SetMaxValue(static_cast<float>(MaxValue));
+
+	double Value = 0.0;
+	if (Params->TryGetNumberField(TEXT("value"), Value))
+		SliderWidget->SetValue(static_cast<float>(Value));
+
+	double StepSize = 0.0;
+	if (Params->TryGetNumberField(TEXT("step_size"), StepSize))
+		SliderWidget->SetStepSize(static_cast<float>(StepSize));
+
+	// Slider color
+	FLinearColor SliderColor = ParseColor(Params, TEXT("slider_color"), FLinearColor(0.04f, 0.04f, 0.04f, 1.0f));
+	SliderWidget->SetSliderBarColor(SliderColor);
+
+	FLinearColor HandleColor = ParseColor(Params, TEXT("handle_color"), FLinearColor::White);
+	SliderWidget->SetSliderHandleColor(HandleColor);
+
+	// Orientation
+	FString Orientation;
+	if (Params->TryGetStringField(TEXT("orientation"), Orientation) && Orientation == TEXT("Vertical"))
+		SliderWidget->SetOrientation(EOrientation::Orient_Vertical);
+
+	// Add to parent
+	AddChildToParent(SliderWidget, ParentWidget, RootCanvas, Params, FVector2D(200, 20));
+
+	CompileWidget(WidgetBlueprint);
+
+	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetStringField(TEXT("widget_name"), WidgetName);
+	Result->SetNumberField(TEXT("min_value"), MinValue);
+	Result->SetNumberField(TEXT("max_value"), MaxValue);
+	Result->SetNumberField(TEXT("value"), Value);
+	return Result;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleAddComboBoxToWidget(const TSharedPtr<FJsonObject>& Params)
+{
+	FString BlueprintName, WidgetName;
+	UWidgetBlueprint* WidgetBlueprint = nullptr;
+	UPanelWidget* ParentWidget = nullptr;
+	UCanvasPanel* RootCanvas = nullptr;
+	if (auto Err = LoadWidgetAndParent(Params, BlueprintName, WidgetName, WidgetBlueprint, ParentWidget, RootCanvas))
+		return Err;
+
+	// Create ComboBoxString widget
+	UComboBoxString* ComboBox = WidgetBlueprint->WidgetTree->ConstructWidget<UComboBoxString>(UComboBoxString::StaticClass(), *WidgetName);
+	if (!ComboBox)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create ComboBoxString widget"));
+
+	// Add options
+	const TArray<TSharedPtr<FJsonValue>>* OptionsArray;
+	if (Params->TryGetArrayField(TEXT("options"), OptionsArray))
+	{
+		for (const auto& Option : *OptionsArray)
+		{
+			FString OptionStr = Option->AsString();
+			if (!OptionStr.IsEmpty())
+				ComboBox->AddOption(OptionStr);
+		}
+	}
+
+	// Set selected option
+	FString SelectedOption;
+	if (Params->TryGetStringField(TEXT("selected_option"), SelectedOption) && !SelectedOption.IsEmpty())
+	{
+		ComboBox->SetSelectedOption(SelectedOption);
+	}
+	else if (OptionsArray && OptionsArray->Num() > 0)
+	{
+		// Default to first option if none specified
+		ComboBox->SetSelectedOption((*OptionsArray)[0]->AsString());
+	}
+
+	// Font size — ComboBoxString::Font is set at construction, not runtime-modifiable
+	// We skip font_size for ComboBox since the UE API deprecated direct access
+	// and provides no setter. The default engine font will be used.
+
+	// Add to parent
+	AddChildToParent(ComboBox, ParentWidget, RootCanvas, Params, FVector2D(200, 40));
+
+	CompileWidget(WidgetBlueprint);
+
+	TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+	Result->SetStringField(TEXT("widget_name"), WidgetName);
+	if (!SelectedOption.IsEmpty())
+		Result->SetStringField(TEXT("selected_option"), SelectedOption);
+	if (OptionsArray)
+	{
+		TArray<TSharedPtr<FJsonValue>> OptionsOut;
+		for (const auto& Opt : *OptionsArray)
+			OptionsOut.Add(MakeShared<FJsonValueString>(Opt->AsString()));
+		Result->SetArrayField(TEXT("options"), OptionsOut);
+	}
+	return Result;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleSetWidgetProperty(const TSharedPtr<FJsonObject>& Params)
+{
+	FString BlueprintName;
+	if (!Params->TryGetStringField(TEXT("blueprint_name"), BlueprintName))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'blueprint_name' parameter"));
+
+	FString WidgetName;
+	if (!Params->TryGetStringField(TEXT("widget_name"), WidgetName))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'widget_name' parameter"));
+
+	FString PropertyName;
+	if (!Params->TryGetStringField(TEXT("property_name"), PropertyName))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'property_name' parameter"));
+
+	FString PropertyValue;
+	if (!Params->TryGetStringField(TEXT("property_value"), PropertyValue))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'property_value' parameter"));
+
+	UWidgetBlueprint* WidgetBlueprint = FindWidgetBlueprint(BlueprintName);
+	if (!WidgetBlueprint)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Widget Blueprint '%s' not found"), *BlueprintName));
+
+	UWidget* Widget = WidgetBlueprint->WidgetTree->FindWidget(FName(*WidgetName));
+	if (!Widget)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Widget '%s' not found"), *WidgetName));
+
+	// Find the property via reflection
+	FProperty* Prop = Widget->GetClass()->FindPropertyByName(*PropertyName);
+	if (!Prop)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Property '%s' not found on widget '%s' (class: %s)"), *PropertyName, *WidgetName, *Widget->GetClass()->GetName()));
+
+	// Use ImportText for maximum type compatibility (handles FText, FLinearColor, FVector, enums, etc.)
+	void* PropAddr = Prop->ContainerPtrToValuePtr<void>(Widget);
+	const TCHAR* ImportResult = Prop->ImportText_Direct(*PropertyValue, PropAddr, Widget, PPF_None);
+	if (!ImportResult)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Failed to set property '%s' to value '%s'"), *PropertyName, *PropertyValue));
+
+	CompileWidget(WidgetBlueprint);
+
+	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+	ResultObj->SetStringField(TEXT("widget_name"), WidgetName);
+	ResultObj->SetStringField(TEXT("property_name"), PropertyName);
+	ResultObj->SetStringField(TEXT("property_value"), PropertyValue);
+	ResultObj->SetBoolField(TEXT("success"), true);
+	return ResultObj;
 }

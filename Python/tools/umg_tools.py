@@ -810,6 +810,197 @@ def register_umg_tools(mcp: FastMCP):
             return {"success": False, "message": f"Error adding Spacer to widget: {e}"}
 
     @mcp.tool()
+    def add_slider_to_widget(
+        ctx: Context,
+        path: str,
+        slider_name: str,
+        min_value: float = 0.0,
+        max_value: float = 1.0,
+        value: float = 0.0,
+        step_size: float = 0.0,
+        orientation: str = "Horizontal",
+        slider_color: List[float] = [0.04, 0.04, 0.04, 1.0],
+        handle_color: List[float] = [1.0, 1.0, 1.0, 1.0],
+        position: List[float] = [0.0, 0.0],
+        size: List[float] = [200.0, 20.0],
+        parent_name: str = ""
+    ) -> Dict[str, Any]:
+        """
+        Add a Slider widget to a UMG Widget Blueprint.
+
+        Args:
+            path: Full asset path of the target Widget Blueprint (e.g. "/Game/UI/WBP_Settings")
+            slider_name: Name to give the new Slider
+            min_value: Minimum slider value. Default: 0.0
+            max_value: Maximum slider value. Default: 1.0
+            value: Initial slider value. Default: 0.0
+            step_size: Minimum step size for the slider (0 = continuous). Default: 0.0
+            orientation: "Horizontal" or "Vertical". Default: "Horizontal"
+            slider_color: [R, G, B, A] bar color (0.0 to 1.0). Default: dark gray
+            handle_color: [R, G, B, A] handle color (0.0 to 1.0). Default: white
+            position: [X, Y] position (only used when adding to root CanvasPanel)
+            size: [Width, Height] of the slider (only used when adding to root CanvasPanel). Default: [200, 20]
+            parent_name: Name of an existing container widget to nest this inside. If empty, adds to root CanvasPanel.
+
+        Returns:
+            Dict containing widget_name, min_value, max_value, value
+
+        Examples:
+            add_slider_to_widget("/Game/UI/WBP_Settings", "VolumeSlider", min_value=0, max_value=100, value=50)
+            add_slider_to_widget("/Game/UI/WBP_Settings", "BrightnessSlider", value=0.5, parent_name="SettingsVBox")
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            params = {
+                "blueprint_name": path,
+                "widget_name": slider_name,
+                "min_value": min_value,
+                "max_value": max_value,
+                "value": value,
+                "step_size": step_size,
+                "slider_color": slider_color,
+                "handle_color": handle_color,
+                "position": position,
+                "size": size
+            }
+            if orientation != "Horizontal":
+                params["orientation"] = orientation
+            if parent_name:
+                params["parent_name"] = parent_name
+
+            response = unreal.send_command("add_slider_to_widget", params)
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            return response
+
+        except Exception as e:
+            return {"success": False, "message": f"Error adding Slider to widget: {e}"}
+
+    @mcp.tool()
+    def add_combobox_to_widget(
+        ctx: Context,
+        path: str,
+        combobox_name: str,
+        options: List[str] = [],
+        selected_option: str = "",
+        position: List[float] = [0.0, 0.0],
+        size: List[float] = [200.0, 40.0],
+        parent_name: str = ""
+    ) -> Dict[str, Any]:
+        """
+        Add a ComboBox (String) dropdown widget to a UMG Widget Blueprint.
+
+        Args:
+            path: Full asset path of the target Widget Blueprint (e.g. "/Game/UI/WBP_Settings")
+            combobox_name: Name to give the new ComboBox
+            options: List of string options for the dropdown.
+                     Examples: ["Low", "Medium", "High"], ["Left Shoulder", "Right Shoulder"]
+            selected_option: Which option to select by default. If empty, selects the first option.
+            position: [X, Y] position (only used when adding to root CanvasPanel)
+            size: [Width, Height] of the combo box (only used when adding to root CanvasPanel). Default: [200, 40]
+            parent_name: Name of an existing container widget to nest this inside. If empty, adds to root CanvasPanel.
+
+        Returns:
+            Dict containing widget_name, options, selected_option
+
+        Examples:
+            add_combobox_to_widget("/Game/UI/WBP_Settings", "ResolutionCombo", options=["1920x1080", "2560x1440", "3840x2160"])
+            add_combobox_to_widget("/Game/UI/WBP_Settings", "ShoulderCombo", options=["Left", "Right"], selected_option="Right", parent_name="CameraVBox")
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            params = {
+                "blueprint_name": path,
+                "widget_name": combobox_name,
+                "options": options,
+                "position": position,
+                "size": size
+            }
+            if selected_option:
+                params["selected_option"] = selected_option
+            if parent_name:
+                params["parent_name"] = parent_name
+
+            response = unreal.send_command("add_combobox_to_widget", params)
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            return response
+
+        except Exception as e:
+            return {"success": False, "message": f"Error adding ComboBox to widget: {e}"}
+
+    @mcp.tool()
+    def set_widget_property(
+        ctx: Context,
+        path: str,
+        widget_name: str,
+        property_name: str,
+        property_value: str
+    ) -> Dict[str, Any]:
+        """
+        Set a property on an existing widget in a UMG Widget Blueprint using reflection.
+        This is a generic tool that can modify most widget properties.
+
+        Args:
+            path: Full asset path of the Widget Blueprint (e.g. "/Game/UI/WBP_Settings")
+            widget_name: Name of the existing widget to modify (e.g. "TitleText", "HealthBar")
+            property_name: Name of the UProperty to set. Common examples:
+                - TextBlock: "Text" (FText value, use NSLOCTEXT or INVTEXT format)
+                - Slider: "Value", "MinValue", "MaxValue", "StepSize"
+                - ProgressBar: "Percent"
+                - Image: "ColorAndOpacity" (FLinearColor format)
+                - Any widget: "Visibility" (e.g. "Visible", "Hidden", "Collapsed")
+                - Any widget: "bIsEnabled"
+                - Any widget: "RenderOpacity"
+            property_value: String representation of the value. Format depends on property type:
+                - FText: 'NSLOCTEXT("", "", "Hello World")' or 'INVTEXT("Hello World")'
+                - float/int: "0.5", "100"
+                - bool: "true", "false"
+                - FLinearColor: "(R=1.0,G=0.0,B=0.0,A=1.0)"
+                - Enum: "Visible", "Hidden", "Collapsed"
+
+        Returns:
+            Dict with widget_name, property_name, property_value, success
+
+        Examples:
+            set_widget_property("/Game/UI/WBP_HUD", "TitleText", "Text", 'INVTEXT("Settings")')
+            set_widget_property("/Game/UI/WBP_HUD", "VolumeSlider", "Value", "0.75")
+            set_widget_property("/Game/UI/WBP_HUD", "HealthBar", "Percent", "0.5")
+            set_widget_property("/Game/UI/WBP_HUD", "SomeWidget", "Visibility", "Collapsed")
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            params = {
+                "blueprint_name": path,
+                "widget_name": widget_name,
+                "property_name": property_name,
+                "property_value": property_value
+            }
+
+            response = unreal.send_command("set_widget_property", params)
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            return response
+
+        except Exception as e:
+            return {"success": False, "message": f"Error setting widget property: {e}"}
+
+    @mcp.tool()
     def set_widget_anchor(
         ctx: Context,
         path: str,

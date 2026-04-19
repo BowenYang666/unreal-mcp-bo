@@ -297,7 +297,10 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("add_spacer_to_widget") ||
                      CommandType == TEXT("set_widget_anchor") ||
                      CommandType == TEXT("set_widget_slot_property") ||
-                     CommandType == TEXT("read_widget_layout"))
+                     CommandType == TEXT("read_widget_layout") ||
+                     CommandType == TEXT("add_slider_to_widget") ||
+                     CommandType == TEXT("add_combobox_to_widget") ||
+                     CommandType == TEXT("set_widget_property"))
             {
                 ResultJson = UMGCommands->HandleCommand(CommandType, Params);
             }

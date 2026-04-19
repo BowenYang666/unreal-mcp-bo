@@ -122,4 +122,13 @@ private:
 
     /** Read the full widget tree layout of a Widget Blueprint (read-only) */
     TSharedPtr<FJsonObject> HandleReadWidgetLayout(const TSharedPtr<FJsonObject>& Params);
+
+    /** Add a Slider widget to a UMG Widget Blueprint */
+    TSharedPtr<FJsonObject> HandleAddSliderToWidget(const TSharedPtr<FJsonObject>& Params);
+
+    /** Add a ComboBox (String) widget to a UMG Widget Blueprint */
+    TSharedPtr<FJsonObject> HandleAddComboBoxToWidget(const TSharedPtr<FJsonObject>& Params);
+
+    /** Set a property on an existing widget using reflection (handles Text, Color, Value, Visibility, etc.) */
+    TSharedPtr<FJsonObject> HandleSetWidgetProperty(const TSharedPtr<FJsonObject>& Params);
 }; 
