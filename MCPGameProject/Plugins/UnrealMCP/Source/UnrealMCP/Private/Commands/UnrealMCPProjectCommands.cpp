@@ -269,6 +269,10 @@ TSharedPtr<FJsonObject> FUnrealMCPProjectCommands::HandleGetClassProperties(cons
 		if (Prop->HasAnyPropertyFlags(CPF_Transient | CPF_Deprecated))
 			continue;
 
+		// Skip BoneTree for Skeleton assets (replaced by bone_hierarchy)
+		if (AssetInstance && AssetInstance->IsA<USkeleton>() && Prop->GetName() == TEXT("BoneTree"))
+			continue;
+
 		// Get category
 		FString Category = Prop->GetMetaData(TEXT("Category"));
 
