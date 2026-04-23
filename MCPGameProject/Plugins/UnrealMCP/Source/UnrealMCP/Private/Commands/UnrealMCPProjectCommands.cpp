@@ -3,6 +3,7 @@
 #include "GameFramework/InputSettings.h"
 #include "EditorAssetLibrary.h"
 #include "JsonObjectConverter.h"
+#include "Animation/Skeleton.h"
 
 FUnrealMCPProjectCommands::FUnrealMCPProjectCommands()
 {
@@ -307,10 +308,47 @@ TSharedPtr<FJsonObject> FUnrealMCPProjectCommands::HandleGetClassProperties(cons
 		if (AssetInstance)
 		{
 			const void* ValuePtr = Prop->ContainerPtrToValuePtr<void>(AssetInstance);
-			FString ValueStr;
-			Prop->ExportTextItem_Direct(ValueStr, ValuePtr, nullptr, nullptr, PPF_None);
-			if (!ValueStr.IsEmpty())
-				PropObj->SetStringField(TEXT("value"), ValueStr);
+
+			// For arrays of UObjects, expand each element's properties
+			FArrayProperty* ArrayPropCast = CastField<FArrayProperty>(Prop);
+			FObjectProperty* InnerObjProp = ArrayPropCast ? CastField<FObjectProperty>(ArrayPropCast->Inner) : nullptr;
+			if (InnerObjProp)
+			{
+				FScriptArrayHelper ArrayHelper(ArrayPropCast, ValuePtr);
+				TArray<TSharedPtr<FJsonValue>> ExpandedArray;
+				const int32 MaxExpand = FMath::Min(ArrayHelper.Num(), 200);
+				for (int32 i = 0; i < MaxExpand; ++i)
+				{
+					UObject* Elem = InnerObjProp->GetObjectPropertyValue(ArrayHelper.GetElementPtr(i));
+					if (!Elem) continue;
+
+					TSharedPtr<FJsonObject> ElemObj = MakeShared<FJsonObject>();
+					for (TFieldIterator<FProperty> ElemIt(Elem->GetClass()); ElemIt; ++ElemIt)
+					{
+						FProperty* ElemProp = *ElemIt;
+						if (!ElemProp || ElemProp->GetOwnerClass() == UObject::StaticClass()) continue;
+						if (ElemProp->HasAnyPropertyFlags(CPF_Transient | CPF_Deprecated)) continue;
+
+						const void* ElemValPtr = ElemProp->ContainerPtrToValuePtr<void>(Elem);
+						FString ElemValStr;
+						ElemProp->ExportTextItem_Direct(ElemValStr, ElemValPtr, nullptr, nullptr, PPF_None);
+						if (!ElemValStr.IsEmpty())
+							ElemObj->SetStringField(ElemProp->GetName(), ElemValStr);
+					}
+					ExpandedArray.Add(MakeShared<FJsonValueObject>(ElemObj));
+				}
+				PropObj->SetArrayField(TEXT("value"), ExpandedArray);
+				PropObj->SetNumberField(TEXT("count"), ArrayHelper.Num());
+				if (ArrayHelper.Num() > MaxExpand)
+					PropObj->SetBoolField(TEXT("truncated"), true);
+			}
+			else
+			{
+				FString ValueStr;
+				Prop->ExportTextItem_Direct(ValueStr, ValuePtr, nullptr, nullptr, PPF_None);
+				if (!ValueStr.IsEmpty())
+					PropObj->SetStringField(TEXT("value"), ValueStr);
+			}
 		}
 
 		PropertiesArray.Add(MakeShared<FJsonValueObject>(PropObj));
@@ -325,6 +363,27 @@ TSharedPtr<FJsonObject> FUnrealMCPProjectCommands::HandleGetClassProperties(cons
 		ResultObj->SetStringField(TEXT("asset_path"), AssetPath);
 	ResultObj->SetNumberField(TEXT("property_count"), PropertiesArray.Num());
 	ResultObj->SetArrayField(TEXT("properties"), PropertiesArray);
+
+	// Special handling: USkeleton bone hierarchy (stored in FReferenceSkeleton, not in UProperties)
+	if (AssetInstance)
+	{
+		USkeleton* Skeleton = Cast<USkeleton>(AssetInstance);
+		if (Skeleton)
+		{
+			const FReferenceSkeleton& RefSkel = Skeleton->GetReferenceSkeleton();
+			TArray<TSharedPtr<FJsonValue>> BonesArray;
+			for (int32 i = 0; i < RefSkel.GetRawBoneNum(); ++i)
+			{
+				const FMeshBoneInfo& BoneInfo = RefSkel.GetRawRefBoneInfo()[i];
+				TSharedPtr<FJsonObject> BoneObj = MakeShared<FJsonObject>();
+				BoneObj->SetNumberField(TEXT("index"), i);
+				BoneObj->SetStringField(TEXT("name"), BoneInfo.Name.ToString());
+				BoneObj->SetNumberField(TEXT("parent_index"), BoneInfo.ParentIndex);
+				BonesArray.Add(MakeShared<FJsonValueObject>(BoneObj));
+			}
+			ResultObj->SetArrayField(TEXT("bone_hierarchy"), BonesArray);
+		}
+	}
 
 	return ResultObj;
 }
