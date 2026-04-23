@@ -318,9 +318,7 @@ def register_material_tools(mcp: FastMCP):
         """Set a property on a material expression node.
 
         Supports numeric types (float, int, bool), strings, colors (LinearColor as {r,g,b,a}),
-        vectors ({x,y,z}), and enum values (as string name).
-
-        Note: Texture properties are not yet supported (TODO).
+        vectors ({x,y,z}), enum values (as string name), and UObject references (as asset path string).
 
         Common property examples by expression type:
         - Constant: property_name="R", value=0.5
@@ -328,13 +326,16 @@ def register_material_tools(mcp: FastMCP):
         - ScalarParameter: property_name="DefaultValue", value=0.5 (also "ParameterName" for name)
         - VectorParameter: property_name="DefaultValue", value={"r":1,"g":0,"b":0,"a":1}
         - Noise: property_name="NoiseFunction", value="VoronoiALU" (enum)
+        - MaterialFunctionCall: property_name="MaterialFunction", value="/Engine/Functions/Engine_MaterialFunctions02/AntiAliasing/DitherTemporalAA.DitherTemporalAA"
+        - TextureSample: property_name="Texture", value="/Game/Textures/T_MyTexture.T_MyTexture"
 
         Args:
             ctx: The MCP context
             asset_path: Full asset path of the material
             node_index: Index of the expression node (from add_material_expression or read_material)
             property_name: Name of the property to set
-            value: Value to set. Type depends on the property: number, bool, string, or dict for colors/vectors.
+            value: Value to set. Type depends on the property: number, bool, string, dict for colors/vectors,
+                or asset path string for UObject references (e.g. MaterialFunction, Texture).
 
         Returns:
             Dict with success, node_type, node_index, property_name
@@ -343,6 +344,7 @@ def register_material_tools(mcp: FastMCP):
             set_material_expression_property(asset_path="/Game/Materials/M_Ice", node_index=0, property_name="R", value=0.5)
             set_material_expression_property(asset_path="/Game/Materials/M_Ice", node_index=1, property_name="Constant", value={"r":0.5,"g":0.8,"b":1.0,"a":1.0})
             set_material_expression_property(asset_path="/Game/Materials/M_Ice", node_index=2, property_name="ParameterName", value="IceColor")
+            set_material_expression_property(asset_path="/Game/Materials/M_Ice", node_index=5, property_name="MaterialFunction", value="/Engine/Functions/Engine_MaterialFunctions02/AntiAliasing/DitherTemporalAA.DitherTemporalAA")
         """
         from unreal_mcp_server import get_unreal_connection
 

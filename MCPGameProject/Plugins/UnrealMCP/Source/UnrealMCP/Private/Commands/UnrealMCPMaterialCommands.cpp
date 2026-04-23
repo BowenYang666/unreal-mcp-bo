@@ -1000,11 +1000,49 @@ TSharedPtr<FJsonObject> FUnrealMCPMaterialCommands::HandleSetMaterialExpressionP
             bSuccess = true;
         }
     }
+    else if (FObjectProperty* ObjProp = CastField<FObjectProperty>(Prop))
+    {
+        FString AssetPath = ValueJson->AsString();
+        // Try StaticLoadObject with the expected class first
+        UObject* LoadedObj = StaticLoadObject(ObjProp->PropertyClass, nullptr, *AssetPath);
+        // Fallback: try loading as UObject then check type compatibility
+        if (!LoadedObj)
+        {
+            LoadedObj = StaticLoadObject(UObject::StaticClass(), nullptr, *AssetPath);
+        }
+        // Fallback: try UEditorAssetLibrary which handles more path formats
+        if (!LoadedObj)
+        {
+            LoadedObj = UEditorAssetLibrary::LoadAsset(AssetPath);
+        }
+        if (!LoadedObj)
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(
+                FString::Printf(TEXT("Failed to load object '%s' for property '%s' (expected type: %s)"),
+                    *AssetPath, *PropertyName, *ObjProp->PropertyClass->GetName()));
+        }
+        if (!LoadedObj->IsA(ObjProp->PropertyClass))
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(
+                FString::Printf(TEXT("Loaded object '%s' is type '%s', expected '%s'"),
+                    *AssetPath, *LoadedObj->GetClass()->GetName(), *ObjProp->PropertyClass->GetName()));
+        }
+        ObjProp->SetObjectPropertyValue(ObjProp->ContainerPtrToValuePtr<void>(Expr), LoadedObj);
+        bSuccess = true;
+    }
+    else if (FSoftObjectProperty* SoftObjProp = CastField<FSoftObjectProperty>(Prop))
+    {
+        FString AssetPath = ValueJson->AsString();
+        FSoftObjectPath SoftPath{AssetPath};
+        FSoftObjectPtr SoftPtr{SoftPath};
+        SoftObjProp->SetPropertyValue_InContainer(Expr, SoftPtr);
+        bSuccess = true;
+    }
 
     if (!bSuccess)
     {
         return FUnrealMCPCommonUtils::CreateErrorResponse(
-            FString::Printf(TEXT("Unsupported property type '%s' for property '%s'. Supported: float, double, int, bool, string, name, LinearColor, Color, Vector, Vector4, enum."),
+            FString::Printf(TEXT("Unsupported property type '%s' for property '%s'. Supported: float, double, int, bool, string, name, LinearColor, Color, Vector, Vector4, enum, object (asset path), soft_object (asset path)."),
                 *Prop->GetCPPType(), *PropertyName));
     }
 
