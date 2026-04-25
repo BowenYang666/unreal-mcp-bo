@@ -501,8 +501,178 @@ TSharedPtr<FJsonObject> FUnrealMCPCommonUtils::ActorToJsonObject(AActor* Actor, 
     ScaleArray.Add(MakeShared<FJsonValueNumber>(Scale.Y));
     ScaleArray.Add(MakeShared<FJsonValueNumber>(Scale.Z));
     ActorObject->SetArrayField(TEXT("scale"), ScaleArray);
+
+    if (bDetailed)
+    {
+        // Dump editable/visible properties of the actor itself (skipping UObject/AActor base properties to reduce noise)
+        TSharedPtr<FJsonObject> ActorPropsObj = ObjectPropertiesToJson(Actor, AActor::StaticClass());
+        if (ActorPropsObj.IsValid() && ActorPropsObj->Values.Num() > 0)
+        {
+            ActorObject->SetObjectField(TEXT("properties"), ActorPropsObj);
+        }
+
+        // Dump all components and their editable/visible properties
+        TSharedPtr<FJsonObject> ComponentsObj = MakeShared<FJsonObject>();
+        TArray<UActorComponent*> Components;
+        Actor->GetComponents(Components);
+        for (UActorComponent* Comp : Components)
+        {
+            if (!Comp) continue;
+            TSharedPtr<FJsonObject> CompObj = MakeShared<FJsonObject>();
+            CompObj->SetStringField(TEXT("class"), Comp->GetClass()->GetName());
+            TSharedPtr<FJsonObject> Props = ObjectPropertiesToJson(Comp, UActorComponent::StaticClass());
+            if (Props.IsValid())
+            {
+                CompObj->SetObjectField(TEXT("properties"), Props);
+            }
+            ComponentsObj->SetObjectField(Comp->GetName(), CompObj);
+        }
+        ActorObject->SetObjectField(TEXT("components"), ComponentsObj);
+    }
     
     return ActorObject;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPCommonUtils::ObjectPropertiesToJson(UObject* Object, UClass* StopAtClass)
+{
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    if (!Object) return Result;
+
+    UClass* ObjClass = Object->GetClass();
+
+    for (TFieldIterator<FProperty> PropIt(ObjClass); PropIt; ++PropIt)
+    {
+        FProperty* Prop = *PropIt;
+        if (!Prop) continue;
+
+        // Skip transient/deprecated/editor-only-skipped properties
+        if (Prop->HasAnyPropertyFlags(CPF_Transient | CPF_Deprecated))
+            continue;
+
+        // Only include properties that are user-editable or blueprint-visible
+        if (!Prop->HasAnyPropertyFlags(CPF_Edit | CPF_BlueprintVisible))
+            continue;
+
+        // Skip properties owned by the stop class or its parents (e.g. UObject, AActor base props)
+        if (StopAtClass)
+        {
+            UClass* OwnerClass = Prop->GetOwnerClass();
+            if (OwnerClass && (OwnerClass == StopAtClass || StopAtClass->IsChildOf(OwnerClass)))
+                continue;
+        }
+
+        const void* ValuePtr = Prop->ContainerPtrToValuePtr<void>(Object);
+
+        // For FObjectProperty, just return the object path (avoid recursion)
+        if (FObjectProperty* ObjProp = CastField<FObjectProperty>(Prop))
+        {
+            UObject* RefObj = ObjProp->GetObjectPropertyValue(ValuePtr);
+            Result->SetStringField(Prop->GetName(), RefObj ? RefObj->GetPathName() : TEXT("None"));
+            continue;
+        }
+
+        // For FLinearColor, return as object {R,G,B,A}
+        if (FStructProperty* StructProp = CastField<FStructProperty>(Prop))
+        {
+            FString StructName = StructProp->Struct->GetName();
+            if (StructName == TEXT("LinearColor"))
+            {
+                const FLinearColor* Color = (const FLinearColor*)ValuePtr;
+                TSharedPtr<FJsonObject> ColorObj = MakeShared<FJsonObject>();
+                ColorObj->SetNumberField(TEXT("R"), Color->R);
+                ColorObj->SetNumberField(TEXT("G"), Color->G);
+                ColorObj->SetNumberField(TEXT("B"), Color->B);
+                ColorObj->SetNumberField(TEXT("A"), Color->A);
+                Result->SetObjectField(Prop->GetName(), ColorObj);
+                continue;
+            }
+            if (StructName == TEXT("Color"))
+            {
+                const FColor* Color = (const FColor*)ValuePtr;
+                TSharedPtr<FJsonObject> ColorObj = MakeShared<FJsonObject>();
+                ColorObj->SetNumberField(TEXT("R"), Color->R);
+                ColorObj->SetNumberField(TEXT("G"), Color->G);
+                ColorObj->SetNumberField(TEXT("B"), Color->B);
+                ColorObj->SetNumberField(TEXT("A"), Color->A);
+                Result->SetObjectField(Prop->GetName(), ColorObj);
+                continue;
+            }
+            if (StructName == TEXT("Vector") || StructName == TEXT("Vector3d"))
+            {
+                const FVector* V = (const FVector*)ValuePtr;
+                TSharedPtr<FJsonObject> VObj = MakeShared<FJsonObject>();
+                VObj->SetNumberField(TEXT("X"), V->X);
+                VObj->SetNumberField(TEXT("Y"), V->Y);
+                VObj->SetNumberField(TEXT("Z"), V->Z);
+                Result->SetObjectField(Prop->GetName(), VObj);
+                continue;
+            }
+            if (StructName == TEXT("Rotator"))
+            {
+                const FRotator* R = (const FRotator*)ValuePtr;
+                TSharedPtr<FJsonObject> RObj = MakeShared<FJsonObject>();
+                RObj->SetNumberField(TEXT("Pitch"), R->Pitch);
+                RObj->SetNumberField(TEXT("Yaw"), R->Yaw);
+                RObj->SetNumberField(TEXT("Roll"), R->Roll);
+                Result->SetObjectField(Prop->GetName(), RObj);
+                continue;
+            }
+        }
+
+        // Numeric / bool / enum / string types
+        if (FBoolProperty* BoolProp = CastField<FBoolProperty>(Prop))
+        {
+            Result->SetBoolField(Prop->GetName(), BoolProp->GetPropertyValue(ValuePtr));
+            continue;
+        }
+        if (FNumericProperty* NumProp = CastField<FNumericProperty>(Prop))
+        {
+            if (NumProp->IsEnum() && NumProp->IsA<FByteProperty>())
+            {
+                FByteProperty* ByteProp = CastField<FByteProperty>(NumProp);
+                if (ByteProp && ByteProp->Enum)
+                {
+                    int64 EnumVal = ByteProp->GetSignedIntPropertyValue(ValuePtr);
+                    Result->SetStringField(Prop->GetName(), ByteProp->Enum->GetNameStringByValue(EnumVal));
+                    continue;
+                }
+            }
+            if (NumProp->IsFloatingPoint())
+            {
+                Result->SetNumberField(Prop->GetName(), NumProp->GetFloatingPointPropertyValue(ValuePtr));
+            }
+            else
+            {
+                Result->SetNumberField(Prop->GetName(), (double)NumProp->GetSignedIntPropertyValue(ValuePtr));
+            }
+            continue;
+        }
+        if (FEnumProperty* EnumProp = CastField<FEnumProperty>(Prop))
+        {
+            FNumericProperty* Underlying = EnumProp->GetUnderlyingProperty();
+            int64 EnumVal = Underlying->GetSignedIntPropertyValue(ValuePtr);
+            UEnum* EnumDef = EnumProp->GetEnum();
+            Result->SetStringField(Prop->GetName(), EnumDef ? EnumDef->GetNameStringByValue(EnumVal) : FString::FromInt(EnumVal));
+            continue;
+        }
+        if (CastField<FStrProperty>(Prop) || CastField<FNameProperty>(Prop) || CastField<FTextProperty>(Prop))
+        {
+            FString Str;
+            Prop->ExportTextItem_Direct(Str, ValuePtr, nullptr, nullptr, PPF_None);
+            Result->SetStringField(Prop->GetName(), Str);
+            continue;
+        }
+
+        // Fallback: serialize with ExportTextItem_Direct (covers small structs, arrays, etc.)
+        FString ValueStr;
+        Prop->ExportTextItem_Direct(ValueStr, ValuePtr, nullptr, nullptr, PPF_None);
+        if (!ValueStr.IsEmpty() && ValueStr.Len() < 4096)
+        {
+            Result->SetStringField(Prop->GetName(), ValueStr);
+        }
+    }
+
+    return Result;
 }
 
 UK2Node_Event* FUnrealMCPCommonUtils::FindExistingEventNode(UEdGraph* Graph, const FString& EventName)

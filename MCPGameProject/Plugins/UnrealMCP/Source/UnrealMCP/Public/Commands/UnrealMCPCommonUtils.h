@@ -35,6 +35,10 @@ public:
     // Actor utilities
     static TSharedPtr<FJsonValue> ActorToJson(AActor* Actor);
     static TSharedPtr<FJsonObject> ActorToJsonObject(AActor* Actor, bool bDetailed = false);
+
+    /** Serialize an object's editable/visible UPROPERTYs to a JSON object.
+     *  Properties owned by StopAtClass or its parents are skipped (use to filter out base-class noise). */
+    static TSharedPtr<FJsonObject> ObjectPropertiesToJson(UObject* Object, UClass* StopAtClass = nullptr);
     
     // Blueprint utilities
     static UBlueprint* FindBlueprint(const FString& BlueprintName);
