@@ -4,6 +4,8 @@
 #include "EditorAssetLibrary.h"
 #include "JsonObjectConverter.h"
 #include "Animation/Skeleton.h"
+#include "Engine/Blueprint.h"
+#include "Engine/BlueprintGeneratedClass.h"
 
 FUnrealMCPProjectCommands::FUnrealMCPProjectCommands()
 {
@@ -214,6 +216,21 @@ TSharedPtr<FJsonObject> FUnrealMCPProjectCommands::HandleGetClassProperties(cons
 				FString::Printf(TEXT("Failed to load asset: %s"), *AssetPath));
 		}
 		TargetClass = AssetInstance->GetClass();
+
+		// If the loaded asset is a UBlueprint, dive into its GeneratedClass + CDO
+		// so we expose actual Blueprint-defined properties (e.g. AIControllerClass)
+		// with their default values, not the UBlueprint wrapper's own properties.
+		if (UBlueprint* AsBP = Cast<UBlueprint>(AssetInstance))
+		{
+			if (AsBP->GeneratedClass)
+			{
+				TargetClass = AsBP->GeneratedClass;
+				if (UObject* CDO = TargetClass->GetDefaultObject())
+				{
+					AssetInstance = CDO;
+				}
+			}
+		}
 	}
 	else if (!ClassName.IsEmpty())
 	{
@@ -241,6 +258,13 @@ TSharedPtr<FJsonObject> FUnrealMCPProjectCommands::HandleGetClassProperties(cons
 		{
 			return FUnrealMCPCommonUtils::CreateErrorResponse(
 				FString::Printf(TEXT("Class not found: %s"), *ClassName));
+		}
+
+		// If we found a class via class_name, use its CDO so that current default
+		// values are returned alongside property metadata.
+		if (UObject* CDO = TargetClass->GetDefaultObject())
+		{
+			AssetInstance = CDO;
 		}
 	}
 	else
