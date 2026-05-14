@@ -1537,7 +1537,6 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleReadBlueprint(const T
             {
                 if (!Node) continue;
                 UAnimGraphNode_Base* AnimNode = Cast<UAnimGraphNode_Base>(Node);
-                if (!AnimNode) continue;
 
                 TSharedPtr<FJsonObject> NodeObj = MakeShared<FJsonObject>();
                 NodeObj->SetStringField(TEXT("node_id"), Node->NodeGuid.ToString());
@@ -1551,8 +1550,18 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleReadBlueprint(const T
                 {
                     TypeName = TypeName.RightChop(14);
                 }
+                else if (TypeName.StartsWith(TEXT("K2Node_")))
+                {
+                    TypeName = TypeName.RightChop(7);
+                }
                 NodeObj->SetStringField(TEXT("type"), TypeName);
                 NodeObj->SetStringField(TEXT("title"), Node->GetNodeTitle(ENodeTitleType::FullTitle).ToString());
+
+                // Record referenced variable name for VariableGet/VariableSet nodes
+                if (UK2Node_Variable* VarNode = Cast<UK2Node_Variable>(Node))
+                {
+                    NodeObj->SetStringField(TEXT("variable_name"), VarNode->VariableReference.GetMemberName().ToString());
+                }
 
                 // StateMachine: expand states and transitions
                 UAnimGraphNode_StateMachine* SMNode = Cast<UAnimGraphNode_StateMachine>(Node);
