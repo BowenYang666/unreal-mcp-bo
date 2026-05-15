@@ -864,7 +864,95 @@ TSharedPtr<FJsonObject> FUnrealMCPMaterialCommands::HandleSetMaterialExpressionP
     TSharedPtr<FJsonValue> ValueJson = Params->TryGetField(TEXT("value"));
     bool bSuccess = false;
 
+    // Special-case: Custom HLSL node array properties (Inputs, AdditionalOutputs,
+    // AdditionalDefines, IncludeFilePaths). These are arrays of UStructs/FStrings
+    // not handled by generic reflection serialization.
+    if (UMaterialExpressionCustom* CustomExpr = Cast<UMaterialExpressionCustom>(Expr))
+    {
+        if (PropertyName == TEXT("Inputs") && ValueJson.IsValid() && ValueJson->Type == EJson::Array)
+        {
+            CustomExpr->Inputs.Empty();
+            for (const TSharedPtr<FJsonValue>& V : ValueJson->AsArray())
+            {
+                FCustomInput NewInput;
+                NewInput.InputName = FName(*V->AsString());
+                CustomExpr->Inputs.Add(NewInput);
+            }
+            bSuccess = true;
+        }
+        else if (PropertyName == TEXT("AdditionalOutputs") && ValueJson.IsValid() && ValueJson->Type == EJson::Array)
+        {
+            CustomExpr->AdditionalOutputs.Empty();
+            for (const TSharedPtr<FJsonValue>& V : ValueJson->AsArray())
+            {
+                FCustomOutput NewOutput;
+                if (V->Type == EJson::Object)
+                {
+                    TSharedPtr<FJsonObject> Obj = V->AsObject();
+                    FString OutName, OutType;
+                    Obj->TryGetStringField(TEXT("name"), OutName);
+                    Obj->TryGetStringField(TEXT("type"), OutType);
+                    NewOutput.OutputName = FName(*OutName);
+                    if (OutType == TEXT("CMOT_Float1")) NewOutput.OutputType = CMOT_Float1;
+                    else if (OutType == TEXT("CMOT_Float2")) NewOutput.OutputType = CMOT_Float2;
+                    else if (OutType == TEXT("CMOT_Float3")) NewOutput.OutputType = CMOT_Float3;
+                    else if (OutType == TEXT("CMOT_Float4")) NewOutput.OutputType = CMOT_Float4;
+                    else if (OutType == TEXT("CMOT_MaterialAttributes")) NewOutput.OutputType = CMOT_MaterialAttributes;
+                }
+                else
+                {
+                    NewOutput.OutputName = FName(*V->AsString());
+                }
+                CustomExpr->AdditionalOutputs.Add(NewOutput);
+            }
+            bSuccess = true;
+        }
+        else if (PropertyName == TEXT("AdditionalDefines") && ValueJson.IsValid() && ValueJson->Type == EJson::Array)
+        {
+            CustomExpr->AdditionalDefines.Empty();
+            for (const TSharedPtr<FJsonValue>& V : ValueJson->AsArray())
+            {
+                FCustomDefine NewDef;
+                if (V->Type == EJson::Object)
+                {
+                    TSharedPtr<FJsonObject> Obj = V->AsObject();
+                    Obj->TryGetStringField(TEXT("name"), NewDef.DefineName);
+                    Obj->TryGetStringField(TEXT("value"), NewDef.DefineValue);
+                }
+                else
+                {
+                    // "NAME=VALUE" or just "NAME"
+                    FString S = V->AsString();
+                    int32 EqIdx;
+                    if (S.FindChar('=', EqIdx))
+                    {
+                        NewDef.DefineName = S.Left(EqIdx);
+                        NewDef.DefineValue = S.Mid(EqIdx + 1);
+                    }
+                    else
+                    {
+                        NewDef.DefineName = S;
+                        NewDef.DefineValue = TEXT("1");
+                    }
+                }
+                CustomExpr->AdditionalDefines.Add(NewDef);
+            }
+            bSuccess = true;
+        }
+        else if (PropertyName == TEXT("IncludeFilePaths") && ValueJson.IsValid() && ValueJson->Type == EJson::Array)
+        {
+            CustomExpr->IncludeFilePaths.Empty();
+            for (const TSharedPtr<FJsonValue>& V : ValueJson->AsArray())
+            {
+                CustomExpr->IncludeFilePaths.Add(V->AsString());
+            }
+            bSuccess = true;
+        }
+    }
+
     // Handle various property types
+    if (!bSuccess)
+    {
     if (FFloatProperty* FloatProp = CastField<FFloatProperty>(Prop))
     {
         float Val = (float)ValueJson->AsNumber();
@@ -1038,11 +1126,12 @@ TSharedPtr<FJsonObject> FUnrealMCPMaterialCommands::HandleSetMaterialExpressionP
         SoftObjProp->SetPropertyValue_InContainer(Expr, SoftPtr);
         bSuccess = true;
     }
+    } // end if (!bSuccess) wrapper
 
     if (!bSuccess)
     {
         return FUnrealMCPCommonUtils::CreateErrorResponse(
-            FString::Printf(TEXT("Unsupported property type '%s' for property '%s'. Supported: float, double, int, bool, string, name, LinearColor, Color, Vector, Vector4, enum, object (asset path), soft_object (asset path)."),
+            FString::Printf(TEXT("Unsupported property type '%s' for property '%s'. Supported: float, double, int, bool, string, name, LinearColor, Color, Vector, Vector4, enum, object (asset path), soft_object (asset path). Custom HLSL arrays (Inputs, AdditionalOutputs, AdditionalDefines, IncludeFilePaths) are also supported."),
                 *Prop->GetCPPType(), *PropertyName));
     }
 
