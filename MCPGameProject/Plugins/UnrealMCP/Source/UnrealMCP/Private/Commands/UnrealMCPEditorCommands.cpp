@@ -24,6 +24,7 @@
 #include "EditorAssetLibrary.h"
 #include "Subsystems/AssetEditorSubsystem.h"
 #include "UObject/SavePackage.h"
+#include "Animation/AnimBlueprint.h"
 
 FUnrealMCPEditorCommands::FUnrealMCPEditorCommands()
 {
@@ -783,11 +784,19 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleCloseEditor(const TShare
         ResultJson->SetArrayField(TEXT("failed_saves"), FailArr);
     }
 
-    // Close all open asset editors first so Slate widgets (e.g. AnimationBlueprintEditor)
-    // are properly torn down before engine subsystems are destroyed during shutdown.
+    // Close only AnimBlueprint editors to avoid ACCESS_VIOLATION crash during shutdown.
+    // Other asset editors (DataAsset, Material, etc.) are safe and left open so that
+    // the user doesn't lose in-progress work / window layout.
     if (UAssetEditorSubsystem* AssetEditorSub = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>())
     {
-        AssetEditorSub->CloseAllAssetEditors();
+        TArray<UObject*> EditedAssets = AssetEditorSub->GetAllEditedAssets();
+        for (UObject* Asset : EditedAssets)
+        {
+            if (Asset && Asset->IsA<UAnimBlueprint>())
+            {
+                AssetEditorSub->CloseAllEditorsForAsset(Asset);
+            }
+        }
     }
 
     // Schedule engine exit after giving Slate a few frames to finish cleaning up.
