@@ -28,6 +28,10 @@
 #include "Animation/AnimSequence.h"
 #include "Animation/AnimMontage.h"
 #include "Animation/BlendSpace.h"
+#include "Materials/Material.h"
+#include "Materials/MaterialInstance.h"
+#include "Engine/DataAsset.h"
+#include "NiagaraSystem.h"
 
 FUnrealMCPEditorCommands::FUnrealMCPEditorCommands()
 {
@@ -787,21 +791,26 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleCloseEditor(const TShare
         ResultJson->SetArrayField(TEXT("failed_saves"), FailArr);
     }
 
-    // Close animation-related editors to avoid ACCESS_VIOLATION crash during shutdown.
-    // AnimBlueprintEditor and AnimationEditor (sequences, montages, blendspaces) both
-    // crash with Slate teardown issues. Other editors (DataAsset, Material, etc.) are safe.
+    // Close asset editors that use Persona/Slate-heavy frameworks to avoid
+    // ACCESS_VIOLATION crash during shutdown. Whitelist approach: only keep editors
+    // that are known safe (Material, DataAsset, plain Blueprint, etc.).
     if (UAssetEditorSubsystem* AssetEditorSub = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>())
     {
         TArray<UObject*> EditedAssets = AssetEditorSub->GetAllEditedAssets();
         for (UObject* Asset : EditedAssets)
         {
             if (!Asset) continue;
-            if (Asset->IsA<UAnimBlueprint>() ||
-                Asset->IsA<UAnimSequenceBase>() ||
-                Asset->IsA<UBlendSpace>())
+            // Keep these editors open (known safe during shutdown)
+            if (Asset->IsA<UMaterial>() ||
+                Asset->IsA<UMaterialInstance>() ||
+                Asset->IsA<UDataAsset>() ||
+                Asset->IsA<UNiagaraSystem>() ||
+                (Asset->IsA<UBlueprint>() && !Asset->IsA<UAnimBlueprint>()))
             {
-                AssetEditorSub->CloseAllEditorsForAsset(Asset);
+                continue;
             }
+            // Close everything else (Skeleton, SkeletalMesh, AnimBP, AnimSequence, etc.)
+            AssetEditorSub->CloseAllEditorsForAsset(Asset);
         }
     }
 
