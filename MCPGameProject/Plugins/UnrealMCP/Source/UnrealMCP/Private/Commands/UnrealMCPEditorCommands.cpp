@@ -32,6 +32,7 @@
 #include "Materials/MaterialInstance.h"
 #include "Engine/DataAsset.h"
 #include "NiagaraSystem.h"
+#include "WidgetBlueprint.h"
 
 FUnrealMCPEditorCommands::FUnrealMCPEditorCommands()
 {
@@ -791,13 +792,26 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleCloseEditor(const TShare
         ResultJson->SetArrayField(TEXT("failed_saves"), FailArr);
     }
 
-    // Close all open asset editors before shutdown. Any Slate-based editor window
-    // can cause ACCESS_VIOLATION at 0x58 during engine teardown. Whitelist approaches
-    // (keeping certain editors open) were tried but the crash comes from generic
-    // UnrealEd/Slate cleanup, not specific editor types.
+    // Close asset editors that crash during shutdown (ACCESS_VIOLATION 0x58).
+    // Whitelist: only keep editors known to be safe. Close everything else.
     if (UAssetEditorSubsystem* AssetEditorSub = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>())
     {
-        AssetEditorSub->CloseAllAssetEditors();
+        TArray<UObject*> EditedAssets = AssetEditorSub->GetAllEditedAssets();
+        for (UObject* Asset : EditedAssets)
+        {
+            if (!Asset) continue;
+            // Keep these editors open (known safe during shutdown)
+            if (Asset->IsA<UMaterial>() ||
+                Asset->IsA<UMaterialInstance>() ||
+                Asset->IsA<UDataAsset>() ||
+                Asset->IsA<UNiagaraSystem>() ||
+                (Asset->IsA<UBlueprint>() && !Asset->IsA<UAnimBlueprint>() && !Asset->IsA<UWidgetBlueprint>()))
+            {
+                continue;
+            }
+            // Close everything else (AnimBP, WidgetBP, Skeleton, AnimSequence, etc.)
+            AssetEditorSub->CloseAllEditorsForAsset(Asset);
+        }
     }
 
     // Schedule engine exit after giving Slate a few frames to finish cleaning up.
