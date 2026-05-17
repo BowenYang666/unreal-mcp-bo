@@ -791,27 +791,13 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleCloseEditor(const TShare
         ResultJson->SetArrayField(TEXT("failed_saves"), FailArr);
     }
 
-    // Close asset editors that use Persona/Slate-heavy frameworks to avoid
-    // ACCESS_VIOLATION crash during shutdown. Whitelist approach: only keep editors
-    // that are known safe (Material, DataAsset, plain Blueprint, etc.).
+    // Close all open asset editors before shutdown. Any Slate-based editor window
+    // can cause ACCESS_VIOLATION at 0x58 during engine teardown. Whitelist approaches
+    // (keeping certain editors open) were tried but the crash comes from generic
+    // UnrealEd/Slate cleanup, not specific editor types.
     if (UAssetEditorSubsystem* AssetEditorSub = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>())
     {
-        TArray<UObject*> EditedAssets = AssetEditorSub->GetAllEditedAssets();
-        for (UObject* Asset : EditedAssets)
-        {
-            if (!Asset) continue;
-            // Keep these editors open (known safe during shutdown)
-            if (Asset->IsA<UMaterial>() ||
-                Asset->IsA<UMaterialInstance>() ||
-                Asset->IsA<UDataAsset>() ||
-                Asset->IsA<UNiagaraSystem>() ||
-                (Asset->IsA<UBlueprint>() && !Asset->IsA<UAnimBlueprint>()))
-            {
-                continue;
-            }
-            // Close everything else (Skeleton, SkeletalMesh, AnimBP, AnimSequence, etc.)
-            AssetEditorSub->CloseAllEditorsForAsset(Asset);
-        }
+        AssetEditorSub->CloseAllAssetEditors();
     }
 
     // Schedule engine exit after giving Slate a few frames to finish cleaning up.
