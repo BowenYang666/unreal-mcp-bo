@@ -796,26 +796,11 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleCloseEditor(const TShare
         ResultJson->SetArrayField(TEXT("failed_saves"), FailArr);
     }
 
-    // Close asset editors that crash during shutdown (ACCESS_VIOLATION 0x58).
-    // Whitelist: only keep editors known to be safe. Close everything else.
+    // Close all open asset editors before shutdown to prevent ACCESS_VIOLATION
+    // crash during Slate teardown. Users can reopen needed editors via open_asset.
     if (UAssetEditorSubsystem* AssetEditorSub = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>())
     {
-        TArray<UObject*> EditedAssets = AssetEditorSub->GetAllEditedAssets();
-        for (UObject* Asset : EditedAssets)
-        {
-            if (!Asset) continue;
-            // Keep these editors open (known safe during shutdown)
-            if (Asset->IsA<UMaterial>() ||
-                Asset->IsA<UMaterialInstance>() ||
-                Asset->IsA<UDataAsset>() ||
-                Asset->IsA<UNiagaraSystem>() ||
-                (Asset->IsA<UBlueprint>() && !Asset->IsA<UAnimBlueprint>() && !Asset->IsA<UWidgetBlueprint>()))
-            {
-                continue;
-            }
-            // Close everything else (AnimBP, WidgetBP, Skeleton, AnimSequence, etc.)
-            AssetEditorSub->CloseAllEditorsForAsset(Asset);
-        }
+        AssetEditorSub->CloseAllAssetEditors();
     }
 
     // Schedule engine exit after giving Slate a few frames to finish cleaning up.
