@@ -624,4 +624,50 @@ def register_editor_tools(mcp: FastMCP):
             logger.error(f"Error closing editor: {e}")
             return {"success": False, "message": str(e)}
 
+    @mcp.tool()
+    def open_asset(
+        ctx: Context,
+        asset_path: str
+    ) -> Dict[str, Any]:
+        """Open an asset in its default editor window.
+
+        Works with any asset type: Blueprint, WidgetBlueprint, Material, AnimBlueprint,
+        AnimSequence, AnimMontage, BlendSpace, DataAsset, NiagaraSystem, Skeleton,
+        SkeletalMesh, Texture, SoundCue, etc.
+
+        Args:
+            asset_path: Full asset path, e.g. "/Game/UI/WBP_MechHUD" or
+                "/Game/Enemies/Blueprints/BP_Enemy"
+
+        Returns:
+            Dict with success, asset_path, and asset_class
+
+        Examples:
+            open_asset(asset_path="/Game/UI/WBP_MechHUD")
+            open_asset(asset_path="/Game/Materials/M_Base")
+            open_asset(asset_path="/Game/Player/Animations/ABP_Player")
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            response = unreal.send_command("open_asset", {"asset_path": asset_path})
+
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+
+            result = response.get("result", response)
+            logger.info(f"Opened asset editor: {asset_path}")
+            return result
+
+        except Exception as e:
+            logger.error(f"Error opening asset: {e}")
+            return {"success": False, "message": str(e)}
+
     logger.info("Editor tools registered successfully")

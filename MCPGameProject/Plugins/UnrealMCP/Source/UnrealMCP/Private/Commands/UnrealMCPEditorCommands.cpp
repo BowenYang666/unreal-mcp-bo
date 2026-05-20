@@ -100,6 +100,10 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleCommand(const FString& C
     {
         return HandleCloseEditor(Params);
     }
+    else if (CommandType == TEXT("open_asset"))
+    {
+        return HandleOpenAsset(Params);
+    }
     
     return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown editor command: %s"), *CommandType));
 }
@@ -824,5 +828,40 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleCloseEditor(const TShare
         0.5f // 500ms to let Slate finish widget teardown
     );
 
+    return ResultJson;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleOpenAsset(const TSharedPtr<FJsonObject>& Params)
+{
+    FString AssetPath;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    }
+
+    UObject* Asset = UEditorAssetLibrary::LoadAsset(AssetPath);
+    if (!Asset)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Failed to load asset: %s"), *AssetPath));
+    }
+
+    UAssetEditorSubsystem* AssetEditorSub = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>();
+    if (!AssetEditorSub)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("AssetEditorSubsystem not available"));
+    }
+
+    bool bOpened = AssetEditorSub->OpenEditorForAsset(Asset);
+    if (!bOpened)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Failed to open editor for: %s"), *AssetPath));
+    }
+
+    TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
+    ResultJson->SetBoolField(TEXT("success"), true);
+    ResultJson->SetStringField(TEXT("asset_path"), AssetPath);
+    ResultJson->SetStringField(TEXT("asset_class"), Asset->GetClass()->GetName());
     return ResultJson;
 }
