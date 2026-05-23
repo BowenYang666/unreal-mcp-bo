@@ -54,4 +54,7 @@ private:
 
     /** Set the editor position of a material expression node. */
     TSharedPtr<FJsonObject> HandleSetExpressionPosition(const TSharedPtr<FJsonObject>& Params);
+
+    /** Set material-level properties (BlendMode, ShadingModel, TwoSided, MaterialDomain). */
+    TSharedPtr<FJsonObject> HandleSetMaterialProperty(const TSharedPtr<FJsonObject>& Params);
 };

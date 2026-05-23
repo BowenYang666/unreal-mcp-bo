@@ -318,7 +318,8 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("create_material_instance") ||
                      CommandType == TEXT("add_material_comment") ||
                      CommandType == TEXT("reset_material_node_layout") ||
-                     CommandType == TEXT("set_expression_position"))
+                     CommandType == TEXT("set_expression_position") ||
+                     CommandType == TEXT("set_material_property"))
             {
                 ResultJson = MaterialCommands->HandleCommand(CommandType, Params);
             }

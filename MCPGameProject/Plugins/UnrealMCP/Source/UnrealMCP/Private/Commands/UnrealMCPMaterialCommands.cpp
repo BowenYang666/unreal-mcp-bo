@@ -77,6 +77,10 @@ TSharedPtr<FJsonObject> FUnrealMCPMaterialCommands::HandleCommand(const FString&
     {
         return HandleSetExpressionPosition(Params);
     }
+    else if (CommandType == TEXT("set_material_property"))
+    {
+        return HandleSetMaterialProperty(Params);
+    }
 
     return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown material command: %s"), *CommandType));
 }
@@ -1856,5 +1860,88 @@ TSharedPtr<FJsonObject> FUnrealMCPMaterialCommands::HandleSetExpressionPosition(
     ResultJson->SetStringField(TEXT("type"), Expr->GetClass()->GetName());
     ResultJson->SetNumberField(TEXT("pos_x"), PosX);
     ResultJson->SetNumberField(TEXT("pos_y"), PosY);
+    return ResultJson;
+}
+
+// ============================================================================
+// set_material_property
+// ============================================================================
+TSharedPtr<FJsonObject> FUnrealMCPMaterialCommands::HandleSetMaterialProperty(const TSharedPtr<FJsonObject>& Params)
+{
+    TSharedPtr<FJsonObject> Error;
+    UMaterial* Material = LoadMaterialFromParams(Params, Error);
+    if (!Material) return Error;
+
+    bool bChanged = false;
+
+    if (Params->HasField(TEXT("blend_mode")))
+    {
+        FString Val = Params->GetStringField(TEXT("blend_mode"));
+        if (Val == TEXT("Opaque")) { Material->BlendMode = BLEND_Opaque; bChanged = true; }
+        else if (Val == TEXT("Translucent")) { Material->BlendMode = BLEND_Translucent; bChanged = true; }
+        else if (Val == TEXT("Additive")) { Material->BlendMode = BLEND_Additive; bChanged = true; }
+        else if (Val == TEXT("Modulate")) { Material->BlendMode = BLEND_Modulate; bChanged = true; }
+        else if (Val == TEXT("Masked")) { Material->BlendMode = BLEND_Masked; bChanged = true; }
+        else return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Invalid blend_mode: '%s'. Valid: Opaque, Masked, Translucent, Additive, Modulate"), *Val));
+    }
+
+    if (Params->HasField(TEXT("shading_model")))
+    {
+        FString Val = Params->GetStringField(TEXT("shading_model"));
+        if (Val == TEXT("DefaultLit")) { Material->SetShadingModel(MSM_DefaultLit); bChanged = true; }
+        else if (Val == TEXT("Unlit")) { Material->SetShadingModel(MSM_Unlit); bChanged = true; }
+        else if (Val == TEXT("Subsurface")) { Material->SetShadingModel(MSM_Subsurface); bChanged = true; }
+        else if (Val == TEXT("ClearCoat")) { Material->SetShadingModel(MSM_ClearCoat); bChanged = true; }
+        else if (Val == TEXT("SubsurfaceProfile")) { Material->SetShadingModel(MSM_SubsurfaceProfile); bChanged = true; }
+        else if (Val == TEXT("TwoSidedFoliage")) { Material->SetShadingModel(MSM_TwoSidedFoliage); bChanged = true; }
+        else if (Val == TEXT("Hair")) { Material->SetShadingModel(MSM_Hair); bChanged = true; }
+        else if (Val == TEXT("Cloth")) { Material->SetShadingModel(MSM_Cloth); bChanged = true; }
+        else if (Val == TEXT("Eye")) { Material->SetShadingModel(MSM_Eye); bChanged = true; }
+        else if (Val == TEXT("ThinTranslucent")) { Material->SetShadingModel(MSM_ThinTranslucent); bChanged = true; }
+        else return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Invalid shading_model: '%s'. Valid: DefaultLit, Unlit, Subsurface, ClearCoat, SubsurfaceProfile, TwoSidedFoliage, Hair, Cloth, Eye, ThinTranslucent"), *Val));
+    }
+
+    if (Params->HasField(TEXT("two_sided")))
+    {
+        Material->TwoSided = Params->GetBoolField(TEXT("two_sided"));
+        bChanged = true;
+    }
+
+    if (Params->HasField(TEXT("material_domain")))
+    {
+        FString Val = Params->GetStringField(TEXT("material_domain"));
+        if (Val == TEXT("Surface")) { Material->MaterialDomain = MD_Surface; bChanged = true; }
+        else if (Val == TEXT("PostProcess")) { Material->MaterialDomain = MD_PostProcess; bChanged = true; }
+        else if (Val == TEXT("DeferredDecal")) { Material->MaterialDomain = MD_DeferredDecal; bChanged = true; }
+        else if (Val == TEXT("LightFunction")) { Material->MaterialDomain = MD_LightFunction; bChanged = true; }
+        else if (Val == TEXT("UI")) { Material->MaterialDomain = MD_UI; bChanged = true; }
+        else return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Invalid material_domain: '%s'. Valid: Surface, PostProcess, DeferredDecal, LightFunction, UI"), *Val));
+    }
+
+    if (Params->HasField(TEXT("opacity_mask_clip_value")))
+    {
+        Material->OpacityMaskClipValue = (float)Params->GetNumberField(TEXT("opacity_mask_clip_value"));
+        bChanged = true;
+    }
+
+    if (!bChanged)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            TEXT("No properties specified. Supported: blend_mode, shading_model, two_sided, material_domain, opacity_mask_clip_value"));
+    }
+
+    Material->PostEditChange();
+    Material->MarkPackageDirty();
+
+    TSharedPtr<FJsonObject> ResultJson = MakeShareable(new FJsonObject);
+    ResultJson->SetBoolField(TEXT("success"), true);
+    ResultJson->SetStringField(TEXT("blend_mode"), *UEnum::GetValueAsString(Material->BlendMode));
+    ResultJson->SetStringField(TEXT("shading_model"), *UEnum::GetValueAsString(Material->GetShadingModels().GetFirstShadingModel()));
+    ResultJson->SetBoolField(TEXT("two_sided"), Material->IsTwoSided());
+    ResultJson->SetStringField(TEXT("material_domain"), *UEnum::GetValueAsString(Material->MaterialDomain));
+    ResultJson->SetNumberField(TEXT("opacity_mask_clip_value"), Material->OpacityMaskClipValue);
     return ResultJson;
 }

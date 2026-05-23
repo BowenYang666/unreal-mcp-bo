@@ -776,4 +776,68 @@ def register_material_tools(mcp: FastMCP):
             logger.error(f"Error setting expression position: {e}")
             return {"success": False, "message": str(e)}
 
+    @mcp.tool()
+    def set_material_property(
+        ctx: Context,
+        asset_path: str,
+        blend_mode: str = "",
+        shading_model: str = "",
+        two_sided: bool = None,
+        material_domain: str = "",
+        opacity_mask_clip_value: float = None
+    ) -> Dict[str, Any]:
+        """Set material-level properties on an existing material.
+
+        All parameters are optional — only specified ones are changed.
+
+        Args:
+            asset_path: Full asset path of the material (e.g. "/Game/Materials/M_MyMat")
+            blend_mode: Opaque, Masked, Translucent, Additive, or Modulate
+            shading_model: DefaultLit, Unlit, Subsurface, ClearCoat, SubsurfaceProfile,
+                TwoSidedFoliage, Hair, Cloth, Eye, or ThinTranslucent
+            two_sided: Whether the material renders on both sides
+            material_domain: Surface, PostProcess, DeferredDecal, LightFunction, or UI
+            opacity_mask_clip_value: Clip threshold for Masked blend mode (default 0.3333)
+
+        Returns:
+            Dict with current values of all material properties after the change.
+
+        Examples:
+            set_material_property(asset_path="/Game/Materials/M_Dissolve", blend_mode="Masked")
+            set_material_property(asset_path="/Game/Materials/M_Glass", blend_mode="Translucent", shading_model="DefaultLit", two_sided=True)
+            set_material_property(asset_path="/Game/Materials/M_UI", material_domain="UI", shading_model="Unlit")
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            params = {"asset_path": asset_path}
+            if blend_mode:
+                params["blend_mode"] = blend_mode
+            if shading_model:
+                params["shading_model"] = shading_model
+            if two_sided is not None:
+                params["two_sided"] = two_sided
+            if material_domain:
+                params["material_domain"] = material_domain
+            if opacity_mask_clip_value is not None:
+                params["opacity_mask_clip_value"] = opacity_mask_clip_value
+
+            response = unreal.send_command("set_material_property", params)
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+
+            result = response.get("result", response)
+            logger.info(f"Set material property on {asset_path}")
+            return result
+
+        except Exception as e:
+            logger.error(f"Error setting material property: {e}")
+            return {"success": False, "message": str(e)}
+
     logger.info("Material tools registered successfully")
