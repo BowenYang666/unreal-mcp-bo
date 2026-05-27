@@ -3,6 +3,9 @@
 #include "CoreMinimal.h"
 #include "Json.h"
 
+class UBTNode;
+class UBTCompositeNode;
+
 /**
  * Handler class for Project-wide MCP commands
  */
