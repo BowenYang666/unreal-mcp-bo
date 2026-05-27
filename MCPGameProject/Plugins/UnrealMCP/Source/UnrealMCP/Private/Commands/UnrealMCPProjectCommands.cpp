@@ -478,8 +478,6 @@ TSharedPtr<FJsonObject> FUnrealMCPProjectCommands::BTCompositeToJson(UBTComposit
 		TSharedPtr<FJsonObject> SvcObj = BTNodeToJson(Service);
 		if (SvcObj)
 		{
-			SvcObj->SetNumberField(TEXT("interval"), Service->Interval);
-			SvcObj->SetNumberField(TEXT("random_deviation"), Service->RandomDeviation);
 			ServicesArr.Add(MakeShared<FJsonValueObject>(SvcObj));
 		}
 	}
