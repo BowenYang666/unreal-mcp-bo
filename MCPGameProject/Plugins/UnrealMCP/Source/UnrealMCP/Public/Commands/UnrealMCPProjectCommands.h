@@ -19,4 +19,10 @@ private:
     TSharedPtr<FJsonObject> HandleCreateInputMapping(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleReadDataAsset(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleGetClassProperties(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleReadBehaviorTree(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleReadBlackboard(const TSharedPtr<FJsonObject>& Params);
+
+    // BT helpers
+    static TSharedPtr<FJsonObject> BTNodeToJson(UBTNode* Node);
+    static TSharedPtr<FJsonObject> BTCompositeToJson(UBTCompositeNode* Node);
 }; 

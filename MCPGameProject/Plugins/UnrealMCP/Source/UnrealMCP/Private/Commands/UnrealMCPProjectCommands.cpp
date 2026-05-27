@@ -6,6 +6,13 @@
 #include "Animation/Skeleton.h"
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
+#include "BehaviorTree/BehaviorTree.h"
+#include "BehaviorTree/BTCompositeNode.h"
+#include "BehaviorTree/BTTaskNode.h"
+#include "BehaviorTree/BTDecorator.h"
+#include "BehaviorTree/BTService.h"
+#include "BehaviorTree/BlackboardData.h"
+#include "BehaviorTree/Blackboard/BlackboardKeyType.h"
 
 FUnrealMCPProjectCommands::FUnrealMCPProjectCommands()
 {
@@ -24,6 +31,14 @@ TSharedPtr<FJsonObject> FUnrealMCPProjectCommands::HandleCommand(const FString& 
     else if (CommandType == TEXT("get_class_properties"))
     {
         return HandleGetClassProperties(Params);
+    }
+    else if (CommandType == TEXT("read_behavior_tree"))
+    {
+        return HandleReadBehaviorTree(Params);
+    }
+    else if (CommandType == TEXT("read_blackboard"))
+    {
+        return HandleReadBlackboard(Params);
     }
     
     return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown project command: %s"), *CommandType));
@@ -412,6 +427,206 @@ TSharedPtr<FJsonObject> FUnrealMCPProjectCommands::HandleGetClassProperties(cons
 			ResultObj->SetArrayField(TEXT("bone_hierarchy"), BonesArray);
 		}
 	}
+
+	return ResultObj;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BT helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+TSharedPtr<FJsonObject> FUnrealMCPProjectCommands::BTNodeToJson(UBTNode* Node)
+{
+	if (!Node) return nullptr;
+	TSharedPtr<FJsonObject> Obj = MakeShared<FJsonObject>();
+	Obj->SetStringField(TEXT("class"), Node->GetClass()->GetName());
+
+	FString Name = Node->GetNodeName();
+	if (!Name.IsEmpty())
+		Obj->SetStringField(TEXT("name"), Name);
+
+	Obj->SetNumberField(TEXT("execution_index"), Node->GetExecutionIndex());
+
+	// Export editable properties (skip base class noise)
+	for (TFieldIterator<FProperty> PropIt(Node->GetClass()); PropIt; ++PropIt)
+	{
+		FProperty* Prop = *PropIt;
+		if (!Prop || !Prop->HasAnyPropertyFlags(CPF_Edit)) continue;
+		if (Prop->GetOwnerClass() == UBTNode::StaticClass()) continue;
+		if (Prop->HasAnyPropertyFlags(CPF_Transient | CPF_Deprecated)) continue;
+
+		const void* ValPtr = Prop->ContainerPtrToValuePtr<void>(Node);
+		FString ValStr;
+		Prop->ExportTextItem_Direct(ValStr, ValPtr, nullptr, nullptr, PPF_None);
+		if (!ValStr.IsEmpty() && ValStr.Len() < 2048)
+			Obj->SetStringField(Prop->GetName(), ValStr);
+	}
+
+	return Obj;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPProjectCommands::BTCompositeToJson(UBTCompositeNode* CompNode)
+{
+	if (!CompNode) return nullptr;
+
+	TSharedPtr<FJsonObject> NodeObj = BTNodeToJson(CompNode);
+
+	// Services
+	TArray<TSharedPtr<FJsonValue>> ServicesArr;
+	for (UBTService* Service : CompNode->Services)
+	{
+		TSharedPtr<FJsonObject> SvcObj = BTNodeToJson(Service);
+		if (SvcObj)
+		{
+			SvcObj->SetNumberField(TEXT("interval"), Service->Interval);
+			SvcObj->SetNumberField(TEXT("random_deviation"), Service->RandomDeviation);
+			ServicesArr.Add(MakeShared<FJsonValueObject>(SvcObj));
+		}
+	}
+	if (ServicesArr.Num() > 0)
+		NodeObj->SetArrayField(TEXT("services"), ServicesArr);
+
+	// Children
+	TArray<TSharedPtr<FJsonValue>> ChildrenArr;
+	for (const FBTCompositeChild& Child : CompNode->Children)
+	{
+		TSharedPtr<FJsonObject> ChildObj;
+
+		if (Child.ChildComposite)
+		{
+			ChildObj = BTCompositeToJson(Child.ChildComposite);
+		}
+		else if (Child.ChildTask)
+		{
+			ChildObj = BTNodeToJson(Child.ChildTask);
+		}
+
+		if (!ChildObj) continue;
+
+		// Decorators on this child edge
+		TArray<TSharedPtr<FJsonValue>> DecoArr;
+		for (UBTDecorator* Deco : Child.Decorators)
+		{
+			TSharedPtr<FJsonObject> DecoObj = BTNodeToJson(Deco);
+			if (DecoObj)
+			{
+				FString AbortMode = UEnum::GetValueAsString(Deco->GetFlowAbortMode());
+				AbortMode.ReplaceInline(TEXT("EBTFlowAbortMode::"), TEXT(""));
+				DecoObj->SetStringField(TEXT("flow_abort"), AbortMode);
+				if (Deco->IsInversed())
+					DecoObj->SetBoolField(TEXT("inversed"), true);
+				DecoArr.Add(MakeShared<FJsonValueObject>(DecoObj));
+			}
+		}
+		if (DecoArr.Num() > 0)
+			ChildObj->SetArrayField(TEXT("decorators"), DecoArr);
+
+		ChildrenArr.Add(MakeShared<FJsonValueObject>(ChildObj));
+	}
+	if (ChildrenArr.Num() > 0)
+		NodeObj->SetArrayField(TEXT("children"), ChildrenArr);
+
+	return NodeObj;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// read_behavior_tree
+// ─────────────────────────────────────────────────────────────────────────────
+
+TSharedPtr<FJsonObject> FUnrealMCPProjectCommands::HandleReadBehaviorTree(const TSharedPtr<FJsonObject>& Params)
+{
+	FString AssetPath;
+	if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+	}
+
+	UObject* Loaded = UEditorAssetLibrary::LoadAsset(AssetPath);
+	UBehaviorTree* BT = Cast<UBehaviorTree>(Loaded);
+	if (!BT)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Failed to load BehaviorTree at: %s"), *AssetPath));
+	}
+
+	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+	ResultObj->SetStringField(TEXT("name"), BT->GetName());
+	ResultObj->SetStringField(TEXT("asset_path"), AssetPath);
+
+	// Blackboard reference
+	if (BT->BlackboardAsset)
+	{
+		ResultObj->SetStringField(TEXT("blackboard"), BT->BlackboardAsset->GetPathName());
+	}
+
+	// Root tree
+	if (BT->RootNode)
+	{
+		ResultObj->SetObjectField(TEXT("root"), BTCompositeToJson(BT->RootNode));
+	}
+
+	// Root decorators (subtree decorators)
+	if (BT->RootDecorators.Num() > 0)
+	{
+		TArray<TSharedPtr<FJsonValue>> RootDecArr;
+		for (UBTDecorator* Deco : BT->RootDecorators)
+		{
+			TSharedPtr<FJsonObject> DecoObj = BTNodeToJson(Deco);
+			if (DecoObj)
+				RootDecArr.Add(MakeShared<FJsonValueObject>(DecoObj));
+		}
+		ResultObj->SetArrayField(TEXT("root_decorators"), RootDecArr);
+	}
+
+	return ResultObj;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// read_blackboard
+// ─────────────────────────────────────────────────────────────────────────────
+
+TSharedPtr<FJsonObject> FUnrealMCPProjectCommands::HandleReadBlackboard(const TSharedPtr<FJsonObject>& Params)
+{
+	FString AssetPath;
+	if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+	}
+
+	UObject* Loaded = UEditorAssetLibrary::LoadAsset(AssetPath);
+	UBlackboardData* BB = Cast<UBlackboardData>(Loaded);
+	if (!BB)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Failed to load BlackboardData at: %s"), *AssetPath));
+	}
+
+	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+	ResultObj->SetStringField(TEXT("name"), BB->GetName());
+	ResultObj->SetStringField(TEXT("asset_path"), AssetPath);
+
+	if (BB->Parent)
+	{
+		ResultObj->SetStringField(TEXT("parent"), BB->Parent->GetPathName());
+	}
+
+	TArray<TSharedPtr<FJsonValue>> KeysArr;
+	for (const FBlackboardEntry& Entry : BB->Keys)
+	{
+		TSharedPtr<FJsonObject> KeyObj = MakeShared<FJsonObject>();
+		KeyObj->SetStringField(TEXT("name"), Entry.EntryName.ToString());
+
+		if (Entry.KeyType)
+		{
+			FString TypeName = Entry.KeyType->GetClass()->GetName();
+			TypeName.ReplaceInline(TEXT("BlackboardKeyType_"), TEXT(""));
+			KeyObj->SetStringField(TEXT("type"), TypeName);
+		}
+
+		KeyObj->SetBoolField(TEXT("instance_synced"), Entry.bInstanceSynced != 0);
+		KeysArr.Add(MakeShared<FJsonValueObject>(KeyObj));
+	}
+	ResultObj->SetArrayField(TEXT("keys"), KeysArr);
 
 	return ResultObj;
 }

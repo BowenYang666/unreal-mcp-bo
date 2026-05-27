@@ -35,7 +35,8 @@ public class UnrealMCP : ModuleRules
 				"Json",
 				"JsonUtilities",
 				"DeveloperSettings",
-				"Niagara"
+				"Niagara",
+				"AIModule"
 			}
 		);
 		

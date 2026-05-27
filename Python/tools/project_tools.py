@@ -166,4 +166,85 @@ def register_project_tools(mcp: FastMCP):
             logger.error(f"Error getting class properties: {e}")
             return {"success": False, "message": str(e)}
 
+    @mcp.tool()
+    def read_behavior_tree(
+        ctx: Context,
+        asset_path: str
+    ) -> Dict[str, Any]:
+        """Read the full structure of a Behavior Tree asset.
+
+        Returns the complete tree hierarchy: composites (Selector/Sequence), tasks,
+        decorators (with flow abort mode), and services (with tick intervals).
+
+        Args:
+            asset_path: Full asset path of the BehaviorTree,
+                e.g. "/Game/AI/BT_EnemyMain"
+
+        Returns:
+            Dict with name, blackboard reference, and root node tree (recursive).
+            Each node has: class, name, execution_index, and type-specific properties.
+            Composites have children[], services[]. Children have decorators[].
+
+        Examples:
+            read_behavior_tree(asset_path="/Game/AI/BT_EnemyMain")
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            response = unreal.send_command("read_behavior_tree", {"asset_path": asset_path})
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+
+            return response.get("result", response)
+
+        except Exception as e:
+            logger.error(f"Error reading behavior tree: {e}")
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def read_blackboard(
+        ctx: Context,
+        asset_path: str
+    ) -> Dict[str, Any]:
+        """Read all keys from a Blackboard data asset.
+
+        Returns the list of blackboard keys with their names, types, and sync status.
+
+        Args:
+            asset_path: Full asset path of the BlackboardData,
+                e.g. "/Game/AI/BB_EnemyMain"
+
+        Returns:
+            Dict with name, parent (if any), and keys array.
+            Each key has: name, type (e.g. "Object", "Float", "Bool", "Enum", "Vector"),
+            and instance_synced flag.
+
+        Examples:
+            read_blackboard(asset_path="/Game/AI/BB_EnemyMain")
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            response = unreal.send_command("read_blackboard", {"asset_path": asset_path})
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+
+            return response.get("result", response)
+
+        except Exception as e:
+            logger.error(f"Error reading blackboard: {e}")
+            return {"success": False, "message": str(e)}
+
     logger.info("Project tools registered successfully") 
