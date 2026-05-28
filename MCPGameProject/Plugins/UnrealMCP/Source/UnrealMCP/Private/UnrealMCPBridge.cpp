@@ -279,7 +279,8 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("read_data_asset") ||
                      CommandType == TEXT("get_class_properties") ||
                      CommandType == TEXT("read_behavior_tree") ||
-                     CommandType == TEXT("read_blackboard"))
+                     CommandType == TEXT("read_blackboard") ||
+                     CommandType == TEXT("read_state_tree"))
             {
                 ResultJson = ProjectCommands->HandleCommand(CommandType, Params);
             }

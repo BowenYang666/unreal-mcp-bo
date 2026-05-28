@@ -13,6 +13,13 @@
 #include "BehaviorTree/BTService.h"
 #include "BehaviorTree/BlackboardData.h"
 #include "BehaviorTree/Blackboard/BlackboardKeyType.h"
+#include "StateTree.h"
+#include "StateTreeState.h"
+#include "StateTreeEditorData.h"
+#include "StateTreeEditorNode.h"
+#include "StateTreeTypes.h"
+#include "StateTreeSchema.h"
+#include "InstancedStruct.h"
 
 FUnrealMCPProjectCommands::FUnrealMCPProjectCommands()
 {
@@ -39,6 +46,10 @@ TSharedPtr<FJsonObject> FUnrealMCPProjectCommands::HandleCommand(const FString& 
     else if (CommandType == TEXT("read_blackboard"))
     {
         return HandleReadBlackboard(Params);
+    }
+    else if (CommandType == TEXT("read_state_tree"))
+    {
+        return HandleReadStateTree(Params);
     }
     
     return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown project command: %s"), *CommandType));
@@ -625,6 +636,240 @@ TSharedPtr<FJsonObject> FUnrealMCPProjectCommands::HandleReadBlackboard(const TS
 		KeysArr.Add(MakeShared<FJsonValueObject>(KeyObj));
 	}
 	ResultObj->SetArrayField(TEXT("keys"), KeysArr);
+
+	return ResultObj;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// read_state_tree
+// ─────────────────────────────────────────────────────────────────────────────
+
+namespace
+{
+	// Serialize all EditDefaultsOnly UPROPERTYs of a UStruct instance to JSON.
+	TSharedPtr<FJsonObject> StructInstanceToJson(const UScriptStruct* Struct, const void* StructMem)
+	{
+		TSharedPtr<FJsonObject> Obj = MakeShared<FJsonObject>();
+		if (!Struct || !StructMem) return Obj;
+
+		for (TFieldIterator<FProperty> It(Struct); It; ++It)
+		{
+			FProperty* Prop = *It;
+			if (!Prop) continue;
+			if (!Prop->HasAnyPropertyFlags(CPF_Edit)) continue;
+			if (Prop->HasAnyPropertyFlags(CPF_Transient | CPF_Deprecated)) continue;
+
+			const void* ValPtr = Prop->ContainerPtrToValuePtr<void>(StructMem);
+			FString ValStr;
+			Prop->ExportTextItem_Direct(ValStr, ValPtr, nullptr, nullptr, PPF_None);
+			if (!ValStr.IsEmpty() && ValStr.Len() < 2048)
+				Obj->SetStringField(Prop->GetName(), ValStr);
+		}
+		return Obj;
+	}
+
+	// Serialize a FStateTreeEditorNode (used for Tasks, Conditions, Evaluators, etc.)
+	TSharedPtr<FJsonObject> EditorNodeToJson(const FStateTreeEditorNode& Node)
+	{
+		TSharedPtr<FJsonObject> Obj = MakeShared<FJsonObject>();
+
+		// Node struct class (e.g. FSTTask_MoveToActor)
+		const UScriptStruct* NodeStruct = Node.Node.GetScriptStruct();
+		if (NodeStruct)
+		{
+			Obj->SetStringField(TEXT("class"), NodeStruct->GetName());
+		}
+
+		// Blueprint task class lives in InstanceObject (UStateTreeTaskBlueprintBase subclass)
+		if (Node.InstanceObject)
+		{
+			Obj->SetStringField(TEXT("instance_class"), Node.InstanceObject->GetClass()->GetName());
+
+			// Dump editable properties on the BP task instance
+			TSharedPtr<FJsonObject> Props = MakeShared<FJsonObject>();
+			for (TFieldIterator<FProperty> PropIt(Node.InstanceObject->GetClass()); PropIt; ++PropIt)
+			{
+				FProperty* Prop = *PropIt;
+				if (!Prop || !Prop->HasAnyPropertyFlags(CPF_Edit)) continue;
+				if (Prop->HasAnyPropertyFlags(CPF_Transient | CPF_Deprecated)) continue;
+				if (Prop->GetOwnerClass() == UObject::StaticClass()) continue;
+
+				const void* ValPtr = Prop->ContainerPtrToValuePtr<void>(Node.InstanceObject);
+				FString ValStr;
+				Prop->ExportTextItem_Direct(ValStr, ValPtr, nullptr, nullptr, PPF_None);
+				if (!ValStr.IsEmpty() && ValStr.Len() < 2048)
+					Props->SetStringField(Prop->GetName(), ValStr);
+			}
+			if (Props->Values.Num() > 0)
+				Obj->SetObjectField(TEXT("instance_properties"), Props);
+		}
+		else if (Node.Instance.IsValid())
+		{
+			// C++ task: instance data lives in Node.Instance (FInstancedStruct)
+			TSharedPtr<FJsonObject> InstProps = StructInstanceToJson(
+				Node.Instance.GetScriptStruct(),
+				Node.Instance.GetMemory());
+			if (InstProps->Values.Num() > 0)
+				Obj->SetObjectField(TEXT("instance_properties"), InstProps);
+		}
+
+		// Node struct itself may have edit properties (rare)
+		if (NodeStruct)
+		{
+			TSharedPtr<FJsonObject> NodeProps = StructInstanceToJson(NodeStruct, Node.Node.GetMemory());
+			if (NodeProps->Values.Num() > 0)
+				Obj->SetObjectField(TEXT("node_properties"), NodeProps);
+		}
+
+		return Obj;
+	}
+
+	TSharedPtr<FJsonObject> StateToJson(const UStateTreeState* State)
+	{
+		if (!State) return nullptr;
+
+		TSharedPtr<FJsonObject> Obj = MakeShared<FJsonObject>();
+		Obj->SetStringField(TEXT("name"), State->Name.ToString());
+		Obj->SetStringField(TEXT("type"), UEnum::GetValueAsString(State->Type));
+		Obj->SetStringField(TEXT("selection_behavior"), UEnum::GetValueAsString(State->SelectionBehavior));
+
+		// Enter conditions
+		if (State->EnterConditions.Num() > 0)
+		{
+			TArray<TSharedPtr<FJsonValue>> Arr;
+			for (const FStateTreeEditorNode& N : State->EnterConditions)
+				Arr.Add(MakeShared<FJsonValueObject>(EditorNodeToJson(N)));
+			Obj->SetArrayField(TEXT("enter_conditions"), Arr);
+		}
+
+		// Tasks
+		if (State->Tasks.Num() > 0)
+		{
+			TArray<TSharedPtr<FJsonValue>> Arr;
+			for (const FStateTreeEditorNode& N : State->Tasks)
+				Arr.Add(MakeShared<FJsonValueObject>(EditorNodeToJson(N)));
+			Obj->SetArrayField(TEXT("tasks"), Arr);
+		}
+
+		// Transitions
+		if (State->Transitions.Num() > 0)
+		{
+			TArray<TSharedPtr<FJsonValue>> Arr;
+			for (const FStateTreeTransition& T : State->Transitions)
+			{
+				TSharedPtr<FJsonObject> TObj = MakeShared<FJsonObject>();
+				TObj->SetStringField(TEXT("trigger"), UEnum::GetValueAsString(T.Trigger));
+				TObj->SetStringField(TEXT("priority"), UEnum::GetValueAsString(T.Priority));
+				TObj->SetStringField(TEXT("link_type"), UEnum::GetValueAsString(T.State.LinkType));
+				if (!T.State.Name.IsNone())
+					TObj->SetStringField(TEXT("target_state"), T.State.Name.ToString());
+				if (T.bDelayTransition)
+				{
+					TObj->SetNumberField(TEXT("delay_duration"), T.DelayDuration);
+					TObj->SetNumberField(TEXT("delay_random_variance"), T.DelayRandomVariance);
+				}
+				if (!T.bTransitionEnabled)
+					TObj->SetBoolField(TEXT("enabled"), false);
+
+				if (T.Conditions.Num() > 0)
+				{
+					TArray<TSharedPtr<FJsonValue>> CondArr;
+					for (const FStateTreeEditorNode& C : T.Conditions)
+						CondArr.Add(MakeShared<FJsonValueObject>(EditorNodeToJson(C)));
+					TObj->SetArrayField(TEXT("conditions"), CondArr);
+				}
+
+				Arr.Add(MakeShared<FJsonValueObject>(TObj));
+			}
+			Obj->SetArrayField(TEXT("transitions"), Arr);
+		}
+
+		// Child states (recursive)
+		if (State->Children.Num() > 0)
+		{
+			TArray<TSharedPtr<FJsonValue>> Arr;
+			for (UStateTreeState* Child : State->Children)
+			{
+				TSharedPtr<FJsonObject> ChildObj = StateToJson(Child);
+				if (ChildObj)
+					Arr.Add(MakeShared<FJsonValueObject>(ChildObj));
+			}
+			Obj->SetArrayField(TEXT("children"), Arr);
+		}
+
+		return Obj;
+	}
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPProjectCommands::HandleReadStateTree(const TSharedPtr<FJsonObject>& Params)
+{
+	FString AssetPath;
+	if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath))
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+	}
+
+	UObject* Loaded = UEditorAssetLibrary::LoadAsset(AssetPath);
+	UStateTree* ST = Cast<UStateTree>(Loaded);
+	if (!ST)
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(
+			FString::Printf(TEXT("Failed to load StateTree at: %s"), *AssetPath));
+	}
+
+	TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+	ResultObj->SetStringField(TEXT("name"), ST->GetName());
+	ResultObj->SetStringField(TEXT("asset_path"), AssetPath);
+
+	if (const UStateTreeSchema* Schema = ST->GetSchema())
+	{
+		ResultObj->SetStringField(TEXT("schema"), Schema->GetClass()->GetName());
+	}
+
+	UStateTreeEditorData* EditorData = Cast<UStateTreeEditorData>(ST->EditorData);
+	if (!EditorData)
+	{
+		ResultObj->SetStringField(TEXT("warning"), TEXT("EditorData not available (asset may have been cooked or stripped)"));
+		return ResultObj;
+	}
+
+	// Global parameters (root)
+	const FInstancedPropertyBag& RootBag = EditorData->GetRootParametersPropertyBag();
+	TArray<TSharedPtr<FJsonValue>> ParamArr;
+	if (const UPropertyBag* BagStruct = RootBag.GetPropertyBagStruct())
+	{
+		for (const FPropertyBagPropertyDesc& Desc : BagStruct->GetPropertyDescs())
+		{
+			TSharedPtr<FJsonObject> P = MakeShared<FJsonObject>();
+			P->SetStringField(TEXT("name"), Desc.Name.ToString());
+			if (Desc.CachedProperty)
+				P->SetStringField(TEXT("type"), Desc.CachedProperty->GetCPPType());
+			ParamArr.Add(MakeShared<FJsonValueObject>(P));
+		}
+	}
+	ResultObj->SetArrayField(TEXT("global_parameters"), ParamArr);
+
+	// Evaluators
+	TArray<TSharedPtr<FJsonValue>> EvalArr;
+	for (const FStateTreeEditorNode& N : EditorData->Evaluators)
+		EvalArr.Add(MakeShared<FJsonValueObject>(EditorNodeToJson(N)));
+	ResultObj->SetArrayField(TEXT("evaluators"), EvalArr);
+
+	// Global tasks
+	TArray<TSharedPtr<FJsonValue>> GTaskArr;
+	for (const FStateTreeEditorNode& N : EditorData->GlobalTasks)
+		GTaskArr.Add(MakeShared<FJsonValueObject>(EditorNodeToJson(N)));
+	ResultObj->SetArrayField(TEXT("global_tasks"), GTaskArr);
+
+	// State hierarchy (subtrees: usually one "Root", or named subtrees)
+	TArray<TSharedPtr<FJsonValue>> StatesArr;
+	for (UStateTreeState* SubTree : EditorData->SubTrees)
+	{
+		TSharedPtr<FJsonObject> StateObj = StateToJson(SubTree);
+		if (StateObj)
+			StatesArr.Add(MakeShared<FJsonValueObject>(StateObj));
+	}
+	ResultObj->SetArrayField(TEXT("states"), StatesArr);
 
 	return ResultObj;
 }

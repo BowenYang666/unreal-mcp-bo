@@ -36,7 +36,8 @@ public class UnrealMCP : ModuleRules
 				"JsonUtilities",
 				"DeveloperSettings",
 				"Niagara",
-				"AIModule"
+				"AIModule",
+				"StateTreeModule"
 			}
 		);
 		
@@ -57,7 +58,8 @@ public class UnrealMCP : ModuleRules
 				"AssetRegistry",
 				"NiagaraCore",
 				"NiagaraEditor",
-				"MaterialEditor"
+				"MaterialEditor",
+				"StateTreeEditorModule"
 			}
 		);
 		

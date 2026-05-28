@@ -247,4 +247,49 @@ def register_project_tools(mcp: FastMCP):
             logger.error(f"Error reading blackboard: {e}")
             return {"success": False, "message": str(e)}
 
+    @mcp.tool()
+    def read_state_tree(
+        ctx: Context,
+        asset_path: str
+    ) -> Dict[str, Any]:
+        """Read the full structure of a StateTree asset.
+
+        Returns the state hierarchy with tasks, transitions, enter conditions,
+        evaluators, global tasks, and global parameters. Recursively walks
+        subtrees and child states.
+
+        Args:
+            asset_path: Full asset path of the StateTree,
+                e.g. "/Game/AI/ST_Enemy_Dog"
+
+        Returns:
+            Dict with name, schema, global_parameters, evaluators, global_tasks, states.
+            Each state has: name, type, selection_behavior, tasks[], transitions[],
+            enter_conditions[], children[].
+            Tasks/conditions have: class (struct name), instance_class (for BP nodes),
+            instance_properties.
+            Transitions have: trigger, priority, link_type, target_state, conditions[].
+
+        Examples:
+            read_state_tree(asset_path="/Game/AI/ST_Enemy_Dog")
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            response = unreal.send_command("read_state_tree", {"asset_path": asset_path})
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+
+            return response.get("result", response)
+
+        except Exception as e:
+            logger.error(f"Error reading state tree: {e}")
+            return {"success": False, "message": str(e)}
+
     logger.info("Project tools registered successfully") 
