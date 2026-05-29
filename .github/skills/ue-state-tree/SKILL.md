@@ -31,10 +31,11 @@ Each state has a `TasksCompletion` field (default varies, check `tasks_completio
 - **TryEnterState**: Enters this state directly without checking children
 
 ### Transitions
-- Transitions are checked every tick (OnTick) or on state events (OnStateCompleted, OnEvent)
-- Multiple transitions can exist; first matching one wins
+- Completion triggers: OnStateCompleted (both), OnStateSucceeded, OnStateFailed
+- Tick/event triggers: OnTick, OnEvent, OnDelegate
+- Multiple transitions can exist; first matching one wins (checked bottom-to-top for completion)
 - Transitions have priority: Normal, High, Critical
-- `link_type` values: GotoState, NextState, TreeSucceeded, TreeFailed, None
+- `link_type` values: GotoState, NextState, NextSelectableState, Succeeded, Failed, None
 
 ## Source Code Paths (UE 5.5+)
 
@@ -87,10 +88,20 @@ Read these files for authoritative behavior when the summary above isn't enough:
 ## Key Enums
 
 ### EStateTreeStateType
-- State, Group, Subtree, LinkedSubtree, LinkedAsset
+- State, Group, Linked, LinkedAsset, Subtree
 
-### EStateTreeTransitionTrigger  
-- OnStateCompleted, OnTick, OnEvent
+### EStateTreeTransitionTrigger
+- OnStateCompleted (= OnStateSucceeded | OnStateFailed), OnStateSucceeded, OnStateFailed, OnTick, OnEvent, OnDelegate
+
+### EStateTreeTransitionType
+- None, Succeeded, Failed, GotoState, NextState, NextSelectableState
 
 ### EStateTreeTaskCompletionType
-- Any, All
+- All, Any
+
+### EStateTreeStateSelectionBehavior
+- None, TryEnterState, TrySelectChildrenInOrder, TrySelectChildrenAtRandom, TrySelectChildrenWithHighestUtility, TrySelectChildrenAtRandomWeightedByUtility, TryFollowTransitions
+
+### No-Transition Fallback
+When a state completes but no completion transition matches, the tree **automatically jumps back to Root** and re-selects children. If Root selection also fails, the tree stops with Failed.
+Source: `StateTreeExecutionContext.cpp` ~line 5933: `"Could not trigger completion transition, jump back to root state."`
