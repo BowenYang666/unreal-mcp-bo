@@ -745,6 +745,7 @@ namespace
 		// Tasks
 		if (State->Tasks.Num() > 0)
 		{
+			Obj->SetStringField(TEXT("tasks_completion"), UEnum::GetValueAsString(State->TasksCompletion));
 			TArray<TSharedPtr<FJsonValue>> Arr;
 			for (const FStateTreeEditorNode& N : State->Tasks)
 				Arr.Add(MakeShared<FJsonValueObject>(EditorNodeToJson(N)));
