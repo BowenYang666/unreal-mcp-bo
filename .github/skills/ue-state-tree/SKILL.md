@@ -9,17 +9,21 @@ metadata:
 
 ## Critical Behavior Notes (Common Misconceptions)
 
-### Tasks Execute in PARALLEL, Not Sequence
-All tasks within a state run **concurrently** every tick. They are NOT sequential steps.
-- `Pick Next Target` + `Move To Location` in the same state = both tick every frame
+### Tasks Execute Concurrently (All Tick Each Frame), Not Sequentially
+All tasks within a state are ticked **every frame** in order. They are NOT sequential steps
+where one finishes before the next starts.
+- `Pick Next Target` + `Move To Location` in the same state = both tick every frame simultaneously
 - This is fundamentally different from Behavior Trees where tasks are sequential leaves
+- However, if an earlier task **fails**, subsequent tasks stop ticking (failure propagates forward)
+- Task tick order matches the order they appear in the editor (top to bottom)
+- Source: `StateTreeExecutionContext.cpp` `TickTasks()` — iterates all tasks in a for-loop, calling `Task.Tick()` on each
 
 ### TasksCompletion Mode (the "Any/All" dropdown)
-Each state has a `TasksCompletion` field:
-- **Any** (default): State completes when ANY single task reports success/failure
-- **All**: State completes only when ALL tasks have completed
-
-This is returned by `read_state_tree` as `tasks_completion` per state.
+Each state has a `TasksCompletion` field (default varies, check `tasks_completion` in `read_state_tree` output):
+- **Any**: State completes when ANY single task reports success/failure. If any task succeeds, state succeeds. If any fails, state fails.
+- **All**: State completes only when ALL tasks have completed. A mix of Succeeded+Stopped counts as Succeeded.
+- **Failure always wins**: Regardless of Any/All, if any task fails, the completion status is Failed.
+- Source: `StateTreeTasksStatus.h` `GetCompletionStatus()` — bitwise check on completion masks
 
 ### State Selection Behavior
 - **TrySelectChildrenInOrder**: Tries child states top-to-bottom, enters first one whose conditions pass
@@ -42,8 +46,8 @@ Read these files for authoritative behavior when the summary above isn't enough:
 | State definition | `Engine/Plugins/Runtime/StateTree/Source/StateTreeEditorModule/Public/StateTreeState.h` | UStateTreeState: Tasks[], Transitions[], Children[], EnterConditions[], TasksCompletion |
 | Editor data | `Engine/Plugins/Runtime/StateTree/Source/StateTreeEditorModule/Public/StateTreeEditorData.h` | UStateTreeEditorData: SubTrees[], Evaluators[], GlobalTasks[], Parameters |
 | Editor node | `Engine/Plugins/Runtime/StateTree/Source/StateTreeEditorModule/Public/StateTreeEditorNode.h` | FStateTreeEditorNode: Node (FInstancedStruct), Instance, InstanceObject |
-| Task execution | `Engine/Plugins/Runtime/StateTree/Source/StateTreeModule/Private/StateTreeExecutionContext.cpp` | `TickTasks()` — proves parallel execution |
-| Task completion | `Engine/Plugins/Runtime/StateTree/Source/StateTreeModule/Public/StateTreeTypes.h` | `EStateTreeTaskCompletionType` enum (Any/All) |
+| Task execution | `Engine/Plugins/Runtime/StateTree/Source/StateTreeModule/Private/StateTreeExecutionContext.cpp` | `TickTasks()` at ~line 4672 — proves concurrent tick, failure propagation |
+| Task completion | `Engine/Plugins/Runtime/StateTree/Source/StateTreeModule/Public/StateTreeTasksStatus.h` | `EStateTreeTaskCompletionType` (Any/All), `GetCompletionStatus()` bitwise logic |
 | Schema (AI) | `Engine/Plugins/Runtime/GameplayStateTree/Source/GameplayStateTreeModule/Public/StateTreeAIComponentSchema.h` | StateTreeAIComponentSchema: ContextActorClass, AIController |
 | Transition logic | `Engine/Plugins/Runtime/StateTree/Source/StateTreeModule/Private/StateTreeExecutionContext.cpp` | `TriggerTransitions()` — transition priority & evaluation order |
 
