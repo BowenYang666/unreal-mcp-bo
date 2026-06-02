@@ -17,9 +17,11 @@
 #include "StateTreeState.h"
 #include "StateTreeEditorData.h"
 #include "StateTreeEditorNode.h"
+#include "StateTreeEditorPropertyBindings.h"
 #include "StateTreeTypes.h"
 #include "StateTreeSchema.h"
 #include "InstancedStruct.h"
+#include "PropertyBindingPath.h"
 
 FUnrealMCPProjectCommands::FUnrealMCPProjectCommands()
 {
@@ -646,6 +648,54 @@ TSharedPtr<FJsonObject> FUnrealMCPProjectCommands::HandleReadBlackboard(const TS
 
 namespace
 {
+	// Map from node instance GUID → array of {TargetProperty, SourceDescription}
+	using FBindingMap = TMap<FGuid, TArray<TPair<FString, FString>>>;
+
+	// Build a lookup map of all property bindings keyed by target struct ID
+	FBindingMap BuildBindingMap(const UStateTreeEditorData* EditorData)
+	{
+		FBindingMap Map;
+		const FStateTreeEditorPropertyBindings* Bindings = EditorData->GetPropertyEditorBindings();
+		if (!Bindings) return Map;
+
+		for (const FStateTreePropertyPathBinding& Binding : Bindings->GetBindings())
+		{
+			const FPropertyBindingPath& TargetPath = Binding.GetTargetPath();
+			const FPropertyBindingPath& SourcePath = Binding.GetSourcePath();
+
+			FGuid TargetStructID = TargetPath.GetStructID();
+			if (!TargetStructID.IsValid()) continue;
+
+			// Target property name: the path segments after the struct
+			FString TargetPropName = TargetPath.ToString();
+
+			// Source: resolve to display name via struct descriptor + path
+			FString SourceStr;
+			FGuid SourceStructID = SourcePath.GetStructID();
+			TInstancedStruct<FPropertyBindingBindableStructDescriptor> SourceDesc;
+			if (SourceStructID.IsValid() && EditorData->GetBindableStructByID(SourceStructID, SourceDesc))
+			{
+				SourceStr = SourceDesc.Get<FPropertyBindingBindableStructDescriptor>().Name.ToString();
+				FString PathStr = SourcePath.ToString();
+				if (!PathStr.IsEmpty())
+				{
+					SourceStr += TEXT(".");
+					SourceStr += PathStr;
+				}
+			}
+			else
+			{
+				SourceStr = SourcePath.ToString();
+			}
+
+			if (!TargetPropName.IsEmpty() && !SourceStr.IsEmpty())
+			{
+				Map.FindOrAdd(TargetStructID).Emplace(TargetPropName, SourceStr);
+			}
+		}
+		return Map;
+	}
+
 	// Serialize all EditDefaultsOnly UPROPERTYs of a UStruct instance to JSON.
 	TSharedPtr<FJsonObject> StructInstanceToJson(const UScriptStruct* Struct, const void* StructMem)
 	{
@@ -669,7 +719,7 @@ namespace
 	}
 
 	// Serialize a FStateTreeEditorNode (used for Tasks, Conditions, Evaluators, etc.)
-	TSharedPtr<FJsonObject> EditorNodeToJson(const FStateTreeEditorNode& Node)
+	TSharedPtr<FJsonObject> EditorNodeToJson(const FStateTreeEditorNode& Node, const FBindingMap& Bindings)
 	{
 		TSharedPtr<FJsonObject> Obj = MakeShared<FJsonObject>();
 
@@ -721,10 +771,34 @@ namespace
 				Obj->SetObjectField(TEXT("node_properties"), NodeProps);
 		}
 
+		// Property bindings: check both the instance ID and the node struct ID
+		if (Node.ID.IsValid())
+		{
+			TSharedPtr<FJsonObject> BindObj = MakeShared<FJsonObject>();
+
+			// Bindings targeting the instance data
+			if (const TArray<TPair<FString, FString>>* Found = Bindings.Find(Node.ID))
+			{
+				for (const auto& Pair : *Found)
+					BindObj->SetStringField(Pair.Key, Pair.Value);
+			}
+
+			// Bindings targeting the node struct itself (uses GetNodeID())
+			FGuid NodeID = Node.GetNodeID();
+			if (const TArray<TPair<FString, FString>>* Found = Bindings.Find(NodeID))
+			{
+				for (const auto& Pair : *Found)
+					BindObj->SetStringField(Pair.Key, Pair.Value);
+			}
+
+			if (BindObj->Values.Num() > 0)
+				Obj->SetObjectField(TEXT("bindings"), BindObj);
+		}
+
 		return Obj;
 	}
 
-	TSharedPtr<FJsonObject> StateToJson(const UStateTreeState* State)
+	TSharedPtr<FJsonObject> StateToJson(const UStateTreeState* State, const FBindingMap& Bindings)
 	{
 		if (!State) return nullptr;
 
@@ -733,12 +807,28 @@ namespace
 		Obj->SetStringField(TEXT("type"), UEnum::GetValueAsString(State->Type));
 		Obj->SetStringField(TEXT("selection_behavior"), UEnum::GetValueAsString(State->SelectionBehavior));
 
+		// Utility AI: Weight & Considerations (relevant for Utility-based selection behaviors)
+		// Note: This feature is EXPERIMENTAL in UE 5.5+ — API may change.
+		Obj->SetNumberField(TEXT("weight"), State->Weight);
+
+		// Required event to enter this state
+		if (State->bHasRequiredEventToEnter && State->RequiredEventToEnter.Tag.IsValid())
+			Obj->SetStringField(TEXT("required_event_to_enter"), State->RequiredEventToEnter.Tag.ToString());
+
+		if (State->Considerations.Num() > 0)
+		{
+			TArray<TSharedPtr<FJsonValue>> ConsArr;
+			for (const FStateTreeEditorNode& N : State->Considerations)
+				ConsArr.Add(MakeShared<FJsonValueObject>(EditorNodeToJson(N, Bindings)));
+			Obj->SetArrayField(TEXT("considerations"), ConsArr);
+		}
+
 		// Enter conditions
 		if (State->EnterConditions.Num() > 0)
 		{
 			TArray<TSharedPtr<FJsonValue>> Arr;
 			for (const FStateTreeEditorNode& N : State->EnterConditions)
-				Arr.Add(MakeShared<FJsonValueObject>(EditorNodeToJson(N)));
+				Arr.Add(MakeShared<FJsonValueObject>(EditorNodeToJson(N, Bindings)));
 			Obj->SetArrayField(TEXT("enter_conditions"), Arr);
 		}
 
@@ -748,7 +838,7 @@ namespace
 			Obj->SetStringField(TEXT("tasks_completion"), UEnum::GetValueAsString(State->TasksCompletion));
 			TArray<TSharedPtr<FJsonValue>> Arr;
 			for (const FStateTreeEditorNode& N : State->Tasks)
-				Arr.Add(MakeShared<FJsonValueObject>(EditorNodeToJson(N)));
+				Arr.Add(MakeShared<FJsonValueObject>(EditorNodeToJson(N, Bindings)));
 			Obj->SetArrayField(TEXT("tasks"), Arr);
 		}
 
@@ -772,11 +862,15 @@ namespace
 				if (!T.bTransitionEnabled)
 					TObj->SetBoolField(TEXT("enabled"), false);
 
+				// Event tag for OnEvent transitions
+				if (T.RequiredEvent.Tag.IsValid())
+					TObj->SetStringField(TEXT("event_tag"), T.RequiredEvent.Tag.ToString());
+
 				if (T.Conditions.Num() > 0)
 				{
 					TArray<TSharedPtr<FJsonValue>> CondArr;
 					for (const FStateTreeEditorNode& C : T.Conditions)
-						CondArr.Add(MakeShared<FJsonValueObject>(EditorNodeToJson(C)));
+						CondArr.Add(MakeShared<FJsonValueObject>(EditorNodeToJson(C, Bindings)));
 					TObj->SetArrayField(TEXT("conditions"), CondArr);
 				}
 
@@ -791,7 +885,7 @@ namespace
 			TArray<TSharedPtr<FJsonValue>> Arr;
 			for (UStateTreeState* Child : State->Children)
 			{
-				TSharedPtr<FJsonObject> ChildObj = StateToJson(Child);
+				TSharedPtr<FJsonObject> ChildObj = StateToJson(Child, Bindings);
 				if (ChildObj)
 					Arr.Add(MakeShared<FJsonValueObject>(ChildObj));
 			}
@@ -850,23 +944,26 @@ TSharedPtr<FJsonObject> FUnrealMCPProjectCommands::HandleReadStateTree(const TSh
 	}
 	ResultObj->SetArrayField(TEXT("global_parameters"), ParamArr);
 
+	// Build property binding lookup map
+	const FBindingMap BindingMap = BuildBindingMap(EditorData);
+
 	// Evaluators
 	TArray<TSharedPtr<FJsonValue>> EvalArr;
 	for (const FStateTreeEditorNode& N : EditorData->Evaluators)
-		EvalArr.Add(MakeShared<FJsonValueObject>(EditorNodeToJson(N)));
+		EvalArr.Add(MakeShared<FJsonValueObject>(EditorNodeToJson(N, BindingMap)));
 	ResultObj->SetArrayField(TEXT("evaluators"), EvalArr);
 
 	// Global tasks
 	TArray<TSharedPtr<FJsonValue>> GTaskArr;
 	for (const FStateTreeEditorNode& N : EditorData->GlobalTasks)
-		GTaskArr.Add(MakeShared<FJsonValueObject>(EditorNodeToJson(N)));
+		GTaskArr.Add(MakeShared<FJsonValueObject>(EditorNodeToJson(N, BindingMap)));
 	ResultObj->SetArrayField(TEXT("global_tasks"), GTaskArr);
 
 	// State hierarchy (subtrees: usually one "Root", or named subtrees)
 	TArray<TSharedPtr<FJsonValue>> StatesArr;
 	for (UStateTreeState* SubTree : EditorData->SubTrees)
 	{
-		TSharedPtr<FJsonObject> StateObj = StateToJson(SubTree);
+		TSharedPtr<FJsonObject> StateObj = StateToJson(SubTree, BindingMap);
 		if (StateObj)
 			StatesArr.Add(MakeShared<FJsonValueObject>(StateObj));
 	}

@@ -59,7 +59,8 @@ public class UnrealMCP : ModuleRules
 				"NiagaraCore",
 				"NiagaraEditor",
 				"MaterialEditor",
-				"StateTreeEditorModule"
+				"StateTreeEditorModule",
+				"PropertyBindingUtils"
 			}
 		);
 		

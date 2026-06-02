@@ -37,6 +37,24 @@ Each state has a `TasksCompletion` field (default varies, check `tasks_completio
 - Transitions have priority: Normal, High, Critical
 - `link_type` values: GotoState, NextState, NextSelectableState, Succeeded, Failed, None
 
+### Utility AI (Weight & Considerations) — EXPERIMENTAL
+> ⚠️ This feature is **experimental** in UE 5.5+. The API is expected to change.
+
+Each state has a `weight` (float, default 1.0) and an optional `considerations` array.
+These fields are only meaningful when the **parent** state's `selection_behavior` is:
+- **TrySelectChildrenWithHighestUtility** — selects the child with the highest final score
+- **TrySelectChildrenAtRandomWeightedByUtility** — random selection weighted by scores (only Score > 0 enters the pool)
+
+**Scoring**: NOT simple multiplication. Considerations form an **expression tree**:
+- Each Consideration has an `Operand` (`And`=min, `Or`=max, `Multiply`=product, `Copy`=overwrite) and `DeltaIndent` (nesting level)
+- `GetScore()` returns a raw float; `GetNormalizedScore()` normalizes it for the expression
+- Final utility = `Weight × ExpressionResult`
+- Source: `StateTreeExecutionContext.cpp` `EvaluateUtilityWithValidation()` ~line 4932
+
+**Fields in `read_state_tree` output**:
+- `weight` (float) — always present on every state
+- `considerations` (array) — present when the state has Consideration nodes; each entry uses the same format as tasks/conditions (`class`, `instance_properties`, `node_properties`), with `Operand` and `DeltaIndent` exposed in `node_properties`
+
 ## Source Code Paths (UE 5.5+)
 
 Read these files for authoritative behavior when the summary above isn't enough:
@@ -44,9 +62,10 @@ Read these files for authoritative behavior when the summary above isn't enough:
 | Concept | Source Path | What It Contains |
 |---------|-------------|------------------|
 | StateTree asset | `Engine/Plugins/Runtime/StateTree/Source/StateTreeModule/Public/StateTree.h` | Root structure, BlackboardAsset ref |
-| State definition | `Engine/Plugins/Runtime/StateTree/Source/StateTreeEditorModule/Public/StateTreeState.h` | UStateTreeState: Tasks[], Transitions[], Children[], EnterConditions[], TasksCompletion |
+| State definition | `Engine/Plugins/Runtime/StateTree/Source/StateTreeEditorModule/Public/StateTreeState.h` | UStateTreeState: Tasks[], Transitions[], Children[], EnterConditions[], TasksCompletion, Weight, Considerations |
 | Editor data | `Engine/Plugins/Runtime/StateTree/Source/StateTreeEditorModule/Public/StateTreeEditorData.h` | UStateTreeEditorData: SubTrees[], Evaluators[], GlobalTasks[], Parameters |
 | Editor node | `Engine/Plugins/Runtime/StateTree/Source/StateTreeEditorModule/Public/StateTreeEditorNode.h` | FStateTreeEditorNode: Node (FInstancedStruct), Instance, InstanceObject |
+| Consideration base | `Engine/Plugins/Runtime/StateTree/Source/StateTreeModule/Public/StateTreeConsiderationBase.h` | FStateTreeConsiderationCommonBase — GetScore() (raw float), GetNormalizedScore(), Operand, DeltaIndent |
 | Task execution | `Engine/Plugins/Runtime/StateTree/Source/StateTreeModule/Private/StateTreeExecutionContext.cpp` | `TickTasks()` at ~line 4672 — proves concurrent tick, failure propagation |
 | Task completion | `Engine/Plugins/Runtime/StateTree/Source/StateTreeModule/Public/StateTreeTasksStatus.h` | `EStateTreeTaskCompletionType` (Any/All), `GetCompletionStatus()` bitwise logic |
 | Schema (AI) | `Engine/Plugins/Runtime/GameplayStateTree/Source/GameplayStateTreeModule/Public/StateTreeAIComponentSchema.h` | StateTreeAIComponentSchema: ContextActorClass, AIController |
@@ -65,8 +84,10 @@ Read these files for authoritative behavior when the summary above isn't enough:
     "name": "Root",
     "type": "EStateTreeStateType::State",
     "selection_behavior": "...",
+    "weight": 1.0,
     "children": [{
       "name": "Patrol",
+      "weight": 1.0,
       "tasks_completion": "EStateTreeTaskCompletionType::Any",
       "tasks": [
         {"class": "STTask_MoveToActor", "instance_properties": {...}},
@@ -79,6 +100,17 @@ Read these files for authoritative behavior when the summary above isn't enough:
         "conditions": [{"class": "StateTreeCompareBoolCondition", ...}]
       }],
       "enter_conditions": [...],
+      "children": [...]
+    },
+    {
+      "name": "Chase",
+      "weight": 2.0,
+      "selection_behavior": "EStateTreeStateSelectionBehavior::TrySelectChildrenWithHighestUtility",
+      "considerations": [
+        {"class": "MyConsideration_HPLow", "instance_properties": {"Curve": "...", "Multiplier": "1.5"}, "node_properties": {"Name": "HP Low Bonus", "Operand": "And", "DeltaIndent": "0"}},
+        {"class": "StateTreeFloatConsideration", "instance_properties": {"Input": "0.0"}, "node_properties": {"Operand": "Multiply", "DeltaIndent": "0"}}
+      ],
+      "tasks": [...],
       "children": [...]
     }]
   }]

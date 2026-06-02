@@ -264,11 +264,17 @@ def register_project_tools(mcp: FastMCP):
 
         Returns:
             Dict with name, schema, global_parameters, evaluators, global_tasks, states.
-            Each state has: name, type, selection_behavior, tasks[], transitions[],
+            Each state has: name, type, selection_behavior, weight (float),
+            considerations[], tasks[], transitions[],
             enter_conditions[], children[].
-            Tasks/conditions have: class (struct name), instance_class (for BP nodes),
-            instance_properties.
+            Tasks/conditions/considerations have: class (struct name),
+            instance_class (for BP nodes), instance_properties.
+            Considerations also expose Operand and DeltaIndent in node_properties.
             Transitions have: trigger, priority, link_type, target_state, conditions[].
+            weight and considerations are used with Utility AI selection
+            behaviors (TrySelectChildrenWithHighestUtility,
+            TrySelectChildrenAtRandomWeightedByUtility).
+            Note: Utility AI is EXPERIMENTAL in UE 5.5+ — API may change.
 
         Examples:
             read_state_tree(asset_path="/Game/AI/ST_Enemy_Dog")
