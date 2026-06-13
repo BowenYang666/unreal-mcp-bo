@@ -411,7 +411,11 @@ def register_editor_tools(mcp: FastMCP):
         verbosity: str = "all",
         category: str = "",
         search: str = "",
-        log_path: str = ""
+        log_path: str = "",
+        start_time: str = "",
+        end_time: str = "",
+        relative_seconds_ago: int = 0,
+        pie_session_index: int = 0
     ) -> Dict[str, Any]:
         """Read recent Unreal Editor output log entries by reading the log file directly.
 
@@ -420,28 +424,73 @@ def register_editor_tools(mcp: FastMCP):
 
         Set the UNREAL_PROJECT_LOG env var to the log file path, or pass log_path directly.
 
+        At least one time parameter must be provided: start_time, end_time, relative_seconds_ago, or pie_session_index.
+        Time filtering uses the timestamp in each log line [YYYY.MM.DD-HH.MM.SS:mmm].
+        After time filtering, category/verbosity/search filters apply, then count takes the tail.
+
         Args:
             ctx: The MCP context
-            count: Maximum number of log entries to return from the end of the file (default: 100)
+            count: Maximum number of log entries to return after all filtering (default: 100)
             verbosity: Minimum verbosity level - "fatal", "error", "warning", "display", "log", "verbose", or "all" (default: "all")
             category: Filter by log category name, e.g. "LogTemp", "LogBlueprintUserMessages" (default: "" = all categories)
             search: Case-insensitive substring search within log messages (default: "" = no filter)
             log_path: Full path to the .log file. If empty, uses UNREAL_PROJECT_LOG env var.
+            start_time: Inclusive start time in UE format "YYYY.MM.DD-HH.MM.SS" or ISO "YYYY-MM-DDTHH:MM:SS".
+                Omit or "" to not limit start.
+            end_time: Inclusive end time, same format as start_time.
+                Omit or "" to not limit end.
+            relative_seconds_ago: If > 0, sets start_time to (now - N seconds). Overrides start_time if both given.
+            pie_session_index: Select logs from a specific PIE (Play-In-Editor) session.
+                -1 = most recent PIE session, -2 = the one before that, etc.
+                0 = disabled (default). Overrides start_time/end_time when set.
 
         Returns:
-            Dict with "total_lines" (int), "returned" (int), and "logs" (list of dicts with timestamp, category, verbosity, message)
+            Dict with "total_lines" (int), "returned" (int), "time_window" (dict),
+            and "logs" (list of dicts with timestamp, category, verbosity, message).
+            When using pie_session_index, also returns "pie_sessions_found" (int).
 
         Examples:
-            get_editor_logs(count=50)
-            get_editor_logs(verbosity="error")
-            get_editor_logs(category="LogTemp", count=20)
-            get_editor_logs(search="NullPtr")
-            get_editor_logs(log_path="D:/UnrealProjects/MyProject/Saved/Logs/MyProject.log")
+            get_editor_logs(relative_seconds_ago=60, verbosity="error")
+            get_editor_logs(start_time="2026.06.13-02.05.00", end_time="2026.06.13-02.10.00")
+            get_editor_logs(start_time="2026.06.13-02.05.00", category="LogTemp", count=50)
+            get_editor_logs(relative_seconds_ago=300, search="NullPtr")
+            get_editor_logs(pie_session_index=-1, verbosity="error")
+            get_editor_logs(pie_session_index=-1, category="LogTemp")
         """
         import os
         import re
+        from datetime import datetime, timedelta
 
-        # Resolve log file path
+        # Validate: at least one time param required
+        if not start_time and not end_time and not relative_seconds_ago and not pie_session_index:
+            return {
+                "success": False,
+                "message": "At least one time parameter is required: start_time, end_time, relative_seconds_ago, or pie_session_index. "
+                           "Examples: relative_seconds_ago=60, start_time='2026.06.13-02.05.00', pie_session_index=-1"
+            }
+
+        # Helper: normalize time string to UE format "YYYY.MM.DD-HH.MM.SS" for comparison
+        def normalize_time(t: str) -> str:
+            if not t:
+                return ""
+            # Try ISO format first: 2026-06-13T02:05:00
+            t = t.strip()
+            for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+                try:
+                    dt = datetime.strptime(t, fmt)
+                    return dt.strftime("%Y.%m.%d-%H.%M.%S")
+                except ValueError:
+                    pass
+            # Already UE format or close enough — validate basic structure
+            # Accept with or without milliseconds
+            return t.split(":")[0] if ":" in t and len(t) > 23 else t
+
+        # Handle relative_seconds_ago → overrides start_time
+        if relative_seconds_ago > 0:
+            dt_start = datetime.now() - timedelta(seconds=relative_seconds_ago)
+            start_time = dt_start.strftime("%Y.%m.%d-%H.%M.%S")
+
+        # Resolve log file path (needed before PIE scanning)
         path = log_path or os.environ.get("UNREAL_PROJECT_LOG", "")
         if not path:
             return {
@@ -463,6 +512,57 @@ def register_editor_tools(mcp: FastMCP):
                     all_lines = f.readlines()
 
             total_lines = len(all_lines)
+
+            # Timestamp extraction pattern for PIE scanning and main loop
+            ts_extract = re.compile(r"^\[([^\]]+)\]")
+
+            # PIE session detection: scan for PIE start markers and compute time window
+            pie_sessions_found = 0
+            if pie_session_index != 0:
+                # PIE start markers in LogPlayLevel
+                pie_start_pattern = re.compile(
+                    r"^\[([^\]]+)\]\[[\s\d]*\]LogPlayLevel.*(?:PIE:|Creating play world|PlaySession.*Start|Play in editor)",
+                    re.IGNORECASE
+                )
+                # Collect timestamps of all PIE session starts
+                pie_starts = []
+                for line in all_lines:
+                    m = pie_start_pattern.match(line.rstrip("\n\r"))
+                    if m:
+                        ts_raw = m.group(1)
+                        ts = ts_raw.split(":")[0] if ":" in ts_raw else ts_raw
+                        # Deduplicate: only add if different from last (multiple log lines per PIE start)
+                        if not pie_starts or ts != pie_starts[-1]:
+                            pie_starts.append(ts)
+
+                pie_sessions_found = len(pie_starts)
+                if pie_sessions_found == 0:
+                    return {
+                        "success": False,
+                        "message": "No PIE sessions found in the log file. "
+                                   "Look for LogPlayLevel entries indicating Play-In-Editor."
+                    }
+
+                # pie_session_index is negative: -1 = last, -2 = second to last
+                idx = pie_session_index
+                if idx < 0:
+                    idx = pie_sessions_found + idx
+                if idx < 0 or idx >= pie_sessions_found:
+                    return {
+                        "success": False,
+                        "message": f"PIE session index {pie_session_index} out of range. "
+                                   f"Found {pie_sessions_found} PIE session(s). Use -1 for most recent."
+                    }
+
+                start_time = pie_starts[idx]
+                # End time: start of next PIE session, or unbounded (to EOF)
+                if idx + 1 < pie_sessions_found:
+                    end_time = pie_starts[idx + 1]
+                else:
+                    end_time = ""
+
+            start_cmp = normalize_time(start_time)
+            end_cmp = normalize_time(end_time)
 
             # UE log line pattern: [YYYY.MM.DD-HH.MM.SS:mmm][frame]Category: Verbosity: Message
             # or: [YYYY.MM.DD-HH.MM.SS:mmm][frame]Category: Message (for Display verbosity)
@@ -493,6 +593,16 @@ def register_editor_tools(mcp: FastMCP):
                 verb = m.group(3) or "Display"
                 msg = m.group(4)
 
+                # Extract comparable time (strip milliseconds): "2026.06.13-02.06.20:987" → "2026.06.13-02.06.20"
+                ts_cmp = timestamp.split(":")[0] if ":" in timestamp else timestamp
+
+                # Filter by time window (closed interval)
+                # Since we iterate in reverse (newest first), lines older than start can break early
+                if start_cmp and ts_cmp < start_cmp:
+                    break
+                if end_cmp and ts_cmp > end_cmp:
+                    continue
+
                 # Filter by verbosity
                 entry_rank = verbosity_rank.get(verb.lower(), 5)
                 if min_rank != 99 and entry_rank > min_rank:
@@ -520,12 +630,20 @@ def register_editor_tools(mcp: FastMCP):
             results.reverse()
 
             logger.info(f"Read {len(results)} log entries from {path} (total lines: {total_lines})")
-            return {
+            result = {
                 "total_lines": total_lines,
                 "returned": len(results),
                 "log_file": path,
+                "time_window": {
+                    "start": start_cmp or "(unbounded)",
+                    "end": end_cmp or "(unbounded)"
+                },
                 "logs": results
             }
+            if pie_session_index != 0:
+                result["pie_sessions_found"] = pie_sessions_found
+                result["pie_session_used"] = pie_session_index
+            return result
 
         except Exception as e:
             error_msg = f"Error reading log file: {e}"
