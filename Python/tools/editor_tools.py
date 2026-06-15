@@ -433,7 +433,9 @@ def register_editor_tools(mcp: FastMCP):
             count: Maximum number of log entries to return after all filtering (default: 100)
             verbosity: Minimum verbosity level - "fatal", "error", "warning", "display", "log", "verbose", or "all" (default: "all")
             category: Filter by log category name, e.g. "LogTemp", "LogBlueprintUserMessages" (default: "" = all categories)
-            search: Case-insensitive substring search within log messages (default: "" = no filter)
+            search: Case-insensitive REGEX search within log messages. Supports alternation,
+                e.g. "died|HandleDeath|STTask". If the pattern is not valid regex, falls back
+                to a literal substring match. (default: "" = no filter)
             log_path: Full path to the .log file. If empty, uses UNREAL_PROJECT_LOG env var.
             start_time: Inclusive start time in UE format "YYYY.MM.DD-HH.MM.SS" or ISO "YYYY-MM-DDTHH:MM:SS".
                 Omit or "" to not limit start.
@@ -454,6 +456,7 @@ def register_editor_tools(mcp: FastMCP):
             get_editor_logs(start_time="2026.06.13-02.05.00", end_time="2026.06.13-02.10.00")
             get_editor_logs(start_time="2026.06.13-02.05.00", category="LogTemp", count=50)
             get_editor_logs(relative_seconds_ago=300, search="NullPtr")
+            get_editor_logs(relative_seconds_ago=300, search="died|HandleDeath|STTask")
             get_editor_logs(pie_session_index=-1, verbosity="error")
             get_editor_logs(pie_session_index=-1, category="LogTemp")
         """
@@ -519,9 +522,11 @@ def register_editor_tools(mcp: FastMCP):
             # PIE session detection: scan for PIE start markers and compute time window
             pie_sessions_found = 0
             if pie_session_index != 0:
-                # PIE start markers in LogPlayLevel
+                # PIE start marker: each PIE session logs exactly one "Creating play world package"
+                # line via LogPlayLevel. This is the canonical, single-per-session marker across
+                # UE versions (avoids matching the multiple "PIE: ..." sub-lines within a session).
                 pie_start_pattern = re.compile(
-                    r"^\[([^\]]+)\]\[[\s\d]*\]LogPlayLevel.*(?:PIE:|Creating play world|PlaySession.*Start|Play in editor)",
+                    r"^\[([^\]]+)\]\[[\s\d]*\]LogPlayLevel:.*Creating play world package",
                     re.IGNORECASE
                 )
                 # Collect timestamps of all PIE session starts
@@ -531,9 +536,7 @@ def register_editor_tools(mcp: FastMCP):
                     if m:
                         ts_raw = m.group(1)
                         ts = ts_raw.split(":")[0] if ":" in ts_raw else ts_raw
-                        # Deduplicate: only add if different from last (multiple log lines per PIE start)
-                        if not pie_starts or ts != pie_starts[-1]:
-                            pie_starts.append(ts)
+                        pie_starts.append(ts)
 
                 pie_sessions_found = len(pie_starts)
                 if pie_sessions_found == 0:
@@ -578,7 +581,20 @@ def register_editor_tools(mcp: FastMCP):
             min_rank = verbosity_rank.get(verbosity.lower(), 99)
 
             category_lower = category.lower() if category else ""
-            search_lower = search.lower() if search else ""
+
+            # Compile search as a case-insensitive regex; fall back to literal substring on bad pattern
+            search_regex = None
+            search_lower = ""
+            search_is_regex = False
+            if search:
+                try:
+                    search_regex = re.compile(search, re.IGNORECASE)
+                    search_is_regex = True
+                except re.error:
+                    search_lower = search.lower()
+
+            # Track how many entries fell inside the time window before search/category/verbosity
+            in_window_count = 0
 
             # Parse from end to start, collect up to count matching entries
             results = []
@@ -603,6 +619,8 @@ def register_editor_tools(mcp: FastMCP):
                 if end_cmp and ts_cmp > end_cmp:
                     continue
 
+                in_window_count += 1
+
                 # Filter by verbosity
                 entry_rank = verbosity_rank.get(verb.lower(), 5)
                 if min_rank != 99 and entry_rank > min_rank:
@@ -612,9 +630,13 @@ def register_editor_tools(mcp: FastMCP):
                 if category_lower and cat.lower() != category_lower:
                     continue
 
-                # Filter by search text
-                if search_lower and search_lower not in msg.lower():
-                    continue
+                # Filter by search text (regex if valid, else literal substring)
+                if search:
+                    if search_is_regex:
+                        if not search_regex.search(msg):
+                            continue
+                    elif search_lower not in msg.lower():
+                        continue
 
                 results.append({
                     "timestamp": timestamp,
@@ -643,6 +665,20 @@ def register_editor_tools(mcp: FastMCP):
             if pie_session_index != 0:
                 result["pie_sessions_found"] = pie_sessions_found
                 result["pie_session_used"] = pie_session_index
+            # Warn when the time window had entries but downstream filters removed them all
+            if len(results) == 0 and in_window_count > 0:
+                applied = []
+                if search:
+                    applied.append(f"search='{search}'" + ("" if search_is_regex else " (invalid regex, used literal match)"))
+                if category:
+                    applied.append(f"category='{category}'")
+                if verbosity and verbosity.lower() != "all":
+                    applied.append(f"verbosity='{verbosity}'")
+                result["warning"] = (
+                    f"{in_window_count} log line(s) matched the time window, but all were removed by "
+                    f"filters [{', '.join(applied)}]. Note: 'search' is a REGEX (use 'a|b|c' for alternation). "
+                    f"Try relaxing the filters."
+                )
             return result
 
         except Exception as e:
