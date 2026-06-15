@@ -53,7 +53,11 @@ def register_editor_tools(mcp: FastMCP):
 
     @mcp.tool()
     def find_actors_by_name(ctx: Context, pattern: str) -> List[str]:
-        """Find actors by name pattern."""
+        """Find actors by name pattern.
+
+        Matches against both the internal object name (e.g. "StaticMeshActor_26")
+        and the World Outliner display label (e.g. "Cube"), case-insensitive.
+        """
         from unreal_mcp_server import get_unreal_connection
         
         try:
@@ -68,8 +72,11 @@ def register_editor_tools(mcp: FastMCP):
             
             if not response:
                 return []
-                
-            return response.get("actors", [])
+            
+            # Response may be wrapped as {"status": "success", "result": {"actors": [...]}}
+            # or returned flat as {"actors": [...]}. Handle both.
+            result = response.get("result", response)
+            return result.get("actors", [])
             
         except Exception as e:
             logger.error(f"Error finding actors: {e}")
@@ -145,7 +152,11 @@ def register_editor_tools(mcp: FastMCP):
     
     @mcp.tool()
     def delete_actor(ctx: Context, name: str) -> Dict[str, Any]:
-        """Delete an actor by name."""
+        """Delete an actor by name.
+
+        'name' accepts either the internal object name or the World Outliner
+        display label.
+        """
         from unreal_mcp_server import get_unreal_connection
         
         try:
@@ -171,7 +182,11 @@ def register_editor_tools(mcp: FastMCP):
         rotation: List[float]  = None,
         scale: List[float] = None
     ) -> Dict[str, Any]:
-        """Set the transform of an actor."""
+        """Set the transform of an actor.
+
+        'name' accepts either the internal object name or the World Outliner
+        display label.
+        """
         from unreal_mcp_server import get_unreal_connection
         
         try:
@@ -197,7 +212,11 @@ def register_editor_tools(mcp: FastMCP):
     
     @mcp.tool()
     def get_actor_properties(ctx: Context, name: str) -> Dict[str, Any]:
-        """Get all properties of an actor."""
+        """Get all properties of an actor.
+
+        'name' accepts either the internal object name (e.g. "StaticMeshActor_26")
+        or the World Outliner display label (e.g. "Cube").
+        """
         from unreal_mcp_server import get_unreal_connection
         
         try:

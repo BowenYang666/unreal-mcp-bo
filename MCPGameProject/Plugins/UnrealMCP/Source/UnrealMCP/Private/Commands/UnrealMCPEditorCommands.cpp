@@ -34,6 +34,38 @@
 #include "NiagaraSystem.h"
 #include "WidgetBlueprint.h"
 
+namespace
+{
+    // Returns the editor world (consistent with spawn handlers), falling back to GWorld.
+    UWorld* GetMCPEditorWorld()
+    {
+        if (GEditor)
+        {
+            if (UWorld* EditorWorld = GEditor->GetEditorWorldContext().World())
+            {
+                return EditorWorld;
+            }
+        }
+        return GWorld;
+    }
+
+    // Matches an actor against a user-supplied identifier, accepting either the
+    // internal object name (GetName, e.g. "StaticMeshActor_26") or the Outliner
+    // display label (GetActorLabel, e.g. "Cube"). Case-insensitive on the label.
+    bool ActorMatchesIdentifier(const AActor* Actor, const FString& Identifier)
+    {
+        if (!Actor)
+        {
+            return false;
+        }
+        if (Actor->GetName() == Identifier)
+        {
+            return true;
+        }
+        return Actor->GetActorLabel().Equals(Identifier, ESearchCase::IgnoreCase);
+    }
+}
+
 FUnrealMCPEditorCommands::FUnrealMCPEditorCommands()
 {
 }
@@ -111,7 +143,7 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleCommand(const FString& C
 TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleGetActorsInLevel(const TSharedPtr<FJsonObject>& Params)
 {
     TArray<AActor*> AllActors;
-    UGameplayStatics::GetAllActorsOfClass(GWorld, AActor::StaticClass(), AllActors);
+    UGameplayStatics::GetAllActorsOfClass(GetMCPEditorWorld(), AActor::StaticClass(), AllActors);
     
     TArray<TSharedPtr<FJsonValue>> ActorArray;
     for (AActor* Actor : AllActors)
@@ -137,12 +169,14 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleFindActorsByName(const T
     }
     
     TArray<AActor*> AllActors;
-    UGameplayStatics::GetAllActorsOfClass(GWorld, AActor::StaticClass(), AllActors);
+    UGameplayStatics::GetAllActorsOfClass(GetMCPEditorWorld(), AActor::StaticClass(), AllActors);
     
     TArray<TSharedPtr<FJsonValue>> MatchingActors;
     for (AActor* Actor : AllActors)
     {
-        if (Actor && Actor->GetName().Contains(Pattern))
+        // Match against the internal name OR the Outliner display label (case-insensitive).
+        if (Actor && (Actor->GetName().Contains(Pattern)
+            || Actor->GetActorLabel().Contains(Pattern, ESearchCase::IgnoreCase)))
         {
             MatchingActors.Add(FUnrealMCPCommonUtils::ActorToJson(Actor));
         }
@@ -259,11 +293,11 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleDeleteActor(const TShare
     }
 
     TArray<AActor*> AllActors;
-    UGameplayStatics::GetAllActorsOfClass(GWorld, AActor::StaticClass(), AllActors);
+    UGameplayStatics::GetAllActorsOfClass(GetMCPEditorWorld(), AActor::StaticClass(), AllActors);
     
     for (AActor* Actor : AllActors)
     {
-        if (Actor && Actor->GetName() == ActorName)
+        if (ActorMatchesIdentifier(Actor, ActorName))
         {
             // Store actor info before deletion for the response
             TSharedPtr<FJsonObject> ActorInfo = FUnrealMCPCommonUtils::ActorToJsonObject(Actor);
@@ -292,11 +326,11 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSetActorTransform(const 
     // Find the actor
     AActor* TargetActor = nullptr;
     TArray<AActor*> AllActors;
-    UGameplayStatics::GetAllActorsOfClass(GWorld, AActor::StaticClass(), AllActors);
+    UGameplayStatics::GetAllActorsOfClass(GetMCPEditorWorld(), AActor::StaticClass(), AllActors);
     
     for (AActor* Actor : AllActors)
     {
-        if (Actor && Actor->GetName() == ActorName)
+        if (ActorMatchesIdentifier(Actor, ActorName))
         {
             TargetActor = Actor;
             break;
@@ -343,11 +377,11 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleGetActorProperties(const
     // Find the actor
     AActor* TargetActor = nullptr;
     TArray<AActor*> AllActors;
-    UGameplayStatics::GetAllActorsOfClass(GWorld, AActor::StaticClass(), AllActors);
+    UGameplayStatics::GetAllActorsOfClass(GetMCPEditorWorld(), AActor::StaticClass(), AllActors);
     
     for (AActor* Actor : AllActors)
     {
-        if (Actor && Actor->GetName() == ActorName)
+        if (ActorMatchesIdentifier(Actor, ActorName))
         {
             TargetActor = Actor;
             break;
@@ -375,11 +409,11 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSetActorProperty(const T
     // Find the actor
     AActor* TargetActor = nullptr;
     TArray<AActor*> AllActors;
-    UGameplayStatics::GetAllActorsOfClass(GWorld, AActor::StaticClass(), AllActors);
+    UGameplayStatics::GetAllActorsOfClass(GetMCPEditorWorld(), AActor::StaticClass(), AllActors);
     
     for (AActor* Actor : AllActors)
     {
-        if (Actor && Actor->GetName() == ActorName)
+        if (ActorMatchesIdentifier(Actor, ActorName))
         {
             TargetActor = Actor;
             break;
@@ -547,11 +581,11 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleFocusViewport(const TSha
         // Find the actor
         AActor* TargetActor = nullptr;
         TArray<AActor*> AllActors;
-        UGameplayStatics::GetAllActorsOfClass(GWorld, AActor::StaticClass(), AllActors);
+        UGameplayStatics::GetAllActorsOfClass(GetMCPEditorWorld(), AActor::StaticClass(), AllActors);
         
         for (AActor* Actor : AllActors)
         {
-            if (Actor && Actor->GetName() == TargetActorName)
+            if (ActorMatchesIdentifier(Actor, TargetActorName))
             {
                 TargetActor = Actor;
                 break;
