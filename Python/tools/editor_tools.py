@@ -15,41 +15,41 @@ def register_editor_tools(mcp: FastMCP):
     """Register editor tools with the MCP server."""
     
     @mcp.tool()
-    def get_actors_in_level(ctx: Context) -> List[Dict[str, Any]]:
-        """Get a list of all actors in the current level."""
+    def get_actors_in_level(ctx: Context) -> Dict[str, Any]:
+        """Get all actors in the current level, plus which level they came from.
+
+        Returns a dict with:
+          - actors: list of actors (name, label, class, location, rotation, scale)
+          - level_name: short map name of the queried world
+          - level_package_path: full package path, e.g. "/Game/Maps/MyLevel"
+          - current_level: package name of the current level
+
+        The level_* fields make it explicit which world was queried, so callers
+        don't mistake a different open level for "missing actors".
+        """
         from unreal_mcp_server import get_unreal_connection
         
         try:
             unreal = get_unreal_connection()
             if not unreal:
                 logger.warning("Failed to connect to Unreal Engine")
-                return []
+                return {"actors": [], "message": "Failed to connect to Unreal Engine"}
                 
             response = unreal.send_command("get_actors_in_level", {})
             
             if not response:
                 logger.warning("No response from Unreal Engine")
-                return []
-                
-            # Log the complete response for debugging
-            logger.info(f"Complete response from Unreal: {response}")
+                return {"actors": [], "message": "No response from Unreal Engine"}
             
-            # Check response format
-            if "result" in response and "actors" in response["result"]:
-                actors = response["result"]["actors"]
-                logger.info(f"Found {len(actors)} actors in level")
-                return actors
-            elif "actors" in response:
-                actors = response["actors"]
-                logger.info(f"Found {len(actors)} actors in level")
-                return actors
-                
-            logger.warning(f"Unexpected response format: {response}")
-            return []
+            # Unwrap the {"status": "success", "result": {...}} envelope if present.
+            result = response.get("result", response)
+            actors = result.get("actors", [])
+            logger.info(f"Found {len(actors)} actors in level {result.get('level_package_path', '?')}")
+            return result
             
         except Exception as e:
             logger.error(f"Error getting actors: {e}")
-            return []
+            return {"actors": [], "message": str(e)}
 
     @mcp.tool()
     def find_actors_by_name(ctx: Context, pattern: str) -> List[str]:
@@ -337,7 +337,10 @@ def register_editor_tools(mcp: FastMCP):
         
         Args:
             ctx: The MCP context
-            blueprint_name: Name of the Blueprint to spawn from
+            blueprint_name: The Blueprint to spawn from. Accepts a full asset path
+                (e.g. "/Game/Test/AI/BP_FT_PerceptionFullCycle"), a bare name under
+                /Game/Blueprints/ (legacy), or any unique blueprint name in the project
+                (resolved via an asset-registry search).
             actor_name: Name to give the spawned actor
             location: The [x, y, z] world location to spawn at
             rotation: The [pitch, yaw, roll] rotation in degrees
@@ -841,6 +844,99 @@ def register_editor_tools(mcp: FastMCP):
 
         except Exception as e:
             logger.error(f"Error opening asset: {e}")
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def open_level(
+        ctx: Context,
+        level_path: str,
+        save_dirty: bool = False
+    ) -> Dict[str, Any]:
+        """Open (load) a level/map into the editor viewport.
+
+        Unlike open_asset (which opens an asset-editor window), this loads a .umap
+        into the editor world, replacing the currently open level.
+
+        Args:
+            level_path: Full package path to the level, e.g.
+                "/Game/Maps/cyberpunk_start1" (the ".umap" suffix and any object
+                suffix are optional).
+            save_dirty: If True, save any unsaved packages before switching (no prompt).
+                Defaults to False.
+
+        Returns:
+            Dict with success, level_package_path, and level_name
+
+        Examples:
+            open_level(level_path="/Game/Maps/cyberpunk_start1")
+            open_level(level_path="/Game/Maps/FunctionalTest/cyberpunk_Test_DogChasePlayer", save_dirty=True)
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            response = unreal.send_command("open_level", {
+                "level_path": level_path,
+                "save_dirty": save_dirty
+            })
+
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+
+            result = response.get("result", response)
+            logger.info(f"Opened level: {level_path}")
+            return result
+
+        except Exception as e:
+            logger.error(f"Error opening level: {e}")
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def save_level(ctx: Context) -> Dict[str, Any]:
+        """Save the currently open level/map to disk.
+
+        Persists the current editor world (the .umap) including any actors added,
+        moved, or modified via MCP. Fails if the current level is untitled/unsaved
+        (use the editor's "Save As" first in that case).
+
+        After saving, the Asset Registry is re-scanned for this map so that updated
+        tags (e.g. newly added Functional Test actors) are picked up. If a new
+        Functional Test was added, click "Refresh Tests" in Session Frontend to see
+        it — no editor restart required.
+
+        Returns:
+            Dict with success, level_package_path, asset_registry_rescanned, message
+
+        Examples:
+            save_level()
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            response = unreal.send_command("save_level", {})
+
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+
+            result = response.get("result", response)
+            logger.info("Saved current level")
+            return result
+
+        except Exception as e:
+            logger.error(f"Error saving level: {e}")
             return {"success": False, "message": str(e)}
 
     logger.info("Editor tools registered successfully")

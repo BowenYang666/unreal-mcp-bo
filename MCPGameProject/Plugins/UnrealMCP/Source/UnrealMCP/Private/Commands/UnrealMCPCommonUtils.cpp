@@ -891,7 +891,100 @@ bool FUnrealMCPCommonUtils::SetObjectProperty(UObject* Object, const FString& Pr
             }
         }
     }
-    
+    else if (Property->IsA<FNameProperty>())
+    {
+        ((FNameProperty*)Property)->SetPropertyValue(PropertyAddr, FName(*Value->AsString()));
+        return true;
+    }
+    else if (Property->IsA<FTextProperty>())
+    {
+        ((FTextProperty*)Property)->SetPropertyValue(PropertyAddr, FText::FromString(Value->AsString()));
+        return true;
+    }
+    else if (Property->IsA<FDoubleProperty>())
+    {
+        ((FDoubleProperty*)Property)->SetPropertyValue(PropertyAddr, Value->AsNumber());
+        return true;
+    }
+    else if (Property->IsA<FInt64Property>())
+    {
+        ((FInt64Property*)Property)->SetPropertyValue(PropertyAddr, static_cast<int64>(Value->AsNumber()));
+        return true;
+    }
+    // Soft references: TSoftObjectPtr<> and TSoftClassPtr<> (FSoftClassProperty derives
+    // from FSoftObjectProperty, so this single branch covers both). Accepts an asset path
+    // string, e.g. "/Game/Enemies/BP_Enemy.BP_Enemy_C" or "/Game/Art/T_Icon.T_Icon".
+    else if (FSoftObjectProperty* SoftObjProp = CastField<FSoftObjectProperty>(Property))
+    {
+        const FString Path = Value->AsString();
+        if (Path.IsEmpty() || Path.Equals(TEXT("None"), ESearchCase::IgnoreCase))
+        {
+            SoftObjProp->SetPropertyValue(PropertyAddr, FSoftObjectPtr());
+        }
+        else
+        {
+            SoftObjProp->SetPropertyValue(PropertyAddr, FSoftObjectPtr(FSoftObjectPath(Path)));
+        }
+        return true;
+    }
+    // Hard class reference: UClass* / TSubclassOf<>. Accepts an asset path to a Blueprint
+    // (its generated class is used) or a native class path.
+    else if (FClassProperty* ClassProp = CastField<FClassProperty>(Property))
+    {
+        const FString Path = Value->AsString();
+        if (Path.IsEmpty() || Path.Equals(TEXT("None"), ESearchCase::IgnoreCase))
+        {
+            ClassProp->SetObjectPropertyValue(PropertyAddr, nullptr);
+            return true;
+        }
+        UClass* ResolvedClass = LoadObject<UClass>(nullptr, *Path);
+        if (!ResolvedClass)
+        {
+            // Maybe it's a path to a Blueprint asset; use its generated class.
+            if (UBlueprint* BP = LoadObject<UBlueprint>(nullptr, *Path))
+            {
+                ResolvedClass = BP->GeneratedClass;
+            }
+        }
+        if (ResolvedClass)
+        {
+            ClassProp->SetObjectPropertyValue(PropertyAddr, ResolvedClass);
+            return true;
+        }
+        OutErrorMessage = FString::Printf(TEXT("Could not resolve class for '%s'"), *Path);
+        return false;
+    }
+    // Hard object reference: UObject* (assets, etc.). Accepts an asset path string.
+    else if (FObjectProperty* ObjProp = CastField<FObjectProperty>(Property))
+    {
+        const FString Path = Value->AsString();
+        if (Path.IsEmpty() || Path.Equals(TEXT("None"), ESearchCase::IgnoreCase))
+        {
+            ObjProp->SetObjectPropertyValue(PropertyAddr, nullptr);
+            return true;
+        }
+        UObject* LoadedObj = StaticLoadObject(ObjProp->PropertyClass, nullptr, *Path);
+        if (LoadedObj)
+        {
+            ObjProp->SetObjectPropertyValue(PropertyAddr, LoadedObj);
+            return true;
+        }
+        OutErrorMessage = FString::Printf(TEXT("Could not load object '%s' for property %s"), *Path, *PropertyName);
+        return false;
+    }
+
+    // Generic fallback: let the property import the value from its string form.
+    // Covers structs (e.g. "(X=1,Y=2,Z=3)"), and any type not explicitly handled above.
+    if (Value->Type == EJson::String)
+    {
+        const FString StringValue = Value->AsString();
+        const TCHAR* ImportResult = Property->ImportText_Direct(*StringValue, PropertyAddr, Object, PPF_None);
+        if (ImportResult != nullptr)
+        {
+            return true;
+        }
+    }
+
     OutErrorMessage = FString::Printf(TEXT("Unsupported property type: %s for property %s"), 
                                     *Property->GetClass()->GetName(), *PropertyName);
     return false;

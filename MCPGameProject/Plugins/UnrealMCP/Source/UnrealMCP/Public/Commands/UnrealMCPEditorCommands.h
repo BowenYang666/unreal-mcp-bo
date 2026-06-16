@@ -37,4 +37,8 @@ private:
     TSharedPtr<FJsonObject> HandleSaveAsset(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleCloseEditor(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleOpenAsset(const TSharedPtr<FJsonObject>& Params);
+
+    // Level management commands
+    TSharedPtr<FJsonObject> HandleOpenLevel(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleSaveLevel(const TSharedPtr<FJsonObject>& Params);
 }; 

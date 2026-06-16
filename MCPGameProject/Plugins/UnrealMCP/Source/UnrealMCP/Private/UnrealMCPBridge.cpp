@@ -243,7 +243,9 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("get_unsaved_changes") ||
                      CommandType == TEXT("save_asset") ||
                      CommandType == TEXT("close_editor") ||
-                     CommandType == TEXT("open_asset"))
+                     CommandType == TEXT("open_asset") ||
+                     CommandType == TEXT("open_level") ||
+                     CommandType == TEXT("save_level"))
             {
                 ResultJson = EditorCommands->HandleCommand(CommandType, Params);
             }

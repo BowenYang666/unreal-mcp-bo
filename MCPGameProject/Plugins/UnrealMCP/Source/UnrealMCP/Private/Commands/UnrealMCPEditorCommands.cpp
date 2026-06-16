@@ -33,6 +33,8 @@
 #include "Engine/DataAsset.h"
 #include "NiagaraSystem.h"
 #include "WidgetBlueprint.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetRegistry/IAssetRegistry.h"
 
 namespace
 {
@@ -63,6 +65,81 @@ namespace
             return true;
         }
         return Actor->GetActorLabel().Equals(Identifier, ESearchCase::IgnoreCase);
+    }
+
+    // Resolves a Blueprint from a user-supplied identifier. Accepts:
+    //   1. A full object/package path, e.g. "/Game/Test/AI/BP_FT_PerceptionFullCycle"
+    //      (with or without the ".BP_..." object suffix).
+    //   2. A bare name, e.g. "BP_MyActor" — tried first under the legacy
+    //      "/Game/Blueprints/" folder, then via an AssetRegistry-wide search by name.
+    // Returns nullptr if nothing matches. On failure, OutTried lists what was attempted.
+    UBlueprint* ResolveBlueprint(const FString& Identifier, TArray<FString>& OutTried)
+    {
+        if (Identifier.IsEmpty())
+        {
+            return nullptr;
+        }
+
+        // Case 1: looks like a content path.
+        if (Identifier.StartsWith(TEXT("/")))
+        {
+            OutTried.Add(Identifier);
+            if (UBlueprint* BP = LoadObject<UBlueprint>(nullptr, *Identifier))
+            {
+                return BP;
+            }
+            // Try appending the object name suffix: "/Game/Foo/BP_X" -> "/Game/Foo/BP_X.BP_X"
+            if (!Identifier.Contains(TEXT(".")))
+            {
+                FString ObjName;
+                Identifier.Split(TEXT("/"), nullptr, &ObjName, ESearchCase::IgnoreCase, ESearchDir::FromEnd);
+                const FString WithSuffix = Identifier + TEXT(".") + ObjName;
+                OutTried.Add(WithSuffix);
+                if (UBlueprint* BP = LoadObject<UBlueprint>(nullptr, *WithSuffix))
+                {
+                    return BP;
+                }
+            }
+            return nullptr;
+        }
+
+        // Case 2a: legacy default folder.
+        const FString LegacyPath = TEXT("/Game/Blueprints/") + Identifier;
+        OutTried.Add(LegacyPath);
+        if (FPackageName::DoesPackageExist(LegacyPath))
+        {
+            if (UBlueprint* BP = LoadObject<UBlueprint>(nullptr, *LegacyPath))
+            {
+                return BP;
+            }
+        }
+
+        // Case 2b: AssetRegistry-wide search by asset name.
+        FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+        IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
+
+        FARFilter Filter;
+        Filter.ClassPaths.Add(UBlueprint::StaticClass()->GetClassPathName());
+        Filter.bRecursiveClasses = true;
+        Filter.PackagePaths.Add(FName(TEXT("/Game")));
+        Filter.bRecursivePaths = true;
+
+        TArray<FAssetData> Assets;
+        AssetRegistry.GetAssets(Filter, Assets);
+
+        for (const FAssetData& Asset : Assets)
+        {
+            if (Asset.AssetName.ToString().Equals(Identifier, ESearchCase::IgnoreCase))
+            {
+                OutTried.Add(Asset.GetObjectPathString());
+                if (UBlueprint* BP = Cast<UBlueprint>(Asset.GetAsset()))
+                {
+                    return BP;
+                }
+            }
+        }
+
+        return nullptr;
     }
 }
 
@@ -136,14 +213,25 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleCommand(const FString& C
     {
         return HandleOpenAsset(Params);
     }
+    // Level management commands
+    else if (CommandType == TEXT("open_level"))
+    {
+        return HandleOpenLevel(Params);
+    }
+    else if (CommandType == TEXT("save_level"))
+    {
+        return HandleSaveLevel(Params);
+    }
     
     return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown editor command: %s"), *CommandType));
 }
 
 TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleGetActorsInLevel(const TSharedPtr<FJsonObject>& Params)
 {
+    UWorld* World = GetMCPEditorWorld();
+
     TArray<AActor*> AllActors;
-    UGameplayStatics::GetAllActorsOfClass(GetMCPEditorWorld(), AActor::StaticClass(), AllActors);
+    UGameplayStatics::GetAllActorsOfClass(World, AActor::StaticClass(), AllActors);
     
     TArray<TSharedPtr<FJsonValue>> ActorArray;
     for (AActor* Actor : AllActors)
@@ -156,6 +244,28 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleGetActorsInLevel(const T
     
     TSharedPtr<FJsonObject> ResultObj = MakeShared<FJsonObject>();
     ResultObj->SetArrayField(TEXT("actors"), ActorArray);
+
+    // Include which level/world these actors came from, so callers can tell
+    // exactly which map was queried (avoids "missing actors" confusion).
+    if (World)
+    {
+        if (UPackage* WorldPackage = World->GetOutermost())
+        {
+            const FString PackageName = WorldPackage->GetName();
+            ResultObj->SetStringField(TEXT("level_package_path"), PackageName);
+            // Short name derived from the package path is more reliable than GetMapName(),
+            // which may carry a streaming/PIE prefix.
+            ResultObj->SetStringField(TEXT("level_name"), FPackageName::GetShortName(PackageName));
+        }
+        else
+        {
+            ResultObj->SetStringField(TEXT("level_name"), World->GetMapName());
+        }
+        if (ULevel* CurrentLevel = World->GetCurrentLevel())
+        {
+            ResultObj->SetStringField(TEXT("current_level"), CurrentLevel->GetOutermost()->GetName());
+        }
+    }
     
     return ResultObj;
 }
@@ -481,18 +591,15 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSpawnBlueprintActor(cons
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Blueprint name is empty"));
     }
 
-    FString Root      = TEXT("/Game/Blueprints/");
-    FString AssetPath = Root + BlueprintName;
-
-    if (!FPackageName::DoesPackageExist(AssetPath))
-    {
-        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint '%s' not found – it must reside under /Game/Blueprints"), *BlueprintName));
-    }
-
-    UBlueprint* Blueprint = LoadObject<UBlueprint>(nullptr, *AssetPath);
+    // Resolve the blueprint: accepts a full asset path (e.g. "/Game/Test/AI/BP_X"),
+    // a bare name under /Game/Blueprints/, or any blueprint in the project by name.
+    TArray<FString> Tried;
+    UBlueprint* Blueprint = ResolveBlueprint(BlueprintName, Tried);
     if (!Blueprint)
     {
-        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint not found: %s"), *BlueprintName));
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+            TEXT("Blueprint '%s' not found. Provide a full asset path (e.g. /Game/Test/AI/BP_X) or a unique blueprint name. Tried: %s"),
+            *BlueprintName, *FString::Join(Tried, TEXT(", "))));
     }
 
     // Get transform parameters
@@ -882,5 +989,114 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleOpenAsset(const TSharedP
     ResultJson->SetBoolField(TEXT("success"), true);
     ResultJson->SetStringField(TEXT("asset_path"), AssetPath);
     ResultJson->SetStringField(TEXT("asset_class"), Asset->GetClass()->GetName());
+    return ResultJson;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleOpenLevel(const TSharedPtr<FJsonObject>& Params)
+{
+    FString LevelPath;
+    if (!Params->TryGetStringField(TEXT("level_path"), LevelPath))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'level_path' parameter"));
+    }
+
+    // Normalize: strip any object suffix ("/Game/Maps/Foo.Foo" -> "/Game/Maps/Foo").
+    FString PackagePath = LevelPath;
+    int32 DotIndex;
+    if (PackagePath.FindChar('.', DotIndex))
+    {
+        PackagePath = PackagePath.Left(DotIndex);
+    }
+
+    if (!FPackageName::DoesPackageExist(PackagePath))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Level not found: %s"), *PackagePath));
+    }
+
+    // Optionally save dirty packages before switching (default: prompt avoided, no save).
+    bool bSaveDirty = false;
+    Params->TryGetBoolField(TEXT("save_dirty"), bSaveDirty);
+    if (bSaveDirty)
+    {
+        FEditorFileUtils::SaveDirtyPackages(/*bPromptUserToSave*/ false, /*bSaveMapPackages*/ true, /*bSaveContentPackages*/ true);
+    }
+
+    // Load the map into the editor (blocking). This replaces the current editor world.
+    const bool bLoaded = FEditorFileUtils::LoadMap(PackagePath, /*bLoadAsTemplate*/ false, /*bShowProgress*/ true);
+    if (!bLoaded)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Failed to open level: %s"), *PackagePath));
+    }
+
+    TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
+    ResultJson->SetBoolField(TEXT("success"), true);
+    ResultJson->SetStringField(TEXT("level_package_path"), PackagePath);
+    // Derive the short name from the package path (reliable; GetMapName() can return
+    // a streaming-prefixed or stale value right after a map switch).
+    ResultJson->SetStringField(TEXT("level_name"), FPackageName::GetShortName(PackagePath));
+    return ResultJson;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSaveLevel(const TSharedPtr<FJsonObject>& Params)
+{
+    UWorld* World = GetMCPEditorWorld();
+    if (!World)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get editor world"));
+    }
+
+    UPackage* WorldPackage = World->GetOutermost();
+    if (!WorldPackage)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Could not find world package"));
+    }
+
+    const FString PackageName = WorldPackage->GetName();
+
+    // Reject unsaved/untitled maps (e.g. "/Temp/Untitled") which have no on-disk file.
+    if (!FPackageName::IsValidLongPackageName(PackageName) || PackageName.StartsWith(TEXT("/Temp/")))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Current level is untitled/unsaved (%s). Use 'Save As' in the editor first."), *PackageName));
+    }
+
+    FString PackageFilename;
+    if (!FPackageName::TryConvertLongPackageNameToFilename(PackageName, PackageFilename, FPackageName::GetMapPackageExtension()))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Could not resolve level package filename"));
+    }
+
+    FSavePackageArgs SaveArgs;
+    SaveArgs.TopLevelFlags = RF_Standalone;
+    const bool bSaved = UPackage::SavePackage(WorldPackage, World, *PackageFilename, SaveArgs);
+    if (!bSaved)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Failed to save level: %s"), *PackageName));
+    }
+
+    WorldPackage->SetDirtyFlag(false);
+
+    // Force the in-memory Asset Registry to re-scan the just-saved map file so that
+    // its updated tags (e.g. Functional Test info from newly added FT actors) are
+    // picked up. Without this, Session Frontend's test discovery — which reads the
+    // Asset Registry — keeps showing stale data until the editor is restarted.
+    bool bRescanned = false;
+    {
+        FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+        TArray<FString> ModifiedFiles;
+        ModifiedFiles.Add(FPaths::ConvertRelativePathToFull(PackageFilename));
+        AssetRegistryModule.Get().ScanModifiedAssetFiles(ModifiedFiles);
+        bRescanned = true;
+    }
+
+    TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
+    ResultJson->SetBoolField(TEXT("success"), true);
+    ResultJson->SetStringField(TEXT("level_package_path"), PackageName);
+    ResultJson->SetBoolField(TEXT("asset_registry_rescanned"), bRescanned);
+    ResultJson->SetStringField(TEXT("message"), FString::Printf(TEXT("Level saved: %s"), *PackageName));
+    ResultJson->SetStringField(TEXT("note"), TEXT("If a new Functional Test was added, click 'Refresh Tests' in Session Frontend to see it (no editor restart needed)."));
     return ResultJson;
 }
