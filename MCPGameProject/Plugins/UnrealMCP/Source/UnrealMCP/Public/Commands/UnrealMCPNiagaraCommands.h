@@ -50,4 +50,7 @@ private:
 
 	/** Remove a module from an emitter's spawn or update stack. */
 	TSharedPtr<FJsonObject> HandleRemoveModuleFromEmitter(const TSharedPtr<FJsonObject>& Params);
+
+	/** Set a property (Material, SubImageSize, etc.) on an emitter's renderer. */
+	TSharedPtr<FJsonObject> HandleSetNiagaraRendererProperty(const TSharedPtr<FJsonObject>& Params);
 };

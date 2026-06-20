@@ -745,3 +745,81 @@ def register_niagara_tools(mcp: FastMCP):
         except Exception as e:
             logger.error(f"Error removing module: {e}")
             return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def set_niagara_renderer_property(
+        ctx: Context,
+        asset_full_path: str,
+        emitter_name: str,
+        property_name: str,
+        property_value,
+        renderer_type: str = "",
+        renderer_index: int = 0
+    ) -> Dict[str, Any]:
+        """Set a property on an emitter's renderer (e.g. Material, SubImageSize).
+
+        Renderer properties are NOT rapid-iteration parameters, so they can't be set
+        with set_niagara_rapid_parameter. This sets them directly via reflection.
+
+        Common properties (Sprite renderer):
+          - "Material": asset path string, e.g. "/Game/VFX/M_Spark.M_Spark"
+          - "SubImageSize": struct string "(X=8,Y=8)" for an 8x8 SubUV sheet
+          - "bSubImageBlend": true/false (blend between SubUV frames)
+          - "Alignment", "FacingMode": enum name strings
+        Mesh renderer uses "bOverrideMaterials" + the OverrideMaterials array; for simple
+        cases set the material on the mesh asset itself.
+
+        Use read_niagara_system to see each emitter's renderer types.
+
+        Args:
+            ctx: The MCP context
+            asset_full_path: Full asset path (e.g. "/Game/VFX/NS_MyExplosion") or short name.
+            emitter_name: Name of the emitter within the system.
+            property_name: Name of the renderer property to set (e.g. "Material", "SubImageSize").
+            property_value: New value. Asset paths for Material; "(X=8,Y=8)" for SubImageSize;
+                true/false for bools; enum name string for enums.
+            renderer_type: Optional class-name substring to pick the renderer
+                (e.g. "Sprite", "Mesh", "Ribbon", "Light"). If empty, uses renderer_index.
+            renderer_index: Index of the renderer when renderer_type is not given (default: 0).
+
+        Returns:
+            Dict with status, system, emitter, renderer_index, renderer_type, property
+
+        Examples:
+            set_niagara_renderer_property(asset_full_path="/Game/VFX/NS_Fire", emitter_name="Flames",
+                property_name="Material", property_value="/Game/VFX/M_Fire.M_Fire", renderer_type="Sprite")
+            set_niagara_renderer_property(asset_full_path="/Game/VFX/NS_Fire", emitter_name="Flames",
+                property_name="SubImageSize", property_value="(X=8,Y=8)", renderer_type="Sprite")
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            params = {
+                **_map_asset_path(asset_full_path),
+                "emitter_name": emitter_name,
+                "property_name": property_name,
+                "property_value": property_value,
+                "renderer_index": renderer_index,
+            }
+            if renderer_type:
+                params["renderer_type"] = renderer_type
+
+            response = unreal.send_command("set_niagara_renderer_property", params)
+
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+
+            result = response.get("result", response)
+            logger.info(f"Set renderer property {property_name} on {emitter_name}")
+            return result
+
+        except Exception as e:
+            logger.error(f"Error setting renderer property: {e}")
+            return {"success": False, "message": str(e)}

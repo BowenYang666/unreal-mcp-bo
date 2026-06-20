@@ -330,6 +330,85 @@ if _read_only:
 
     logger.info(f"READ-ONLY mode enabled. Kept {len(_READ_ONLY_TOOLS)} tools, removed {len(removed)}: {removed}")
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Per-category tool gating
+#
+# Each tool category can be disabled via an environment variable, so you can trim
+# the tool list when some tools aren't needed (fewer tools = better model tool
+# selection). A category is DISABLED when its env var is set to one of
+# "0" / "false" / "no" / "off". Any other value (or unset) keeps it ENABLED.
+#
+# Usage in mcp.json:
+#   "env": { "MCP_UMG_ENABLED": "0", "MCP_NIAGARA_ENABLED": "0" }
+#
+# Categories and their tool name prefixes/sets are defined below.
+# ─────────────────────────────────────────────────────────────────────────────
+_CATEGORY_TOOLS = {
+    "umg": {
+        "create_umg_widget_blueprint", "add_text_block_to_widget", "add_button_to_widget",
+        "bind_widget_event", "set_text_block_binding", "add_widget_to_viewport",
+        "add_progress_bar_to_widget", "add_image_to_widget", "add_vertical_box_to_widget",
+        "add_horizontal_box_to_widget", "add_overlay_to_widget", "add_size_box_to_widget",
+        "add_border_to_widget", "add_spacer_to_widget", "add_combobox_to_widget",
+        "add_slider_to_widget", "read_widget_layout", "set_widget_property",
+        "set_widget_slot_property", "set_widget_anchor", "set_actor_property",
+    },
+    "material": {
+        "list_materials", "read_material", "get_material_instance_parameters",
+        "create_material", "add_material_expression", "set_material_expression_property",
+        "connect_material_expressions", "connect_material_to_property", "create_material_instance",
+        "add_material_comment", "reset_material_node_layout", "set_material_property",
+        "add_custom_hlsl_expression", "set_material_expression_position",
+    },
+    "niagara": {
+        "list_niagara_systems", "read_niagara_system", "set_niagara_parameter",
+        "get_niagara_parameters", "create_niagara_system", "set_niagara_rapid_parameter",
+        "modify_emitter_properties", "list_niagara_emitter_templates", "add_emitter_to_system",
+        "remove_emitter_from_system", "add_module_to_emitter", "remove_module_from_emitter",
+        "set_niagara_renderer_property",
+    },
+    "blueprint": {
+        "create_blueprint", "add_component_to_blueprint", "set_component_property",
+        "set_physics_properties", "compile_blueprint", "set_blueprint_property",
+        "set_static_mesh_properties", "set_pawn_properties", "read_blueprint", "list_blueprints",
+    },
+    "node": {
+        "connect_blueprint_nodes", "add_blueprint_get_self_component_reference",
+        "add_blueprint_self_reference", "find_blueprint_nodes", "add_blueprint_event_node",
+        "add_blueprint_input_action_node", "add_blueprint_function_node",
+        "add_blueprint_get_component_node", "add_blueprint_variable",
+    },
+    "project": {
+        "create_input_mapping", "read_data_asset", "get_class_properties",
+        "read_behavior_tree", "read_blackboard", "read_state_tree",
+    },
+    "editor": {
+        "get_actors_in_level", "find_actors_by_name", "spawn_actor", "delete_actor",
+        "set_actor_transform", "get_actor_properties", "spawn_blueprint_actor",
+        "focus_viewport", "take_screenshot", "get_unsaved_changes", "save_asset",
+        "close_editor", "open_asset", "open_level", "save_level", "get_editor_logs",
+    },
+}
+
+def _is_disabled(env_value: str) -> bool:
+    return env_value.strip().lower() in ("0", "false", "no", "off")
+
+_disabled_categories = []
+for _category, _tool_set in _CATEGORY_TOOLS.items():
+    _env_var = f"MCP_{_category.upper()}_ENABLED"
+    _env_value = os.environ.get(_env_var, "")
+    if _env_value and _is_disabled(_env_value):
+        _removed_in_cat = []
+        for _tool_name in _tool_set:
+            if _tool_name in mcp._tool_manager._tools:
+                del mcp._tool_manager._tools[_tool_name]
+                _removed_in_cat.append(_tool_name)
+        _disabled_categories.append(_category)
+        logger.info(f"Category '{_category}' disabled via {_env_var}. Removed {len(_removed_in_cat)} tools: {_removed_in_cat}")
+
+if _disabled_categories:
+    logger.info(f"Disabled tool categories: {_disabled_categories}. Remaining tools: {len(mcp._tool_manager._tools)}")
+
 @mcp.prompt()
 def info():
     """Information about available Unreal MCP tools and best practices."""

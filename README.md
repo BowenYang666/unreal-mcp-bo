@@ -165,6 +165,41 @@ Set the `UNREAL_MCP_READ_ONLY` environment variable to restrict the AI to query-
 
 Set `UNREAL_MCP_READ_ONLY=0` or remove the `env` block to enable all 76 tools.
 
+## Disabling Tool Categories
+
+If some tool categories aren't needed for your workflow, you can disable them so the
+model has a smaller, more relevant tool set (which improves tool selection). Set the
+matching environment variable to `0` / `false` / `no` / `off` to disable a category.
+Any other value (or leaving it unset) keeps the category enabled.
+
+```jsonc
+// mcp.json
+{
+    "servers": {
+        "unrealMCP": {
+            "command": "uv",
+            "args": ["--directory", "<path-to>/Python", "run", "unreal_mcp_server.py"],
+            "env": {
+                "MCP_UMG_ENABLED": "0",       // disable all UMG / widget tools
+                "MCP_NIAGARA_ENABLED": "0"    // disable all Niagara / VFX tools
+            }
+        }
+    }
+}
+```
+
+| Env var | Category | Tools removed when disabled |
+|---------|----------|-----------------------------|
+| `MCP_EDITOR_ENABLED` | Editor | actors, levels, screenshots, logs |
+| `MCP_BLUEPRINT_ENABLED` | Blueprint | create/compile/properties |
+| `MCP_NODE_ENABLED` | Blueprint Node | event/function/variable graph nodes |
+| `MCP_PROJECT_ENABLED` | Project | input mappings, read DataAsset/BT/BB/StateTree |
+| `MCP_UMG_ENABLED` | UMG / Widget | all widget construction + layout |
+| `MCP_MATERIAL_ENABLED` | Material | create/edit material graphs |
+| `MCP_NIAGARA_ENABLED` | Niagara | create/edit Niagara systems & emitters |
+
+This is independent of read-only mode; the two can be combined (read-only is applied first).
+
 ## Setup
 
 See the [original repo](https://github.com/chongdashu/unreal-mcp) for full setup instructions, or:

@@ -340,7 +340,8 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("remove_emitter_from_system") ||
                      CommandType == TEXT("list_niagara_emitter_templates") ||
                      CommandType == TEXT("add_module_to_emitter") ||
-                     CommandType == TEXT("remove_module_from_emitter"))
+                     CommandType == TEXT("remove_module_from_emitter") ||
+                     CommandType == TEXT("set_niagara_renderer_property"))
             {
                 ResultJson = NiagaraCommands->HandleCommand(CommandType, Params);
             }

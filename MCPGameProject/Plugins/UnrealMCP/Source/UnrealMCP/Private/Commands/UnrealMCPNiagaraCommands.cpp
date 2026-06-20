@@ -19,6 +19,7 @@
 #include "NiagaraEditorUtilities.h"
 #include "NiagaraSystemEditorData.h"
 #include "NiagaraOverviewNode.h"
+#include "NiagaraRendererProperties.h"
 
 // Editor includes
 #include "AssetRegistry/AssetRegistryModule.h"
@@ -186,6 +187,10 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleCommand(const FString& 
 	else if (CommandType == TEXT("remove_module_from_emitter"))
 	{
 		return HandleRemoveModuleFromEmitter(Params);
+	}
+	else if (CommandType == TEXT("set_niagara_renderer_property"))
+	{
+		return HandleSetNiagaraRendererProperty(Params);
 	}
 
 	return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown Niagara command: %s"), *CommandType));
@@ -1886,3 +1891,118 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleRemoveModuleFromEmitter
 	ResultJson->SetStringField(TEXT("script_type"), ScriptType);
 	return ResultJson;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// set_niagara_renderer_property
+// ─────────────────────────────────────────────────────────────────────────────
+
+TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleSetNiagaraRendererProperty(const TSharedPtr<FJsonObject>& Params)
+{
+	if (!Params->HasField(TEXT("emitter_name")))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing required parameter: 'emitter_name'"));
+	if (!Params->HasField(TEXT("property_name")))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing required parameter: 'property_name'"));
+	if (!Params->HasField(TEXT("property_value")))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing required parameter: 'property_value'"));
+
+	FString LoadError;
+	UNiagaraSystem* System = LoadNiagaraSystemByNameOrPath(Params, LoadError);
+	if (!System)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(LoadError);
+
+	const FString EmitterName = Params->GetStringField(TEXT("emitter_name"));
+	const FString PropertyName = Params->GetStringField(TEXT("property_name"));
+
+	// Find emitter handle
+	TArray<FNiagaraEmitterHandle>& EmitterHandles = System->GetEmitterHandles();
+	FNiagaraEmitterHandle* TargetHandle = nullptr;
+	for (FNiagaraEmitterHandle& Handle : EmitterHandles)
+	{
+		if (Handle.GetName().ToString().Equals(EmitterName, ESearchCase::IgnoreCase))
+		{
+			TargetHandle = &Handle;
+			break;
+		}
+	}
+	if (!TargetHandle)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Emitter '%s' not found in system '%s'"), *EmitterName, *System->GetName()));
+
+	FVersionedNiagaraEmitterData* EmitterData = TargetHandle->GetEmitterData();
+	if (!EmitterData)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get emitter data"));
+
+	const TArray<UNiagaraRendererProperties*>& Renderers = EmitterData->GetRenderers();
+	if (Renderers.Num() == 0)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Emitter '%s' has no renderers"), *EmitterName));
+
+	// Select the renderer: by 'renderer_type' (class name substring, e.g. "Sprite",
+	// "Mesh", "Ribbon", "Light") if provided, else by 'renderer_index' (default 0).
+	UNiagaraRendererProperties* TargetRenderer = nullptr;
+	int32 SelectedIndex = INDEX_NONE;
+
+	if (Params->HasField(TEXT("renderer_type")))
+	{
+		const FString TypeFilter = Params->GetStringField(TEXT("renderer_type"));
+		for (int32 i = 0; i < Renderers.Num(); ++i)
+		{
+			if (Renderers[i] && Renderers[i]->GetClass()->GetName().Contains(TypeFilter))
+			{
+				TargetRenderer = Renderers[i];
+				SelectedIndex = i;
+				break;
+			}
+		}
+		if (!TargetRenderer)
+		{
+			TArray<FString> Available;
+			for (const UNiagaraRendererProperties* R : Renderers)
+				if (R) Available.Add(R->GetClass()->GetName());
+			return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+				TEXT("No renderer matching type '%s' on emitter '%s'. Available: %s"),
+				*TypeFilter, *EmitterName, *FString::Join(Available, TEXT(", "))));
+		}
+	}
+	else
+	{
+		int32 Index = 0;
+		if (Params->HasField(TEXT("renderer_index")))
+			Index = static_cast<int32>(Params->GetNumberField(TEXT("renderer_index")));
+		if (Index < 0 || Index >= Renderers.Num())
+			return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+				TEXT("renderer_index %d out of range (emitter '%s' has %d renderer(s))"), Index, *EmitterName, Renderers.Num()));
+		TargetRenderer = Renderers[Index];
+		SelectedIndex = Index;
+	}
+
+	if (!TargetRenderer)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Selected renderer is null"));
+
+	// Apply the property via reflection (handles Material as object ref, SubImageSize
+	// as a struct via ImportText, bool flags, etc.).
+	TSharedPtr<FJsonValue> PropertyValue = Params->Values.FindRef(TEXT("property_value"));
+	TargetRenderer->Modify();
+
+	FString PropError;
+	if (!FUnrealMCPCommonUtils::SetObjectProperty(TargetRenderer, PropertyName, PropertyValue, PropError))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+			TEXT("Failed to set '%s' on %s: %s"), *PropertyName, *TargetRenderer->GetClass()->GetName(), *PropError));
+
+	TargetRenderer->PostEditChange();
+
+	// Recompile and save
+	System->RequestCompile(true);
+	System->WaitForCompilationComplete();
+	System->MarkPackageDirty();
+	SaveNiagaraSystemAsset(System);
+	System->PostEditChange();
+
+	TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
+	ResultJson->SetStringField(TEXT("status"), TEXT("success"));
+	ResultJson->SetStringField(TEXT("system"), System->GetName());
+	ResultJson->SetStringField(TEXT("emitter"), EmitterName);
+	ResultJson->SetNumberField(TEXT("renderer_index"), SelectedIndex);
+	ResultJson->SetStringField(TEXT("renderer_type"), TargetRenderer->GetClass()->GetName());
+	ResultJson->SetStringField(TEXT("property"), PropertyName);
+	return ResultJson;
+}
+
