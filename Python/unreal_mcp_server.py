@@ -386,7 +386,8 @@ _CATEGORY_TOOLS = {
         "get_actors_in_level", "find_actors_by_name", "spawn_actor", "delete_actor",
         "set_actor_transform", "get_actor_properties", "spawn_blueprint_actor",
         "focus_viewport", "take_screenshot", "get_unsaved_changes", "save_asset",
-        "close_editor", "open_asset", "open_level", "save_level", "get_editor_logs",
+        "close_editor", "open_asset", "open_level", "save_level", "create_level",
+        "get_editor_logs",
     },
 }
 

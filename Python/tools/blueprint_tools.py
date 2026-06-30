@@ -20,7 +20,25 @@ def register_blueprint_tools(mcp: FastMCP):
         name: str,
         parent_class: str
     ) -> Dict[str, Any]:
-        """Create a new Blueprint class."""
+        """Create a new Blueprint class.
+
+        Args:
+            name: REQUIRED full content path, e.g. "/Game/Enemies/BP_MyActor".
+                Must start with "/Game/" (or "/Script/" for an engine namespace).
+                The previous /Game/Blueprints/ fallback was removed — bare names
+                like "BP_MyActor" are now rejected.
+            parent_class: Parent class. Accepts short names ("Actor", "Pawn",
+                "Character"), engine class paths ("/Script/Engine.APawn"), or
+                project class paths ("/Script/MyGame.MyClass").
+
+        Returns:
+            Dict containing creation status and the blueprint info.
+
+        Examples:
+            create_blueprint(name="/Game/Blueprints/BP_MyActor", parent_class="Actor")
+            create_blueprint(name="/Game/Enemies/BP_Dog", parent_class="Character")
+            create_blueprint(name="/Game/Tests/BP_FT_X", parent_class="/Script/FunctionalTesting.FunctionalTest")
+        """
         # Import inside function to avoid circular imports
         from unreal_mcp_server import get_unreal_connection
         

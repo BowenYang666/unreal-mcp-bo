@@ -245,7 +245,8 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("close_editor") ||
                      CommandType == TEXT("open_asset") ||
                      CommandType == TEXT("open_level") ||
-                     CommandType == TEXT("save_level"))
+                     CommandType == TEXT("save_level") ||
+                     CommandType == TEXT("create_level"))
             {
                 ResultJson = EditorCommands->HandleCommand(CommandType, Params);
             }

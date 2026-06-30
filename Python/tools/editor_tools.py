@@ -939,4 +939,65 @@ def register_editor_tools(mcp: FastMCP):
             logger.error(f"Error saving level: {e}")
             return {"success": False, "message": str(e)}
 
+    @mcp.tool()
+    def create_level(
+        ctx: Context,
+        level_path: str,
+        template_path: str = "",
+        partitioned: bool = False
+    ) -> Dict[str, Any]:
+        """Create a new level/map at the given content path, optionally from a template.
+
+        The newly created level is saved to disk and loaded into the editor. Fails if
+        a level already exists at level_path (use open_level to load an existing one).
+
+        Args:
+            level_path: Content path for the new level, e.g.
+                "/Game/Maps/MyNewLevel" (no extension, no object suffix).
+            template_path: Optional full path to an existing .umap to use as a template,
+                e.g. "/Engine/Maps/Templates/OpenWorld" or "/Game/Maps/MyTemplate".
+                When provided, the new level is a copy of the template.
+            partitioned: If True (and no template), create as a World Partition map.
+                Ignored when template_path is given (inherited from the template).
+
+        Returns:
+            Dict with success, level_package_path, level_name, partitioned,
+            and template_path (if a template was used).
+
+        Examples:
+            create_level(level_path="/Game/Maps/MySandbox")
+            create_level(level_path="/Game/Maps/MyPartitionedTest", partitioned=True)
+            create_level(level_path="/Game/Maps/FT_MyTest",
+                         template_path="/Game/Maps/FunctionalTest/FT_Template")
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            params = {
+                "level_path": level_path,
+                "partitioned": partitioned,
+            }
+            if template_path:
+                params["template_path"] = template_path
+
+            response = unreal.send_command("create_level", params)
+
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+
+            result = response.get("result", response)
+            logger.info(f"Created level: {level_path}")
+            return result
+
+        except Exception as e:
+            logger.error(f"Error creating level: {e}")
+            return {"success": False, "message": str(e)}
+
     logger.info("Editor tools registered successfully")

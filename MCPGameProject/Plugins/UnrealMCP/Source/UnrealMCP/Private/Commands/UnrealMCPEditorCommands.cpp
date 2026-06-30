@@ -19,6 +19,7 @@
 #include "Components/StaticMeshComponent.h"
 #include "EditorSubsystem.h"
 #include "Subsystems/EditorActorSubsystem.h"
+#include "LevelEditorSubsystem.h"
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "EditorAssetLibrary.h"
@@ -221,6 +222,10 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleCommand(const FString& C
     else if (CommandType == TEXT("save_level"))
     {
         return HandleSaveLevel(Params);
+    }
+    else if (CommandType == TEXT("create_level"))
+    {
+        return HandleCreateLevel(Params);
     }
     
     return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown editor command: %s"), *CommandType));
@@ -1098,5 +1103,90 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSaveLevel(const TSharedP
     ResultJson->SetBoolField(TEXT("asset_registry_rescanned"), bRescanned);
     ResultJson->SetStringField(TEXT("message"), FString::Printf(TEXT("Level saved: %s"), *PackageName));
     ResultJson->SetStringField(TEXT("note"), TEXT("If a new Functional Test was added, click 'Refresh Tests' in Session Frontend to see it (no editor restart needed)."));
+    return ResultJson;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleCreateLevel(const TSharedPtr<FJsonObject>& Params)
+{
+    FString LevelPath;
+    if (!Params->TryGetStringField(TEXT("level_path"), LevelPath))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'level_path' parameter"));
+    }
+
+    // Normalize: strip any object suffix ("/Game/Maps/Foo.Foo" -> "/Game/Maps/Foo").
+    FString PackagePath = LevelPath;
+    int32 DotIndex;
+    if (PackagePath.FindChar('.', DotIndex))
+    {
+        PackagePath = PackagePath.Left(DotIndex);
+    }
+
+    if (!PackagePath.StartsWith(TEXT("/")))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("level_path must be a content path starting with '/Game/', got: %s"), *PackagePath));
+    }
+
+    if (FPackageName::DoesPackageExist(PackagePath))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Level already exists: %s (use open_level to load it)"), *PackagePath));
+    }
+
+    ULevelEditorSubsystem* LevelSub = GEditor ? GEditor->GetEditorSubsystem<ULevelEditorSubsystem>() : nullptr;
+    if (!LevelSub)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("LevelEditorSubsystem not available"));
+    }
+
+    // Optional template: full path to an existing .umap to clone, e.g.
+    // "/Engine/Maps/Templates/OpenWorld" or "/Game/Maps/MyTemplate".
+    FString TemplatePath;
+    const bool bHasTemplate = Params->TryGetStringField(TEXT("template_path"), TemplatePath) && !TemplatePath.IsEmpty();
+
+    // Partitioned world flag (UE5 World Partition). Default off; ignored when template is given
+    // because NewLevelFromTemplate inherits the partitioning of the source.
+    bool bPartitioned = false;
+    Params->TryGetBoolField(TEXT("partitioned"), bPartitioned);
+
+    bool bCreated = false;
+    if (bHasTemplate)
+    {
+        // Strip object suffix from template too.
+        FString TemplatePackage = TemplatePath;
+        int32 TDot;
+        if (TemplatePackage.FindChar('.', TDot))
+        {
+            TemplatePackage = TemplatePackage.Left(TDot);
+        }
+        if (!FPackageName::DoesPackageExist(TemplatePackage))
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(
+                FString::Printf(TEXT("Template level not found: %s"), *TemplatePackage));
+        }
+        bCreated = LevelSub->NewLevelFromTemplate(PackagePath, TemplatePackage);
+    }
+    else
+    {
+        bCreated = LevelSub->NewLevel(PackagePath, bPartitioned);
+    }
+
+    if (!bCreated)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Failed to create level: %s"), *PackagePath));
+    }
+
+    // NewLevel/NewLevelFromTemplate both save and open the new level into the editor.
+    TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
+    ResultJson->SetBoolField(TEXT("success"), true);
+    ResultJson->SetStringField(TEXT("level_package_path"), PackagePath);
+    ResultJson->SetStringField(TEXT("level_name"), FPackageName::GetShortName(PackagePath));
+    if (bHasTemplate)
+    {
+        ResultJson->SetStringField(TEXT("template_path"), TemplatePath);
+    }
+    ResultJson->SetBoolField(TEXT("partitioned"), bPartitioned && !bHasTemplate);
     return ResultJson;
 }

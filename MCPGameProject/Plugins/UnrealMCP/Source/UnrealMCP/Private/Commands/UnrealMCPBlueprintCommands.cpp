@@ -92,29 +92,31 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleCreateBlueprint(const
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'name' parameter"));
     }
 
-    // Check if blueprint already exists
+    // Require a full content path so the user is always explicit about location.
+    // No silent fallback to /Game/Blueprints/.
     FString PackagePath;
     FString AssetName;
-    if (BlueprintName.StartsWith(TEXT("/Game/")) || BlueprintName.StartsWith(TEXT("/Script/")))
+    if (!BlueprintName.StartsWith(TEXT("/Game/")) && !BlueprintName.StartsWith(TEXT("/Script/")))
     {
-        // Full path provided — split into package path and asset name
-        int32 LastSlash;
-        if (BlueprintName.FindLastChar('/', LastSlash))
-        {
-            PackagePath = BlueprintName.Left(LastSlash + 1);
-            AssetName = BlueprintName.Mid(LastSlash + 1);
-        }
-        else
-        {
-            PackagePath = TEXT("/Game/Blueprints/");
-            AssetName = BlueprintName;
-        }
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+            TEXT("Blueprint 'name' must be a full content path starting with '/Game/' (e.g. '/Game/Enemies/%s'). Got: '%s'"),
+            *BlueprintName, *BlueprintName));
     }
-    else
+
+    int32 LastSlash;
+    if (!BlueprintName.FindLastChar('/', LastSlash))
     {
-        PackagePath = TEXT("/Game/Blueprints/");
-        AssetName = BlueprintName;
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+            TEXT("Invalid blueprint path (no '/' found): %s"), *BlueprintName));
     }
+    PackagePath = BlueprintName.Left(LastSlash + 1);
+    AssetName = BlueprintName.Mid(LastSlash + 1);
+    if (AssetName.IsEmpty())
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+            TEXT("Invalid blueprint path (empty asset name): %s"), *BlueprintName));
+    }
+
     if (UEditorAssetLibrary::DoesAssetExist(PackagePath + AssetName))
     {
         return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Blueprint already exists: %s"), *BlueprintName));
