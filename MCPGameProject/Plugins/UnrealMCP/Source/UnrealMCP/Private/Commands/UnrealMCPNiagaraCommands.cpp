@@ -1604,14 +1604,21 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleAddModuleToEmitter(cons
 	if (Params->HasField(TEXT("index")))
 		TargetIndex = static_cast<int32>(Params->GetNumberField(TEXT("index")));
 
-	// Determine script usage
+	// Determine script usage. Emitter-scope scripts host modules like SpawnRate,
+	// SpawnBurst_Instantaneous, EmitterState — placing them in particle scripts
+	// causes compile errors ("Cannot Set external constant Emitter.Module.*").
 	ENiagaraScriptUsage Usage;
 	if (ScriptType == TEXT("spawn"))
 		Usage = ENiagaraScriptUsage::ParticleSpawnScript;
 	else if (ScriptType == TEXT("update"))
 		Usage = ENiagaraScriptUsage::ParticleUpdateScript;
+	else if (ScriptType == TEXT("emitter_spawn"))
+		Usage = ENiagaraScriptUsage::EmitterSpawnScript;
+	else if (ScriptType == TEXT("emitter_update"))
+		Usage = ENiagaraScriptUsage::EmitterUpdateScript;
 	else
-		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unsupported script_type: '%s'. Use 'spawn' or 'update'."), *ScriptType));
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+			TEXT("Unsupported script_type: '%s'. Use 'spawn', 'update', 'emitter_spawn', or 'emitter_update'."), *ScriptType));
 
 	// Find the emitter
 	const TArray<FNiagaraEmitterHandle>& EmitterHandles = System->GetEmitterHandles();

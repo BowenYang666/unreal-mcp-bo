@@ -647,24 +647,37 @@ def register_niagara_tools(mcp: FastMCP):
     ) -> Dict[str, Any]:
         """Add a module script to an emitter's spawn or update stack.
 
-        Adds a Niagara module (e.g. GravityForce, ScaleColor, Drag) to the
-        specified emitter stage. Use read_niagara_system to see existing modules.
+        Adds a Niagara module to the specified emitter stage. Use read_niagara_system
+        to see existing modules.
+
+        script_type must match the module's scope, or Niagara will fail to compile
+        ("Cannot Set external constant Emitter.Module.*"):
+          - "spawn"          — Particle Spawn (e.g. InitializeParticle, ShapeLocation, AddVelocity)
+          - "update"         — Particle Update (e.g. GravityForce, Drag, ScaleColor, SolveForcesAndVelocity)
+          - "emitter_spawn"  — Emitter Spawn (e.g. EmitterState initial setup)
+          - "emitter_update" — Emitter Update (e.g. SpawnRate, SpawnPerUnit,
+                               SpawnBurst_Instantaneous, EmitterState, EmitterLifeCycle)
 
         Args:
             ctx: The MCP context
             asset_full_path: Full asset path (e.g. "/Game/VFX/NS_MyExplosion") or
                 short asset name (e.g. "NS_MyExplosion").
             emitter_name: Name of the emitter within the system
-            module_name: Name of the module script to add (e.g. "GravityForce", "ScaleColor")
-            script_type: Target stage - "spawn" or "update" (default: "update")
+            module_name: Name of the module script to add (e.g. "GravityForce", "SpawnRate")
+            script_type: Target stage. One of "spawn", "update", "emitter_spawn",
+                "emitter_update" (default: "update")
             index: Position in the stack (-1 = append to end)
 
         Returns:
             Dict with status, module name, and placement info
 
         Examples:
-            add_module_to_emitter(asset_full_path="/Game/VFX/NS_MyExplosion", emitter_name="Burst", module_name="GravityForce", script_type="update")
-            add_module_to_emitter(asset_full_path="/Game/VFX/NS_MyExplosion", emitter_name="Burst", module_name="ScaleColor", script_type="update", index=0)
+            add_module_to_emitter(asset_full_path="/Game/VFX/NS_MyExplosion",
+                emitter_name="Burst", module_name="GravityForce", script_type="update")
+            add_module_to_emitter(asset_full_path="/Game/VFX/NS_MyRibbon",
+                emitter_name="TrailRibbon", module_name="SpawnRate", script_type="emitter_update")
+            add_module_to_emitter(asset_full_path="/Game/VFX/NS_MyExplosion",
+                emitter_name="Burst", module_name="SpawnBurst_Instantaneous", script_type="emitter_update")
         """
         from unreal_mcp_server import get_unreal_connection
 
@@ -712,14 +725,15 @@ def register_niagara_tools(mcp: FastMCP):
                 short asset name (e.g. "NS_MyExplosion").
             emitter_name: Name of the emitter within the system
             module_name: Name of the module to remove (display name or script name)
-            script_type: Target stage - "spawn" or "update" (default: "update")
+            script_type: Target stage. One of "spawn", "update", "emitter_spawn",
+                "emitter_update" (default: "update")
 
         Returns:
             Dict with status and removed module info
 
         Examples:
             remove_module_from_emitter(asset_full_path="/Game/VFX/NS_MyExplosion", emitter_name="Burst", module_name="GravityForce", script_type="update")
-            remove_module_from_emitter(asset_full_path="/Game/VFX/NS_MyExplosion", emitter_name="Burst", module_name="Gravity Force")
+            remove_module_from_emitter(asset_full_path="/Game/VFX/NS_MyRibbon", emitter_name="Trail", module_name="SpawnRate", script_type="emitter_update")
         """
         from unreal_mcp_server import get_unreal_connection
 
