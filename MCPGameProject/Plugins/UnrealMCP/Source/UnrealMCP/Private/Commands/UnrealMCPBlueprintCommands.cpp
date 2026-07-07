@@ -11,6 +11,7 @@
 #include "Components/StaticMeshComponent.h"
 #include "Components/BoxComponent.h"
 #include "Components/SphereComponent.h"
+#include "GameFramework/Actor.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "Engine/SimpleConstructionScript.h"
@@ -1292,7 +1293,14 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleReadBlueprint(const T
         TEXT("Other"));
 
     // ===== Components =====
+    // Two sources: (1) Blueprint SCS-added components, (2) C++ CreateDefaultSubobject
+    // components inherited from the native parent class. The BP subclass may override
+    // fields on the inherited components via the Details panel; those overrides live
+    // on the BP's CDO subobject, not on the SCS. We include both so callers can see
+    // every configured component regardless of where it was declared.
     TArray<TSharedPtr<FJsonValue>> ComponentsArray;
+    TSet<FString> SeenComponentNames;
+
     if (Blueprint->SimpleConstructionScript)
     {
         for (USCS_Node* Node : Blueprint->SimpleConstructionScript->GetAllNodes())
@@ -1300,7 +1308,10 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleReadBlueprint(const T
             if (!Node) continue;
 
             TSharedPtr<FJsonObject> CompObj = MakeShared<FJsonObject>();
-            CompObj->SetStringField(TEXT("name"), Node->GetVariableName().ToString());
+            const FString CompName = Node->GetVariableName().ToString();
+            CompObj->SetStringField(TEXT("name"), CompName);
+            CompObj->SetStringField(TEXT("source"), TEXT("blueprint"));
+            SeenComponentNames.Add(CompName);
 
             if (Node->ComponentTemplate)
             {
@@ -1366,6 +1377,128 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleReadBlueprint(const T
             ComponentsArray.Add(MakeShared<FJsonValueObject>(CompObj));
         }
     }
+
+    // Second pass: C++ inherited components (created via CreateDefaultSubobject on the
+    // native parent class). Walk the BP CDO's actor components and dump any whose
+    // property values differ from the base parent CDO (i.e. BP-overridden fields).
+    if (UBlueprintGeneratedClass* BPGC = Cast<UBlueprintGeneratedClass>(Blueprint->GeneratedClass))
+    {
+        AActor* BPCDO = Cast<AActor>(BPGC->GetDefaultObject(false));
+        AActor* ParentCDO = nullptr;
+        if (UClass* NativeParent = BPGC->GetSuperClass())
+        {
+            ParentCDO = Cast<AActor>(NativeParent->GetDefaultObject(false));
+        }
+
+        if (BPCDO)
+        {
+            TInlineComponentArray<UActorComponent*> BPComponents;
+            BPCDO->GetComponents(BPComponents);
+
+            for (UActorComponent* BPComp : BPComponents)
+            {
+                if (!BPComp) continue;
+                const FString CompName = BPComp->GetName();
+                if (SeenComponentNames.Contains(CompName)) continue; // already covered by SCS pass
+                SeenComponentNames.Add(CompName);
+
+                // Find the matching component on the parent CDO to diff against.
+                UActorComponent* ParentComp = nullptr;
+                if (ParentCDO)
+                {
+                    TInlineComponentArray<UActorComponent*> ParentComponents;
+                    ParentCDO->GetComponents(ParentComponents);
+                    for (UActorComponent* PC : ParentComponents)
+                    {
+                        if (PC && PC->GetName() == CompName)
+                        {
+                            ParentComp = PC;
+                            break;
+                        }
+                    }
+                }
+
+                TSharedPtr<FJsonObject> CompObj = MakeShared<FJsonObject>();
+                CompObj->SetStringField(TEXT("name"), CompName);
+                CompObj->SetStringField(TEXT("class"), BPComp->GetClass()->GetName());
+                CompObj->SetStringField(TEXT("source"), TEXT("cpp_inherited"));
+
+                // Scene component transform
+                if (USceneComponent* SceneComp = Cast<USceneComponent>(BPComp))
+                {
+                    FVector Loc = SceneComp->GetRelativeLocation();
+                    FRotator Rot = SceneComp->GetRelativeRotation();
+                    FVector Scale = SceneComp->GetRelativeScale3D();
+
+                    TArray<TSharedPtr<FJsonValue>> LocArr;
+                    LocArr.Add(MakeShared<FJsonValueNumber>(Loc.X));
+                    LocArr.Add(MakeShared<FJsonValueNumber>(Loc.Y));
+                    LocArr.Add(MakeShared<FJsonValueNumber>(Loc.Z));
+                    CompObj->SetArrayField(TEXT("location"), LocArr);
+
+                    TArray<TSharedPtr<FJsonValue>> RotArr;
+                    RotArr.Add(MakeShared<FJsonValueNumber>(Rot.Pitch));
+                    RotArr.Add(MakeShared<FJsonValueNumber>(Rot.Yaw));
+                    RotArr.Add(MakeShared<FJsonValueNumber>(Rot.Roll));
+                    CompObj->SetArrayField(TEXT("rotation"), RotArr);
+
+                    TArray<TSharedPtr<FJsonValue>> ScaleArr;
+                    ScaleArr.Add(MakeShared<FJsonValueNumber>(Scale.X));
+                    ScaleArr.Add(MakeShared<FJsonValueNumber>(Scale.Y));
+                    ScaleArr.Add(MakeShared<FJsonValueNumber>(Scale.Z));
+                    CompObj->SetArrayField(TEXT("scale"), ScaleArr);
+                }
+
+                // Dump BP-editable fields declared on the component's class (skip base
+                // UObject/UActorComponent). If a parent-CDO match exists, only include
+                // fields whose values differ (i.e. BP-overridden). If not, dump them all.
+                TSharedPtr<FJsonObject> PropsObj = MakeShared<FJsonObject>();
+                for (TFieldIterator<FProperty> PropIt(BPComp->GetClass()); PropIt; ++PropIt)
+                {
+                    FProperty* Prop = *PropIt;
+                    if (!Prop) continue;
+                    if (Prop->GetOwnerClass() == UObject::StaticClass() ||
+                        Prop->GetOwnerClass() == UActorComponent::StaticClass()) continue;
+                    // Only include user-facing fields: those exposed in the Details panel.
+                    if (!Prop->HasAnyPropertyFlags(CPF_Edit) &&
+                        !Prop->HasAnyPropertyFlags(CPF_BlueprintVisible)) continue;
+                    if (Prop->HasAnyPropertyFlags(CPF_Transient | CPF_Deprecated)) continue;
+
+                    const void* BPValPtr = Prop->ContainerPtrToValuePtr<void>(BPComp);
+
+                    // Skip properties identical to the parent CDO — those aren't BP overrides.
+                    if (ParentComp && ParentComp->GetClass() == BPComp->GetClass())
+                    {
+                        const void* ParentValPtr = Prop->ContainerPtrToValuePtr<void>(ParentComp);
+                        if (Prop->Identical(BPValPtr, ParentValPtr, PPF_None))
+                        {
+                            continue;
+                        }
+                    }
+
+                    FString ValStr;
+                    Prop->ExportTextItem_Direct(ValStr, BPValPtr, nullptr, nullptr, PPF_None);
+                    if (!ValStr.IsEmpty() && ValStr.Len() < 2048)
+                    {
+                        PropsObj->SetStringField(Prop->GetName(), ValStr);
+                    }
+                }
+                CompObj->SetObjectField(TEXT("properties"), PropsObj);
+
+                // Attachment info for scene components
+                if (USceneComponent* SceneComp = Cast<USceneComponent>(BPComp))
+                {
+                    if (USceneComponent* AttachParent = SceneComp->GetAttachParent())
+                    {
+                        CompObj->SetStringField(TEXT("parent"), AttachParent->GetName());
+                    }
+                }
+
+                ComponentsArray.Add(MakeShared<FJsonValueObject>(CompObj));
+            }
+        }
+    }
+
     ResultObj->SetArrayField(TEXT("components"), ComponentsArray);
 
     // ===== Variables =====

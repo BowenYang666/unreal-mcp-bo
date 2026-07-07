@@ -470,7 +470,13 @@ def register_blueprint_tools(mcp: FastMCP):
             - name: Blueprint asset name
             - path: Full asset path
             - parent_class: Parent class name (e.g. "Actor", "Pawn", "Character")
-            - components: List of components with class, transform, and properties
+            - components: List of components (both Blueprint SCS-added AND C++ inherited
+              via CreateDefaultSubobject on the native parent). Each entry has:
+                * name, class, source ("blueprint" | "cpp_inherited")
+                * location/rotation/scale (scene components only)
+                * properties: for BP components, all UPROPERTYs; for cpp_inherited,
+                  only the fields the BP has overridden vs the parent CDO
+                * parent: attach parent name (scene components)
             - variables: List of Blueprint variables with types and defaults
             - event_graphs: List of event graphs with nodes, pins, and connections
             - functions: List of Blueprint functions
