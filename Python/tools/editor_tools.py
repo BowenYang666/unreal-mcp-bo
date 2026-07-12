@@ -439,48 +439,31 @@ def register_editor_tools(mcp: FastMCP):
         relative_seconds_ago: int = 0,
         pie_session_index: int = 0
     ) -> Dict[str, Any]:
-        """Read recent Unreal Editor output log entries by reading the log file directly.
+        """Read Unreal Editor output log entries from the log file.
 
-        Reads from the UE project's log file at <ProjectDir>/Saved/Logs/<ProjectName>.log.
-        No need for UE editor to be running — works even after the editor has closed.
+        Reads <ProjectDir>/Saved/Logs/<ProjectName>.log directly, so it works even when
+        the editor is closed. Set UNREAL_PROJECT_LOG env var or pass log_path.
 
-        Set the UNREAL_PROJECT_LOG env var to the log file path, or pass log_path directly.
-
-        At least one time parameter must be provided: start_time, end_time, relative_seconds_ago, or pie_session_index.
-        Time filtering uses the timestamp in each log line [YYYY.MM.DD-HH.MM.SS:mmm].
-        After time filtering, category/verbosity/search filters apply, then count takes the tail.
+        At least one time parameter is REQUIRED (start_time / end_time /
+        relative_seconds_ago / pie_session_index).
 
         Args:
-            ctx: The MCP context
-            count: Maximum number of log entries to return after all filtering (default: 100)
-            verbosity: Minimum verbosity level - "fatal", "error", "warning", "display", "log", "verbose", or "all" (default: "all")
-            category: Filter by log category name, e.g. "LogTemp", "LogBlueprintUserMessages" (default: "" = all categories)
-            search: Case-insensitive REGEX search within log messages. Supports alternation,
-                e.g. "died|HandleDeath|STTask". If the pattern is not valid regex, falls back
-                to a literal substring match. (default: "" = no filter)
-            log_path: Full path to the .log file. If empty, uses UNREAL_PROJECT_LOG env var.
-            start_time: Inclusive start time in UE format "YYYY.MM.DD-HH.MM.SS" or ISO "YYYY-MM-DDTHH:MM:SS".
-                Omit or "" to not limit start.
-            end_time: Inclusive end time, same format as start_time.
-                Omit or "" to not limit end.
-            relative_seconds_ago: If > 0, sets start_time to (now - N seconds). Overrides start_time if both given.
-            pie_session_index: Select logs from a specific PIE (Play-In-Editor) session.
-                -1 = most recent PIE session, -2 = the one before that, etc.
-                0 = disabled (default). Overrides start_time/end_time when set.
+            count: Max entries after all filters (default: 100).
+            verbosity: Minimum level - "fatal"/"error"/"warning"/"display"/"log"/"verbose"/"all".
+            category: Exact category match, e.g. "LogTemp".
+            search: Case-insensitive REGEX. Supports alternation like "died|HandleDeath".
+                Falls back to literal substring if not valid regex.
+            log_path: Full .log path, else uses UNREAL_PROJECT_LOG env.
+            start_time / end_time: Inclusive, UE format "YYYY.MM.DD-HH.MM.SS" or ISO.
+            relative_seconds_ago: If > 0, sets start_time = now - N seconds.
+            pie_session_index: -1 = most recent PIE session, -2 = one before, etc.
+                0 = disabled. Overrides start/end_time.
 
-        Returns:
-            Dict with "total_lines" (int), "returned" (int), "time_window" (dict),
-            and "logs" (list of dicts with timestamp, category, verbosity, message).
-            When using pie_session_index, also returns "pie_sessions_found" (int).
+        Returns logs list plus time_window; also pie_sessions_found when using PIE.
 
         Examples:
-            get_editor_logs(relative_seconds_ago=60, verbosity="error")
-            get_editor_logs(start_time="2026.06.13-02.05.00", end_time="2026.06.13-02.10.00")
-            get_editor_logs(start_time="2026.06.13-02.05.00", category="LogTemp", count=50)
-            get_editor_logs(relative_seconds_ago=300, search="NullPtr")
-            get_editor_logs(relative_seconds_ago=300, search="died|HandleDeath|STTask")
             get_editor_logs(pie_session_index=-1, verbosity="error")
-            get_editor_logs(pie_session_index=-1, category="LogTemp")
+            get_editor_logs(relative_seconds_ago=60, search="died|HandleDeath")
         """
         import os
         import re

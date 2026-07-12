@@ -443,46 +443,18 @@ def register_blueprint_tools(mcp: FastMCP):
         include_properties: bool = True,
         include_anim_graph: bool = False
     ) -> Dict[str, str]:
-        """
-        Read and return the full structure of a Blueprint asset, including its parent class,
-        components (with transforms and properties), variables, event graph nodes (with connections),
-        functions, and implemented interfaces.
-
-        This tool is useful for understanding the structure of an existing Blueprint in your
-        Unreal Engine project.
+        """Read a Blueprint's structure: parent class, components, variables, event graphs, functions.
 
         Args:
-            blueprint_path: Name of the Blueprint to read. Can be a simple name like "MyBlueprint"
-                          (will search in /Game/Blueprints/), or a full asset path like
-                          "/Game/MyFolder/MyBlueprint".
-                          Examples: "BP_Player", "BP_Enemy", "/Game/Characters/BP_Hero"
-            include_nodes: Whether to include detailed event graph node info (default True).
-                          Set to False to reduce response size for large Blueprints.
-            include_properties: Whether to include component property details (default True).
-                               Set to False to get a lighter overview of the Blueprint.
-            include_anim_graph: Whether to include Animation Graph data for Animation Blueprints
-                               (default False). When True, returns anim_graphs with nodes,
-                               connections, state machines (states + transitions with variables_used).
-                               Only effective on Animation Blueprints; ignored for regular Blueprints.
+            blueprint_path: Full asset path, e.g. "/Game/Characters/BP_Hero".
+            include_nodes: Include per-node pin/link details in event_graphs (default True).
+                Set False for large BPs to shrink the response.
+            include_properties: Include component UPROPERTY dumps (default True).
+            include_anim_graph: Include Animation Graph data for AnimBPs (default False).
 
-        Returns:
-            A dict containing detailed Blueprint information:
-            - name: Blueprint asset name
-            - path: Full asset path
-            - parent_class: Parent class name (e.g. "Actor", "Pawn", "Character")
-            - components: List of components (both Blueprint SCS-added AND C++ inherited
-              via CreateDefaultSubobject on the native parent). Each entry has:
-                * name, class, source ("blueprint" | "cpp_inherited")
-                * location/rotation/scale (scene components only)
-                * properties: for BP components, all UPROPERTYs; for cpp_inherited,
-                  only the fields the BP has overridden vs the parent CDO
-                * parent: attach parent name (scene components)
-            - variables: List of Blueprint variables with types and defaults
-            - event_graphs: List of event graphs with nodes, pins, and connections
-            - functions: List of Blueprint functions
-            - interfaces: List of implemented interfaces
-            - anim_graphs: (only when include_anim_graph=True on AnimBPs) List of animation graphs
-              with nodes, connections, and state machines containing states and transitions
+        Returns dict with name/path/parent_class/components/variables/event_graphs/functions/interfaces.
+        components entries have source: "blueprint" | "cpp_inherited".
+        Oversized responses spill to a temp .json file; check `overflow` / `file_path`.
         """
         from unreal_mcp_server import get_unreal_connection
 
@@ -494,6 +466,8 @@ def register_blueprint_tools(mcp: FastMCP):
 
             params = {
                 "blueprint_path": blueprint_path,
+                "include_nodes": include_nodes,
+                "include_properties": include_properties,
             }
             if include_anim_graph:
                 params["include_anim_graph"] = True
@@ -505,8 +479,18 @@ def register_blueprint_tools(mcp: FastMCP):
                 logger.error("No response from Unreal Engine")
                 return {"success": False, "message": "No response from Unreal Engine"}
 
-            logger.info(f"Read blueprint response received")
-            return response
+            # Large BPs (Lyra's HUD widgets, character BPs with big event graphs) blow
+            # past the ~25KB MCP tool payload ceiling. Spill oversized responses to a
+            # temp .json file and return a small pointer for the LLM to read_file.
+            from unreal_mcp_server import spill_if_oversized
+            return spill_if_oversized(
+                response,
+                tool_name="read_blueprint",
+                identifier=blueprint_path,
+                preview_keys=("name", "path", "parent_class"),
+                count_keys=("components", "variables", "functions", "event_graphs"),
+                hint="Consider include_nodes=False or include_properties=False for a smaller inline response.",
+            )
 
         except Exception as e:
             error_msg = f"Error reading blueprint: {e}"

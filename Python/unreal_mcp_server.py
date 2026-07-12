@@ -235,6 +235,88 @@ def get_unreal_connection() -> Optional[UnrealConnection]:
         logger.error(f"Error getting Unreal connection: {e}")
         return None
 
+
+def spill_if_oversized(
+    response: Any,
+    tool_name: str,
+    identifier: str,
+    preview_keys: tuple = ("name", "path", "parent_class"),
+    count_keys: tuple = (),
+    threshold: int = 24000,
+    hint: str = "",
+) -> Any:
+    """If a tool response would exceed the MCP tool payload ceiling (~25KB),
+    write the full JSON to a temp file and return a small pointer instead.
+
+    Args:
+        response: The raw response dict from send_command.
+        tool_name: Short tool identifier used in the temp filename (e.g. "read_blueprint").
+        identifier: The asset/thing being read; used to make the temp file name readable
+            and stable across repeated calls (e.g. "/Game/UI/W_Healthbar").
+        preview_keys: Top-level keys copied verbatim into `preview`.
+        count_keys: Keys whose length is reported as `<key>_count` in `preview`
+            (so callers know how much data is in the spill file).
+        threshold: Char count above which we spill to disk.
+        hint: Optional message appended to the returned `message` field, e.g.
+            "Pass include_nodes=False for a smaller inline response."
+
+    Returns either the original response (if under threshold), or a small dict
+    with success/overflow/size_bytes/file_path/preview/message.
+    """
+    import json as _json
+    import os as _os
+    import tempfile as _tempfile
+    import hashlib as _hashlib
+
+    try:
+        serialized = _json.dumps(response, ensure_ascii=False)
+    except Exception:
+        return response  # can't measure; return as-is
+
+    if len(serialized) <= threshold:
+        return response
+
+    slug = _hashlib.md5(identifier.encode("utf-8")).hexdigest()[:12]
+    safe_name = identifier.strip("/").replace("/", "_").replace(":", "_").replace("\\", "_")
+    out_path = _os.path.join(
+        _tempfile.gettempdir(),
+        f"mcp_{tool_name}_{safe_name}_{slug}.json",
+    )
+    try:
+        with open(out_path, "w", encoding="utf-8") as f:
+            f.write(serialized)
+    except OSError as e:
+        logger.warning(f"[{tool_name}] Failed to spill oversized response to disk: {e}")
+        return response
+
+    payload = response.get("result", response) if isinstance(response, dict) else {}
+    preview = {}
+    if isinstance(payload, dict):
+        for k in preview_keys:
+            if k in payload:
+                preview[k] = payload.get(k)
+        for k in count_keys:
+            val = payload.get(k)
+            if isinstance(val, list):
+                preview[f"{k}_count"] = len(val)
+
+    message = (
+        f"Response was {len(serialized)} chars (over {threshold} threshold). "
+        f"Full JSON written to '{out_path}' — read it with read_file to inspect."
+    )
+    if hint:
+        message += " " + hint
+
+    logger.info(f"[{tool_name}] spilled {len(serialized)} chars > {threshold} to {out_path}")
+    return {
+        "success": True,
+        "overflow": True,
+        "size_bytes": len(serialized),
+        "file_path": out_path,
+        "preview": preview,
+        "message": message,
+    }
+
 @asynccontextmanager
 async def server_lifespan(server: FastMCP) -> AsyncIterator[Dict[str, Any]]:
     """Handle server startup and shutdown."""

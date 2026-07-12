@@ -124,6 +124,20 @@ def register_material_tools(mcp: FastMCP):
             if response.get("status") == "error":
                 return {"success": False, "message": response.get("error", "Unknown error")}
 
+            # Big material graphs (hundreds of expression nodes) blow past the ~25KB
+            # MCP payload ceiling. Spill oversized responses to a temp .json file.
+            from unreal_mcp_server import spill_if_oversized
+            identifier = path or name
+            spilled = spill_if_oversized(
+                response,
+                tool_name="read_material",
+                identifier=identifier,
+                preview_keys=("name", "path", "parent_material", "material_domain", "blend_mode", "shading_model"),
+                count_keys=("nodes", "comments", "material_inputs"),
+            )
+            if isinstance(spilled, dict) and spilled.get("overflow"):
+                return spilled
+
             result = response.get("result", response)
             logger.info(f"Read material: {result.get('name', 'unknown')} ({result.get('node_count', 0)} nodes)")
             return result
@@ -180,6 +194,20 @@ def register_material_tools(mcp: FastMCP):
 
             if response.get("status") == "error":
                 return {"success": False, "message": response.get("error", "Unknown error")}
+
+            # Material instances with many parameter overrides can exceed the MCP
+            # payload ceiling; spill oversized responses to a temp .json file.
+            from unreal_mcp_server import spill_if_oversized
+            identifier = path or name
+            spilled = spill_if_oversized(
+                response,
+                tool_name="get_material_instance_parameters",
+                identifier=identifier,
+                preview_keys=("name", "path", "parent"),
+                count_keys=("scalar_parameters", "vector_parameters", "texture_parameters"),
+            )
+            if isinstance(spilled, dict) and spilled.get("overflow"):
+                return spilled
 
             result = response.get("result", response)
             logger.info(f"Read material instance: {result.get('name', 'unknown')}")
