@@ -36,6 +36,7 @@
 #include "Kismet/GameplayStatics.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "K2Node_Event.h"
+#include "Styling/SlateBrush.h"
 
 FUnrealMCPUMGCommands::FUnrealMCPUMGCommands()
 {
@@ -1347,6 +1348,108 @@ static TArray<TSharedPtr<FJsonValue>> ColorToJsonArray(const FLinearColor& C)
 	return Arr;
 }
 
+// Serialize an FVector2D as [x, y].
+static TArray<TSharedPtr<FJsonValue>> Vector2ToJsonArray(const FVector2D& V)
+{
+	TArray<TSharedPtr<FJsonValue>> Arr;
+	Arr.Add(MakeShared<FJsonValueNumber>(V.X));
+	Arr.Add(MakeShared<FJsonValueNumber>(V.Y));
+	return Arr;
+}
+
+// Serialize an FMargin as {left,top,right,bottom}.
+static TSharedPtr<FJsonObject> MarginToJsonObject(const FMargin& M)
+{
+	TSharedPtr<FJsonObject> Obj = MakeShared<FJsonObject>();
+	Obj->SetNumberField(TEXT("left"), M.Left);
+	Obj->SetNumberField(TEXT("top"), M.Top);
+	Obj->SetNumberField(TEXT("right"), M.Right);
+	Obj->SetNumberField(TEXT("bottom"), M.Bottom);
+	return Obj;
+}
+
+// Serialize an FSlateBrush to a structured JSON object with the fields UI authors
+// actually configure: draw_as, tint, image_size, margin (9-slice), tiling, mirroring,
+// and resource_object path (texture/material).
+static TSharedPtr<FJsonObject> BrushToJsonObject(const FSlateBrush& Brush)
+{
+	TSharedPtr<FJsonObject> Obj = MakeShared<FJsonObject>();
+	Obj->SetStringField(TEXT("draw_as"), UEnum::GetValueAsString(Brush.DrawAs));
+	Obj->SetStringField(TEXT("tiling"), UEnum::GetValueAsString(Brush.Tiling));
+	Obj->SetStringField(TEXT("mirroring"), UEnum::GetValueAsString(Brush.Mirroring));
+	Obj->SetArrayField(TEXT("tint"), ColorToJsonArray(Brush.TintColor.GetSpecifiedColor()));
+	Obj->SetArrayField(TEXT("image_size"), Vector2ToJsonArray(Brush.ImageSize));
+	Obj->SetObjectField(TEXT("margin"), MarginToJsonObject(Brush.Margin));
+	if (UObject* Resource = Brush.GetResourceObject())
+	{
+		Obj->SetStringField(TEXT("resource_object"), Resource->GetPathName());
+		Obj->SetStringField(TEXT("resource_class"), Resource->GetClass()->GetName());
+	}
+	if (!Brush.GetResourceName().IsNone())
+	{
+		Obj->SetStringField(TEXT("resource_name"), Brush.GetResourceName().ToString());
+	}
+	// RoundedBox outline settings, when DrawAs == RoundedBox
+	if (Brush.DrawAs == ESlateBrushDrawType::RoundedBox)
+	{
+		TSharedPtr<FJsonObject> Outline = MakeShared<FJsonObject>();
+		Outline->SetArrayField(TEXT("color"), ColorToJsonArray(Brush.OutlineSettings.Color.GetSpecifiedColor()));
+		Outline->SetNumberField(TEXT("width"), Brush.OutlineSettings.Width);
+		Outline->SetBoolField(TEXT("use_brush_transparency"), Brush.OutlineSettings.bUseBrushTransparency);
+		Outline->SetNumberField(TEXT("rounding_type"), static_cast<int32>(Brush.OutlineSettings.RoundingType));
+		// CornerRadii: FVector4
+		TArray<TSharedPtr<FJsonValue>> Radii;
+		Radii.Add(MakeShared<FJsonValueNumber>(Brush.OutlineSettings.CornerRadii.X));
+		Radii.Add(MakeShared<FJsonValueNumber>(Brush.OutlineSettings.CornerRadii.Y));
+		Radii.Add(MakeShared<FJsonValueNumber>(Brush.OutlineSettings.CornerRadii.Z));
+		Radii.Add(MakeShared<FJsonValueNumber>(Brush.OutlineSettings.CornerRadii.W));
+		Outline->SetArrayField(TEXT("corner_radii"), Radii);
+		Obj->SetObjectField(TEXT("outline"), Outline);
+	}
+	return Obj;
+}
+
+// Generic per-widget-class property fallback: walks all UPROPERTYs on the concrete
+// widget class (skipping fields inherited from UWidget / UVisual base classes and
+// fields already covered by the hand-written structured branches). Uses UE's own
+// ExportTextItem so any type serializes safely without a special-case cast.
+// This is what makes previously-invisible widget classes (SafeZone, ScrollBox,
+// BackgroundBlur, RichTextBlock, CommonTextBlock's Style ref, SizeBox overrides,
+// etc.) show up in read_widget_layout automatically.
+static void AppendGenericWidgetProperties(UWidget* Widget, TSharedPtr<FJsonObject> Props, const TSet<FName>& AlreadyCovered)
+{
+	if (!Widget) return;
+	UClass* Cls = Widget->GetClass();
+	if (!Cls) return;
+
+	// Only report fields declared on classes at or below UWidget in the hierarchy,
+	// but skip UWidget / UVisual / UObject themselves (their 300+ fields are noise).
+	UClass* WidgetBase = UWidget::StaticClass();
+	for (TFieldIterator<FProperty> It(Cls, EFieldIterationFlags::IncludeSuper); It; ++It)
+	{
+		FProperty* Prop = *It;
+		if (!Prop) continue;
+		if (AlreadyCovered.Contains(Prop->GetFName())) continue;
+		// Only Details-panel-visible properties.
+		if (!Prop->HasAnyPropertyFlags(CPF_Edit)) continue;
+		if (Prop->HasAnyPropertyFlags(CPF_Transient | CPF_Deprecated)) continue;
+		// Skip everything owned by base UWidget itself. Fields declared on subclasses
+		// (UPanelWidget, UTextBlock, USizeBox, ...) all pass because Owner is below UWidget.
+		UClass* Owner = Prop->GetOwnerClass();
+		if (!Owner) continue;
+		if (Owner == WidgetBase) continue;
+		if (!Owner->IsChildOf(WidgetBase)) continue;
+
+		const void* ValPtr = Prop->ContainerPtrToValuePtr<void>(Widget);
+		FString ValStr;
+		Prop->ExportTextItem_Direct(ValStr, ValPtr, nullptr, nullptr, PPF_None);
+		if (!ValStr.IsEmpty() && ValStr.Len() < 4096)
+		{
+			Props->SetStringField(Prop->GetName(), ValStr);
+		}
+	}
+}
+
 // Serialize slot info — safe, no UPropertyToJsonValue.
 static TSharedPtr<FJsonObject> SerializeSlot(UPanelSlot* Slot)
 {
@@ -1453,10 +1556,16 @@ static TSharedPtr<FJsonObject> SerializeWidgetProperties(UWidget* Widget)
 
 	Props->SetBoolField(TEXT("is_visible"), Widget->IsVisible());
 
+	// Names of properties we serialize with a structured, hand-written formatter below.
+	// These get skipped by the generic fallback to avoid duplicated / uglier output.
+	TSet<FName> Covered;
+
 	if (UTextBlock* TB = Cast<UTextBlock>(Widget))
 	{
 		Props->SetStringField(TEXT("text"), TB->GetText().ToString());
 		Props->SetArrayField(TEXT("color"), ColorToJsonArray(TB->GetColorAndOpacity().GetSpecifiedColor()));
+		Covered.Add(TEXT("Text"));
+		Covered.Add(TEXT("ColorAndOpacity"));
 	}
 	else if (UButton* Btn = Cast<UButton>(Widget))
 	{
@@ -1466,25 +1575,61 @@ static TSharedPtr<FJsonObject> SerializeWidgetProperties(UWidget* Widget)
 	{
 		Props->SetNumberField(TEXT("percent"), PB->GetPercent());
 		Props->SetArrayField(TEXT("fill_color"), ColorToJsonArray(PB->GetFillColorAndOpacity()));
+		Covered.Add(TEXT("Percent"));
+		Covered.Add(TEXT("FillColorAndOpacity"));
 	}
 	else if (UImage* Img = Cast<UImage>(Widget))
 	{
 		Props->SetArrayField(TEXT("tint_color"), ColorToJsonArray(Img->GetColorAndOpacity()));
-		// Report brush resource name if set
-		UObject* Resource = Img->GetBrush().GetResourceObject();
-		if (Resource)
+		// Full structured brush: DrawAs, Margin (9-slice), ImageSize, Tiling, Mirroring,
+		// resource path, RoundedBox outline settings if applicable.
+		Props->SetObjectField(TEXT("brush"), BrushToJsonObject(Img->GetBrush()));
+		// Back-compat: keep the flat texture_path some callers already rely on.
+		if (UObject* Resource = Img->GetBrush().GetResourceObject())
 		{
 			Props->SetStringField(TEXT("texture_path"), Resource->GetPathName());
 		}
+		Covered.Add(TEXT("ColorAndOpacity"));
+		Covered.Add(TEXT("Brush"));
 	}
 	else if (UBorder* Bdr = Cast<UBorder>(Widget))
 	{
 		Props->SetArrayField(TEXT("brush_color"), ColorToJsonArray(Bdr->GetBrushColor()));
+		Props->SetObjectField(TEXT("background_brush"), BrushToJsonObject(Bdr->Background));
+		Covered.Add(TEXT("BrushColor"));
+		Covered.Add(TEXT("Background"));
 	}
 	else if (USizeBox* SB = Cast<USizeBox>(Widget))
 	{
-		// SizeBox override getters aren't exposed directly; read from FOptionalSize properties
-		// We'll just note it's a SizeBox; the slot size is in the slot info.
+		// SizeBox has 4 pairs of (Is*Override, Get*) accessors that drive its layout.
+		// Report the value only when the override is actually enabled, so the output
+		// mirrors what a designer sees in the Details panel.
+		auto MaybeSize = [&](const TCHAR* Key, bool bOverride, float Value)
+		{
+			if (bOverride)
+			{
+				Props->SetNumberField(Key, Value);
+			}
+		};
+		MaybeSize(TEXT("width_override"), SB->IsWidthOverride(), SB->GetWidthOverride());
+		MaybeSize(TEXT("height_override"), SB->IsHeightOverride(), SB->GetHeightOverride());
+		MaybeSize(TEXT("min_desired_width"), SB->IsMinDesiredWidthOverride(), SB->GetMinDesiredWidth());
+		MaybeSize(TEXT("max_desired_width"), SB->IsMaxDesiredWidthOverride(), SB->GetMaxDesiredWidth());
+		MaybeSize(TEXT("min_desired_height"), SB->IsMinDesiredHeightOverride(), SB->GetMinDesiredHeight());
+		MaybeSize(TEXT("max_desired_height"), SB->IsMaxDesiredHeightOverride(), SB->GetMaxDesiredHeight());
+		MaybeSize(TEXT("min_aspect_ratio"), SB->IsMinAspectRatioOverride(), SB->GetMinAspectRatio());
+		MaybeSize(TEXT("max_aspect_ratio"), SB->IsMaxAspectRatioOverride(), SB->GetMaxAspectRatio());
+		// Skip the raw override flags/values in the generic pass to keep output clean.
+		Covered.Append({
+			TEXT("bOverride_WidthOverride"), TEXT("WidthOverride"),
+			TEXT("bOverride_HeightOverride"), TEXT("HeightOverride"),
+			TEXT("bOverride_MinDesiredWidth"), TEXT("MinDesiredWidth"),
+			TEXT("bOverride_MaxDesiredWidth"), TEXT("MaxDesiredWidth"),
+			TEXT("bOverride_MinDesiredHeight"), TEXT("MinDesiredHeight"),
+			TEXT("bOverride_MaxDesiredHeight"), TEXT("MaxDesiredHeight"),
+			TEXT("bOverride_MinAspectRatio"), TEXT("MinAspectRatio"),
+			TEXT("bOverride_MaxAspectRatio"), TEXT("MaxAspectRatio"),
+		});
 	}
 	else if (USpacer* Sp = Cast<USpacer>(Widget))
 	{
@@ -1493,7 +1638,15 @@ static TSharedPtr<FJsonObject> SerializeWidgetProperties(UWidget* Widget)
 		SArr.Add(MakeShared<FJsonValueNumber>(SpSize.X));
 		SArr.Add(MakeShared<FJsonValueNumber>(SpSize.Y));
 		Props->SetArrayField(TEXT("size"), SArr);
+		Covered.Add(TEXT("Size"));
 	}
+
+	// Generic fallback: dump every remaining CPF_Edit UPROPERTY declared on the
+	// widget's concrete class (skipping UWidget base fields, transient/deprecated,
+	// and anything the hand-written branch above already emitted). This covers
+	// SafeZone, ScrollBox, BackgroundBlur, RichTextBlock, WidgetSwitcher,
+	// CommonTextBlock's Style ref, and anything new the engine adds.
+	AppendGenericWidgetProperties(Widget, Props, Covered);
 
 	return Props;
 }

@@ -1277,6 +1277,18 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleReadBlueprint(const T
     ResultObj->SetStringField(TEXT("name"), Blueprint->GetName());
     ResultObj->SetStringField(TEXT("path"), AssetPath);
 
+    // Output-shape flags. Both default to true to keep pre-existing callers happy,
+    // but they let the Python wrapper trim the response when a BP would exceed the
+    // MCP tool payload ceiling (e.g. Lyra's HUD widgets with huge event graphs).
+    //   include_nodes=false      -> event_graphs and functions still list names +
+    //                               node_count, but per-node pin/link details are dropped
+    //   include_properties=false -> component transforms/attach are kept, but the
+    //                               per-property UPROPERTY dumps are skipped
+    bool bIncludeNodes = true;
+    Params->TryGetBoolField(TEXT("include_nodes"), bIncludeNodes);
+    bool bIncludeProperties = true;
+    Params->TryGetBoolField(TEXT("include_properties"), bIncludeProperties);
+
     // Parent class info
     if (Blueprint->ParentClass)
     {
@@ -1344,28 +1356,31 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleReadBlueprint(const T
                     CompObj->SetArrayField(TEXT("scale"), ScaleArr);
                 }
 
-                // Include key properties of the component template
-                TSharedPtr<FJsonObject> PropsObj = MakeShared<FJsonObject>();
-                for (TFieldIterator<FProperty> PropIt(Node->ComponentTemplate->GetClass()); PropIt; ++PropIt)
+                // Include key properties of the component template (unless caller opted out).
+                if (bIncludeProperties)
                 {
-                    FProperty* Prop = *PropIt;
-                    // Only include properties that belong directly to this class (not inherited from UObject/UActorComponent)
-                    if (Prop->GetOwnerClass() == UObject::StaticClass() || 
-                        Prop->GetOwnerClass() == UActorComponent::StaticClass())
+                    TSharedPtr<FJsonObject> PropsObj = MakeShared<FJsonObject>();
+                    for (TFieldIterator<FProperty> PropIt(Node->ComponentTemplate->GetClass()); PropIt; ++PropIt)
                     {
-                        continue;
-                    }
+                        FProperty* Prop = *PropIt;
+                        // Only include properties that belong directly to this class (not inherited from UObject/UActorComponent)
+                        if (Prop->GetOwnerClass() == UObject::StaticClass() ||
+                            Prop->GetOwnerClass() == UActorComponent::StaticClass())
+                        {
+                            continue;
+                        }
 
-                    FString ValueStr;
-                    const void* ValuePtr = Prop->ContainerPtrToValuePtr<void>(Node->ComponentTemplate);
-                    Prop->ExportTextItem_Direct(ValueStr, ValuePtr, nullptr, nullptr, PPF_None);
-                    
-                    if (!ValueStr.IsEmpty())
-                    {
-                        PropsObj->SetStringField(Prop->GetName(), ValueStr);
+                        FString ValueStr;
+                        const void* ValuePtr = Prop->ContainerPtrToValuePtr<void>(Node->ComponentTemplate);
+                        Prop->ExportTextItem_Direct(ValueStr, ValuePtr, nullptr, nullptr, PPF_None);
+
+                        if (!ValueStr.IsEmpty())
+                        {
+                            PropsObj->SetStringField(Prop->GetName(), ValueStr);
+                        }
                     }
+                    CompObj->SetObjectField(TEXT("properties"), PropsObj);
                 }
-                CompObj->SetObjectField(TEXT("properties"), PropsObj);
 
                 // Parent component info
                 if (Node->ParentComponentOrVariableName != NAME_None)
@@ -1452,38 +1467,41 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleReadBlueprint(const T
                 // Dump BP-editable fields declared on the component's class (skip base
                 // UObject/UActorComponent). If a parent-CDO match exists, only include
                 // fields whose values differ (i.e. BP-overridden). If not, dump them all.
-                TSharedPtr<FJsonObject> PropsObj = MakeShared<FJsonObject>();
-                for (TFieldIterator<FProperty> PropIt(BPComp->GetClass()); PropIt; ++PropIt)
+                if (bIncludeProperties)
                 {
-                    FProperty* Prop = *PropIt;
-                    if (!Prop) continue;
-                    if (Prop->GetOwnerClass() == UObject::StaticClass() ||
-                        Prop->GetOwnerClass() == UActorComponent::StaticClass()) continue;
-                    // Only include user-facing fields: those exposed in the Details panel.
-                    if (!Prop->HasAnyPropertyFlags(CPF_Edit) &&
-                        !Prop->HasAnyPropertyFlags(CPF_BlueprintVisible)) continue;
-                    if (Prop->HasAnyPropertyFlags(CPF_Transient | CPF_Deprecated)) continue;
-
-                    const void* BPValPtr = Prop->ContainerPtrToValuePtr<void>(BPComp);
-
-                    // Skip properties identical to the parent CDO — those aren't BP overrides.
-                    if (ParentComp && ParentComp->GetClass() == BPComp->GetClass())
+                    TSharedPtr<FJsonObject> PropsObj = MakeShared<FJsonObject>();
+                    for (TFieldIterator<FProperty> PropIt(BPComp->GetClass()); PropIt; ++PropIt)
                     {
-                        const void* ParentValPtr = Prop->ContainerPtrToValuePtr<void>(ParentComp);
-                        if (Prop->Identical(BPValPtr, ParentValPtr, PPF_None))
+                        FProperty* Prop = *PropIt;
+                        if (!Prop) continue;
+                        if (Prop->GetOwnerClass() == UObject::StaticClass() ||
+                            Prop->GetOwnerClass() == UActorComponent::StaticClass()) continue;
+                        // Only include user-facing fields: those exposed in the Details panel.
+                        if (!Prop->HasAnyPropertyFlags(CPF_Edit) &&
+                            !Prop->HasAnyPropertyFlags(CPF_BlueprintVisible)) continue;
+                        if (Prop->HasAnyPropertyFlags(CPF_Transient | CPF_Deprecated)) continue;
+
+                        const void* BPValPtr = Prop->ContainerPtrToValuePtr<void>(BPComp);
+
+                        // Skip properties identical to the parent CDO — those aren't BP overrides.
+                        if (ParentComp && ParentComp->GetClass() == BPComp->GetClass())
                         {
-                            continue;
+                            const void* ParentValPtr = Prop->ContainerPtrToValuePtr<void>(ParentComp);
+                            if (Prop->Identical(BPValPtr, ParentValPtr, PPF_None))
+                            {
+                                continue;
+                            }
+                        }
+
+                        FString ValStr;
+                        Prop->ExportTextItem_Direct(ValStr, BPValPtr, nullptr, nullptr, PPF_None);
+                        if (!ValStr.IsEmpty() && ValStr.Len() < 2048)
+                        {
+                            PropsObj->SetStringField(Prop->GetName(), ValStr);
                         }
                     }
-
-                    FString ValStr;
-                    Prop->ExportTextItem_Direct(ValStr, BPValPtr, nullptr, nullptr, PPF_None);
-                    if (!ValStr.IsEmpty() && ValStr.Len() < 2048)
-                    {
-                        PropsObj->SetStringField(Prop->GetName(), ValStr);
-                    }
+                    CompObj->SetObjectField(TEXT("properties"), PropsObj);
                 }
-                CompObj->SetObjectField(TEXT("properties"), PropsObj);
 
                 // Attachment info for scene components
                 if (USceneComponent* SceneComp = Cast<USceneComponent>(BPComp))
@@ -1547,6 +1565,8 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleReadBlueprint(const T
     ResultObj->SetArrayField(TEXT("variables"), VariablesArray);
 
     // ===== Event Graphs =====
+    // When include_nodes=false, still emit each graph's name and node_count so callers
+    // know what's there, but skip the per-node/pin walk that dominates response size.
     TArray<TSharedPtr<FJsonValue>> GraphsArray;
     for (UEdGraph* Graph : Blueprint->UbergraphPages)
     {
@@ -1556,76 +1576,80 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleReadBlueprint(const T
         GraphObj->SetStringField(TEXT("name"), Graph->GetName());
         GraphObj->SetNumberField(TEXT("node_count"), Graph->Nodes.Num());
 
-        TArray<TSharedPtr<FJsonValue>> NodesArray;
-        for (UEdGraphNode* Node : Graph->Nodes)
+        if (bIncludeNodes)
         {
-            if (!Node) continue;
-
-            TSharedPtr<FJsonObject> NodeObj = MakeShared<FJsonObject>();
-            NodeObj->SetStringField(TEXT("node_id"), Node->NodeGuid.ToString());
-            NodeObj->SetStringField(TEXT("node_class"), Node->GetClass()->GetName());
-            NodeObj->SetStringField(TEXT("node_title"), Node->GetNodeTitle(ENodeTitleType::FullTitle).ToString());
-            NodeObj->SetNumberField(TEXT("pos_x"), Node->NodePosX);
-            NodeObj->SetNumberField(TEXT("pos_y"), Node->NodePosY);
-
-            if (!Node->NodeComment.IsEmpty())
+            TArray<TSharedPtr<FJsonValue>> NodesArray;
+            for (UEdGraphNode* Node : Graph->Nodes)
             {
-                NodeObj->SetStringField(TEXT("comment"), Node->NodeComment);
-            }
+                if (!Node) continue;
 
-            // Event node specifics
-            UK2Node_Event* EventNode = Cast<UK2Node_Event>(Node);
-            if (EventNode)
-            {
-                NodeObj->SetStringField(TEXT("event_name"), EventNode->EventReference.GetMemberName().ToString());
-            }
+                TSharedPtr<FJsonObject> NodeObj = MakeShared<FJsonObject>();
+                NodeObj->SetStringField(TEXT("node_id"), Node->NodeGuid.ToString());
+                NodeObj->SetStringField(TEXT("node_class"), Node->GetClass()->GetName());
+                NodeObj->SetStringField(TEXT("node_title"), Node->GetNodeTitle(ENodeTitleType::FullTitle).ToString());
+                NodeObj->SetNumberField(TEXT("pos_x"), Node->NodePosX);
+                NodeObj->SetNumberField(TEXT("pos_y"), Node->NodePosY);
 
-            // Function call node specifics
-            UK2Node_CallFunction* FuncNode = Cast<UK2Node_CallFunction>(Node);
-            if (FuncNode)
-            {
-                NodeObj->SetStringField(TEXT("function_name"), FuncNode->FunctionReference.GetMemberName().ToString());
-                if (FuncNode->FunctionReference.GetMemberParentClass())
+                if (!Node->NodeComment.IsEmpty())
                 {
-                    NodeObj->SetStringField(TEXT("function_class"), FuncNode->FunctionReference.GetMemberParentClass()->GetName());
+                    NodeObj->SetStringField(TEXT("comment"), Node->NodeComment);
                 }
-            }
 
-            // Pins info
-            TArray<TSharedPtr<FJsonValue>> PinsArray;
-            for (UEdGraphPin* Pin : Node->Pins)
-            {
-                if (!Pin) continue;
-                TSharedPtr<FJsonObject> PinObj = MakeShared<FJsonObject>();
-                PinObj->SetStringField(TEXT("name"), Pin->PinName.ToString());
-                PinObj->SetStringField(TEXT("type"), Pin->PinType.PinCategory.ToString());
-                PinObj->SetStringField(TEXT("direction"), Pin->Direction == EGPD_Input ? TEXT("Input") : TEXT("Output"));
-                PinObj->SetBoolField(TEXT("is_connected"), Pin->LinkedTo.Num() > 0);
-                
-                // Add linked node IDs
-                if (Pin->LinkedTo.Num() > 0)
+                // Event node specifics
+                UK2Node_Event* EventNode = Cast<UK2Node_Event>(Node);
+                if (EventNode)
                 {
-                    TArray<TSharedPtr<FJsonValue>> LinkedArray;
-                    for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
+                    NodeObj->SetStringField(TEXT("event_name"), EventNode->EventReference.GetMemberName().ToString());
+                }
+
+                // Function call node specifics
+                UK2Node_CallFunction* FuncNode = Cast<UK2Node_CallFunction>(Node);
+                if (FuncNode)
+                {
+                    NodeObj->SetStringField(TEXT("function_name"), FuncNode->FunctionReference.GetMemberName().ToString());
+                    if (FuncNode->FunctionReference.GetMemberParentClass())
                     {
-                        if (LinkedPin && LinkedPin->GetOwningNode())
-                        {
-                            TSharedPtr<FJsonObject> LinkObj = MakeShared<FJsonObject>();
-                            LinkObj->SetStringField(TEXT("node_id"), LinkedPin->GetOwningNode()->NodeGuid.ToString());
-                            LinkObj->SetStringField(TEXT("pin_name"), LinkedPin->PinName.ToString());
-                            LinkedArray.Add(MakeShared<FJsonValueObject>(LinkObj));
-                        }
+                        NodeObj->SetStringField(TEXT("function_class"), FuncNode->FunctionReference.GetMemberParentClass()->GetName());
                     }
-                    PinObj->SetArrayField(TEXT("linked_to"), LinkedArray);
                 }
 
-                PinsArray.Add(MakeShared<FJsonValueObject>(PinObj));
-            }
-            NodeObj->SetArrayField(TEXT("pins"), PinsArray);
+                // Pins info
+                TArray<TSharedPtr<FJsonValue>> PinsArray;
+                for (UEdGraphPin* Pin : Node->Pins)
+                {
+                    if (!Pin) continue;
+                    TSharedPtr<FJsonObject> PinObj = MakeShared<FJsonObject>();
+                    PinObj->SetStringField(TEXT("name"), Pin->PinName.ToString());
+                    PinObj->SetStringField(TEXT("type"), Pin->PinType.PinCategory.ToString());
+                    PinObj->SetStringField(TEXT("direction"), Pin->Direction == EGPD_Input ? TEXT("Input") : TEXT("Output"));
+                    PinObj->SetBoolField(TEXT("is_connected"), Pin->LinkedTo.Num() > 0);
 
-            NodesArray.Add(MakeShared<FJsonValueObject>(NodeObj));
+                    // Add linked node IDs
+                    if (Pin->LinkedTo.Num() > 0)
+                    {
+                        TArray<TSharedPtr<FJsonValue>> LinkedArray;
+                        for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
+                        {
+                            if (LinkedPin && LinkedPin->GetOwningNode())
+                            {
+                                TSharedPtr<FJsonObject> LinkObj = MakeShared<FJsonObject>();
+                                LinkObj->SetStringField(TEXT("node_id"), LinkedPin->GetOwningNode()->NodeGuid.ToString());
+                                LinkObj->SetStringField(TEXT("pin_name"), LinkedPin->PinName.ToString());
+                                LinkedArray.Add(MakeShared<FJsonValueObject>(LinkObj));
+                            }
+                        }
+                        PinObj->SetArrayField(TEXT("linked_to"), LinkedArray);
+                    }
+
+                    PinsArray.Add(MakeShared<FJsonValueObject>(PinObj));
+                }
+                NodeObj->SetArrayField(TEXT("pins"), PinsArray);
+
+                NodesArray.Add(MakeShared<FJsonValueObject>(NodeObj));
+            }
+            GraphObj->SetArrayField(TEXT("nodes"), NodesArray);
         }
-        GraphObj->SetArrayField(TEXT("nodes"), NodesArray);
+
         GraphsArray.Add(MakeShared<FJsonValueObject>(GraphObj));
     }
     ResultObj->SetArrayField(TEXT("event_graphs"), GraphsArray);
