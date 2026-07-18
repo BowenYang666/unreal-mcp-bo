@@ -401,6 +401,7 @@ if _read_only:
         "list_niagara_systems",
         "read_niagara_system",
         "get_niagara_parameters",
+        "list_module_inputs",
     }
 
     all_tool_names = list(mcp._tool_manager._tools.keys())
@@ -447,7 +448,7 @@ _CATEGORY_TOOLS = {
         "get_niagara_parameters", "create_niagara_system", "set_niagara_rapid_parameter",
         "modify_emitter_properties", "list_niagara_emitter_templates", "add_emitter_to_system",
         "remove_emitter_from_system", "add_module_to_emitter", "remove_module_from_emitter",
-        "set_niagara_renderer_property",
+        "set_niagara_renderer_property", "list_module_inputs", "enable_module_input",
     },
     "blueprint": {
         "create_blueprint", "add_component_to_blueprint", "set_component_property",

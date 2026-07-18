@@ -95,6 +95,21 @@ def register_niagara_tools(mcp: FastMCP):
             - emitters: list of {name, enabled, sim_target, local_space, determinism}
             - user_parameters: list of {name, type, default_value}
 
+            Each emitter also includes a "renderers" list. Every renderer entry has
+            "type" and "enabled", plus type-specific fields reflected from its
+            UPROPERTYs, e.g.:
+            - Sprite: material (asset path), sub_image_size {x,y}, sub_uv_blending_enabled,
+              alignment, facing_mode, sort_mode, pivot_offset, min/max_facing_camera_blend_distance,
+              sort_only_when_translucent, use_gpu_init, material_user_binding
+            - Mesh: meshes (array), override_materials, source_mode, facing_mode,
+              mesh_alignment, sort_mode, enable_frustum_culling, enable_camera_distance_culling,
+              sub_image_size
+            - Ribbon: material, facing_mode, uv0_settings, uv1_settings, draw_direction,
+              tessellation_mode, curve_tension, tessellation_factor, sub_image_size, shape
+            - Light: radius_scale, color_add {r,g,b}, use_inverse_squared_falloff,
+              affects_translucency, light_rendering_enabled, volumetric_scattering_intensity
+            Common to all: motion_vector_setting, renderer_visibility_tag, platforms.
+
         Examples:
             read_niagara_system(asset_full_path="/Game/VFX/NS_Explosion")
             read_niagara_system(asset_full_path="NS_Explosion")
@@ -836,4 +851,156 @@ def register_niagara_tools(mcp: FastMCP):
 
         except Exception as e:
             logger.error(f"Error setting renderer property: {e}")
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def list_module_inputs(
+        ctx: Context,
+        asset_full_path: str,
+        emitter_name: str,
+        module_name: str,
+        script_type: str = "spawn"
+    ) -> Dict[str, Any]:
+        """List every input pin of a module in an emitter script, with its type and value mode.
+
+        This solves the "which pins can I enable?" exploration problem. Niagara module
+        templates only expose a few inputs as rapid-iteration parameters by default; the rest
+        are on their module default and cannot be set with set_niagara_rapid_parameter until
+        enabled. Use this to discover the full input list, then enable_module_input to expose one.
+
+        Args:
+            ctx: The MCP context
+            asset_full_path: Full asset path (e.g. "/Game/VFX/NS_Fire") or short asset name.
+            emitter_name: Name of the emitter within the system (e.g. "Fire").
+            module_name: Module/function name in the stack (e.g. "InitializeParticle", "AddVelocity").
+            script_type: One of "spawn", "update", "emitter_spawn", "emitter_update" (default: "spawn").
+
+        Returns:
+            Dict with "inputs" (list). Each input has:
+            - name: short input name (e.g. "Color", "Uniform Sprite Size", "Cone Angle")
+            - type: Niagara type name (e.g. "float", "Vector2D", "LinearColor")
+            - current_mode: "Local" (has a rapid-iteration value), "Linked", or "Default" (not exposed)
+            - can_enable_local: True if it can be enabled as a Local Value via enable_module_input
+            - is_static / is_hidden: metadata flags
+            - rapid_parameter_name: the full Constants.* name that enabling would create (rapid types)
+            - value: current value when already Local
+
+        Examples:
+            list_module_inputs(asset_full_path="/Game/VFX/NS_Fire", emitter_name="Fire",
+                module_name="InitializeParticle", script_type="spawn")
+            list_module_inputs(asset_full_path="NS_Fire", emitter_name="Fire",
+                module_name="AddVelocity", script_type="spawn")
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                logger.error("Failed to connect to Unreal Engine")
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            params = {
+                **_map_asset_path(asset_full_path),
+                "emitter_name": emitter_name,
+                "module_name": module_name,
+                "script_type": script_type,
+            }
+
+            response = unreal.send_command("list_module_inputs", params)
+
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+
+            result = response.get("result", response)
+            logger.info(f"Listed {result.get('input_count', 0)} inputs of module {module_name}")
+            return result
+
+        except Exception as e:
+            logger.error(f"Error listing module inputs: {e}")
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def enable_module_input(
+        ctx: Context,
+        asset_full_path: str,
+        emitter_name: str,
+        module_name: str,
+        input_name: str,
+        script_type: str = "spawn",
+        initial_value: Any = None
+    ) -> Dict[str, Any]:
+        """Enable a module input pin as a Local Value so it can be read/written.
+
+        Equivalent to opening the input's dropdown in the Niagara editor and choosing
+        "Local Value". For constant (rapid-iteration) input types this creates a rapid
+        iteration parameter, after which set_niagara_rapid_parameter can read/write it.
+        Only constant types are supported (float, int, bool, vec2, vec3, vec4/quat, color);
+        data interfaces and object assets cannot be enabled this way.
+
+        Use list_module_inputs first to discover the exact input_name and confirm
+        can_enable_local is True.
+
+        Args:
+            ctx: The MCP context
+            asset_full_path: Full asset path (e.g. "/Game/VFX/NS_Fire") or short asset name.
+            emitter_name: Name of the emitter within the system (e.g. "Fire").
+            module_name: Module/function name (e.g. "InitializeParticle", "AddVelocity").
+            input_name: Short input name to enable (e.g. "Color", "Uniform Sprite Size", "Cone Angle").
+            script_type: One of "spawn", "update", "emitter_spawn", "emitter_update" (default: "spawn").
+            initial_value: Optional value to set at the same time. Omit to use the module default.
+                Format matches the input type:
+                - float/int: a number (e.g. 60)
+                - bool: true/false
+                - vec2: [x, y]
+                - vec3: [x, y, z]
+                - vec4/quat: [x, y, z, w]
+                - color: {"r": 1.0, "g": 0.5, "b": 0.0, "a": 1.0} or [r, g, b, a]
+
+        Returns:
+            Dict with parameter_name (full Constants.* name), type, value, and already_enabled flag.
+
+        Examples:
+            enable_module_input(asset_full_path="/Game/VFX/NS_Fire", emitter_name="Fire",
+                module_name="InitializeParticle", input_name="Color",
+                initial_value={"r": 5.0, "g": 1.5, "b": 0.2, "a": 1.0})
+            enable_module_input(asset_full_path="NS_Fire", emitter_name="Fire",
+                module_name="AddVelocity", input_name="Cone Angle", initial_value=45.0)
+            enable_module_input(asset_full_path="NS_Fire", emitter_name="Fire",
+                module_name="InitializeParticle", input_name="Uniform Sprite Size")
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                logger.error("Failed to connect to Unreal Engine")
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            params = {
+                **_map_asset_path(asset_full_path),
+                "emitter_name": emitter_name,
+                "module_name": module_name,
+                "input_name": input_name,
+                "script_type": script_type,
+            }
+            if initial_value is not None:
+                params["initial_value"] = initial_value
+
+            response = unreal.send_command("enable_module_input", params)
+
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+
+            result = response.get("result", response)
+            logger.info(f"Enabled module input {module_name}.{input_name} -> {result.get('parameter_name', '?')}")
+            return result
+
+        except Exception as e:
+            logger.error(f"Error enabling module input: {e}")
             return {"success": False, "message": str(e)}

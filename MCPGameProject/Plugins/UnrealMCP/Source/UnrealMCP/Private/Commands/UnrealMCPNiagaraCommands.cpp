@@ -20,6 +20,8 @@
 #include "NiagaraSystemEditorData.h"
 #include "NiagaraOverviewNode.h"
 #include "NiagaraRendererProperties.h"
+#include "ViewModels/Stack/NiagaraParameterHandle.h"
+#include "NiagaraParameterMapHistory.h"
 
 // Editor includes
 #include "AssetRegistry/AssetRegistryModule.h"
@@ -192,6 +194,14 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleCommand(const FString& 
 	{
 		return HandleSetNiagaraRendererProperty(Params);
 	}
+	else if (CommandType == TEXT("list_module_inputs"))
+	{
+		return HandleListModuleInputs(Params);
+	}
+	else if (CommandType == TEXT("enable_module_input"))
+	{
+		return HandleEnableModuleInput(Params);
+	}
 
 	return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown Niagara command: %s"), *CommandType));
 }
@@ -274,6 +284,169 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleListNiagaraSystems(cons
 	ResultJson->SetNumberField(TEXT("count"), SystemArray.Num());
 	ResultJson->SetArrayField(TEXT("systems"), SystemArray);
 	return ResultJson;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Renderer property reflection helpers (used by read_niagara_system)
+//
+// These serialize an arbitrary FProperty value to JSON via reflection, so we can
+// expose a Niagara renderer's UPROPERTYs (material, sub-image size, alignment,
+// facing/sort modes, etc.) without hard-coding member access per renderer class.
+// ─────────────────────────────────────────────────────────────────────────────
+
+static TSharedPtr<FJsonValue> NiagaraPropValueToJson(FProperty* Prop, const void* ValuePtr)
+{
+	if (!Prop || !ValuePtr)
+	{
+		return MakeShared<FJsonValueNull>();
+	}
+
+	// Bool
+	if (const FBoolProperty* BoolProp = CastField<FBoolProperty>(Prop))
+	{
+		return MakeShared<FJsonValueBoolean>(BoolProp->GetPropertyValue(ValuePtr));
+	}
+
+	// Enum class (FEnumProperty)
+	if (const FEnumProperty* EnumProp = CastField<FEnumProperty>(Prop))
+	{
+		const FNumericProperty* Underlying = EnumProp->GetUnderlyingProperty();
+		const int64 Val = Underlying->GetSignedIntPropertyValue(ValuePtr);
+		if (const UEnum* Enum = EnumProp->GetEnum())
+		{
+			return MakeShared<FJsonValueString>(Enum->GetNameStringByValue(Val));
+		}
+		return MakeShared<FJsonValueNumber>(static_cast<double>(Val));
+	}
+
+	// TEnumAsByte / raw byte
+	if (const FByteProperty* ByteProp = CastField<FByteProperty>(Prop))
+	{
+		const int64 Val = ByteProp->GetPropertyValue(ValuePtr);
+		if (ByteProp->Enum)
+		{
+			return MakeShared<FJsonValueString>(ByteProp->Enum->GetNameStringByValue(Val));
+		}
+		return MakeShared<FJsonValueNumber>(static_cast<double>(Val));
+	}
+
+	// Soft object -> path (check before FObjectPropertyBase to avoid forced load)
+	if (const FSoftObjectProperty* SoftProp = CastField<FSoftObjectProperty>(Prop))
+	{
+		const FString Path = SoftProp->GetPropertyValue(ValuePtr).ToString();
+		return Path.IsEmpty() ? StaticCastSharedRef<FJsonValue>(MakeShared<FJsonValueNull>())
+		                      : StaticCastSharedRef<FJsonValue>(MakeShared<FJsonValueString>(Path));
+	}
+
+	// Hard object reference (Material, StaticMesh, etc.) -> asset path or null
+	if (const FObjectPropertyBase* ObjProp = CastField<FObjectPropertyBase>(Prop))
+	{
+		const UObject* Obj = ObjProp->GetObjectPropertyValue(ValuePtr);
+		return Obj ? StaticCastSharedRef<FJsonValue>(MakeShared<FJsonValueString>(Obj->GetPathName()))
+		           : StaticCastSharedRef<FJsonValue>(MakeShared<FJsonValueNull>());
+	}
+
+	// Numeric
+	if (const FNumericProperty* NumProp = CastField<FNumericProperty>(Prop))
+	{
+		if (NumProp->IsFloatingPoint())
+		{
+			return MakeShared<FJsonValueNumber>(NumProp->GetFloatingPointPropertyValue(ValuePtr));
+		}
+		return MakeShared<FJsonValueNumber>(static_cast<double>(NumProp->GetSignedIntPropertyValue(ValuePtr)));
+	}
+
+	// String / Name / Text
+	if (const FStrProperty* StrProp = CastField<FStrProperty>(Prop))
+	{
+		return MakeShared<FJsonValueString>(StrProp->GetPropertyValue(ValuePtr));
+	}
+	if (const FNameProperty* NameProp = CastField<FNameProperty>(Prop))
+	{
+		return MakeShared<FJsonValueString>(NameProp->GetPropertyValue(ValuePtr).ToString());
+	}
+	if (const FTextProperty* TextProp = CastField<FTextProperty>(Prop))
+	{
+		return MakeShared<FJsonValueString>(TextProp->GetPropertyValue(ValuePtr).ToString());
+	}
+
+	// Struct — expose common math structs cleanly, recurse the rest
+	if (const FStructProperty* StructProp = CastField<FStructProperty>(Prop))
+	{
+		UScriptStruct* Struct = StructProp->Struct;
+		if (Struct == TBaseStructure<FVector2D>::Get())
+		{
+			const FVector2D* V = reinterpret_cast<const FVector2D*>(ValuePtr);
+			TSharedPtr<FJsonObject> O = MakeShared<FJsonObject>();
+			O->SetNumberField(TEXT("x"), V->X);
+			O->SetNumberField(TEXT("y"), V->Y);
+			return MakeShared<FJsonValueObject>(O);
+		}
+		if (Struct == TBaseStructure<FVector>::Get())
+		{
+			const FVector* V = reinterpret_cast<const FVector*>(ValuePtr);
+			TSharedPtr<FJsonObject> O = MakeShared<FJsonObject>();
+			O->SetNumberField(TEXT("x"), V->X);
+			O->SetNumberField(TEXT("y"), V->Y);
+			O->SetNumberField(TEXT("z"), V->Z);
+			return MakeShared<FJsonValueObject>(O);
+		}
+		if (Struct == TBaseStructure<FLinearColor>::Get())
+		{
+			const FLinearColor* C = reinterpret_cast<const FLinearColor*>(ValuePtr);
+			TSharedPtr<FJsonObject> O = MakeShared<FJsonObject>();
+			O->SetNumberField(TEXT("r"), C->R);
+			O->SetNumberField(TEXT("g"), C->G);
+			O->SetNumberField(TEXT("b"), C->B);
+			O->SetNumberField(TEXT("a"), C->A);
+			return MakeShared<FJsonValueObject>(O);
+		}
+
+		// Generic struct: reflect its members
+		TSharedPtr<FJsonObject> O = MakeShared<FJsonObject>();
+		for (TFieldIterator<FProperty> It(Struct); It; ++It)
+		{
+			FProperty* Inner = *It;
+			const void* InnerPtr = Inner->ContainerPtrToValuePtr<void>(ValuePtr);
+			O->SetField(Inner->GetName(), NiagaraPropValueToJson(Inner, InnerPtr));
+		}
+		return MakeShared<FJsonValueObject>(O);
+	}
+
+	// Array — recurse per element
+	if (const FArrayProperty* ArrProp = CastField<FArrayProperty>(Prop))
+	{
+		FScriptArrayHelper Helper(ArrProp, ValuePtr);
+		TArray<TSharedPtr<FJsonValue>> Arr;
+		for (int32 i = 0; i < Helper.Num(); ++i)
+		{
+			Arr.Add(NiagaraPropValueToJson(ArrProp->Inner, Helper.GetRawPtr(i)));
+		}
+		return MakeShared<FJsonValueArray>(Arr);
+	}
+
+	// Fallback: export as text
+	FString Exported;
+	Prop->ExportTextItem_Direct(Exported, ValuePtr, nullptr, nullptr, PPF_None);
+	return MakeShared<FJsonValueString>(Exported);
+}
+
+// Read a named UPROPERTY off a renderer and add it to Obj under JsonKey.
+// Silently skips if the property doesn't exist on this renderer class, so callers
+// can list every candidate field without worrying about version/type differences.
+static void AddNiagaraRendererProp(const TSharedPtr<FJsonObject>& Obj, const UObject* Renderer, const TCHAR* JsonKey, const TCHAR* PropName)
+{
+	if (!Obj.IsValid() || !Renderer)
+	{
+		return;
+	}
+	FProperty* Prop = Renderer->GetClass()->FindPropertyByName(FName(PropName));
+	if (!Prop)
+	{
+		return;
+	}
+	const void* ValuePtr = Prop->ContainerPtrToValuePtr<void>(Renderer);
+	Obj->SetField(JsonKey, NiagaraPropValueToJson(Prop, ValuePtr));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -386,8 +559,67 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleReadNiagaraSystem(const
 			{
 				if (!Renderer) continue;
 				TSharedPtr<FJsonObject> RendObj = MakeShared<FJsonObject>();
-				RendObj->SetStringField(TEXT("type"), Renderer->GetClass()->GetName());
+				const FString RendClassName = Renderer->GetClass()->GetName();
+				RendObj->SetStringField(TEXT("type"), RendClassName);
 				RendObj->SetBoolField(TEXT("enabled"), Renderer->GetIsEnabled());
+
+				// Base-class fields common to every renderer type
+				AddNiagaraRendererProp(RendObj, Renderer, TEXT("motion_vector_setting"), TEXT("MotionVectorSetting"));
+				AddNiagaraRendererProp(RendObj, Renderer, TEXT("renderer_visibility_tag"), TEXT("RendererVisibility"));
+				AddNiagaraRendererProp(RendObj, Renderer, TEXT("platforms"), TEXT("Platforms"));
+
+				if (RendClassName.Contains(TEXT("Sprite")))
+				{
+					AddNiagaraRendererProp(RendObj, Renderer, TEXT("material"), TEXT("Material"));
+					AddNiagaraRendererProp(RendObj, Renderer, TEXT("material_user_binding"), TEXT("MaterialUserParamBinding"));
+					AddNiagaraRendererProp(RendObj, Renderer, TEXT("sub_image_size"), TEXT("SubImageSize"));
+					AddNiagaraRendererProp(RendObj, Renderer, TEXT("sub_uv_blending_enabled"), TEXT("bSubImageBlend"));
+					AddNiagaraRendererProp(RendObj, Renderer, TEXT("alignment"), TEXT("Alignment"));
+					AddNiagaraRendererProp(RendObj, Renderer, TEXT("facing_mode"), TEXT("FacingMode"));
+					AddNiagaraRendererProp(RendObj, Renderer, TEXT("sort_mode"), TEXT("SortMode"));
+					AddNiagaraRendererProp(RendObj, Renderer, TEXT("pivot_offset"), TEXT("PivotOffset"));
+					AddNiagaraRendererProp(RendObj, Renderer, TEXT("min_facing_camera_blend_distance"), TEXT("MinFacingCameraBlendDistance"));
+					AddNiagaraRendererProp(RendObj, Renderer, TEXT("max_facing_camera_blend_distance"), TEXT("MaxFacingCameraBlendDistance"));
+					AddNiagaraRendererProp(RendObj, Renderer, TEXT("sort_only_when_translucent"), TEXT("bSortOnlyWhenTranslucent"));
+					AddNiagaraRendererProp(RendObj, Renderer, TEXT("use_gpu_init"), TEXT("bGpuLowLatencyTranslucency"));
+				}
+				else if (RendClassName.Contains(TEXT("Mesh")))
+				{
+					AddNiagaraRendererProp(RendObj, Renderer, TEXT("meshes"), TEXT("Meshes"));
+					AddNiagaraRendererProp(RendObj, Renderer, TEXT("override_materials"), TEXT("OverrideMaterials"));
+					AddNiagaraRendererProp(RendObj, Renderer, TEXT("source_mode"), TEXT("SourceMode"));
+					AddNiagaraRendererProp(RendObj, Renderer, TEXT("facing_mode"), TEXT("FacingMode"));
+					AddNiagaraRendererProp(RendObj, Renderer, TEXT("mesh_alignment"), TEXT("Alignment"));
+					AddNiagaraRendererProp(RendObj, Renderer, TEXT("sort_mode"), TEXT("SortMode"));
+					AddNiagaraRendererProp(RendObj, Renderer, TEXT("enable_frustum_culling"), TEXT("bEnableFrustumCulling"));
+					AddNiagaraRendererProp(RendObj, Renderer, TEXT("enable_camera_distance_culling"), TEXT("bEnableCameraDistanceCulling"));
+					AddNiagaraRendererProp(RendObj, Renderer, TEXT("sub_image_size"), TEXT("SubImageSize"));
+				}
+				else if (RendClassName.Contains(TEXT("Ribbon")))
+				{
+					AddNiagaraRendererProp(RendObj, Renderer, TEXT("material"), TEXT("Material"));
+					AddNiagaraRendererProp(RendObj, Renderer, TEXT("facing_mode"), TEXT("FacingMode"));
+					AddNiagaraRendererProp(RendObj, Renderer, TEXT("uv0_settings"), TEXT("UV0Settings"));
+					AddNiagaraRendererProp(RendObj, Renderer, TEXT("uv1_settings"), TEXT("UV1Settings"));
+					AddNiagaraRendererProp(RendObj, Renderer, TEXT("draw_direction"), TEXT("DrawDirection"));
+					AddNiagaraRendererProp(RendObj, Renderer, TEXT("tessellation_mode"), TEXT("TessellationMode"));
+					AddNiagaraRendererProp(RendObj, Renderer, TEXT("curve_tension"), TEXT("CurveTension"));
+					AddNiagaraRendererProp(RendObj, Renderer, TEXT("tessellation_factor"), TEXT("TessellationFactor"));
+					AddNiagaraRendererProp(RendObj, Renderer, TEXT("sub_image_size"), TEXT("SubImageSize"));
+					AddNiagaraRendererProp(RendObj, Renderer, TEXT("shape"), TEXT("Shape"));
+					AddNiagaraRendererProp(RendObj, Renderer, TEXT("custom_vertices"), TEXT("CustomVertices"));
+					AddNiagaraRendererProp(RendObj, Renderer, TEXT("renderer_visibility_tag_id"), TEXT("RendererVisibilityTagId"));
+				}
+				else if (RendClassName.Contains(TEXT("Light")))
+				{
+					AddNiagaraRendererProp(RendObj, Renderer, TEXT("radius_scale"), TEXT("RadiusScale"));
+					AddNiagaraRendererProp(RendObj, Renderer, TEXT("color_add"), TEXT("ColorAdd"));
+					AddNiagaraRendererProp(RendObj, Renderer, TEXT("use_inverse_squared_falloff"), TEXT("bUseInverseSquaredFalloff"));
+					AddNiagaraRendererProp(RendObj, Renderer, TEXT("affects_translucency"), TEXT("bAffectsTranslucency"));
+					AddNiagaraRendererProp(RendObj, Renderer, TEXT("light_rendering_enabled"), TEXT("bLightsEnabled"));
+					AddNiagaraRendererProp(RendObj, Renderer, TEXT("volumetric_scattering_intensity"), TEXT("VolumetricScatteringIntensity"));
+				}
+
 				RendererArray.Add(MakeShared<FJsonValueObject>(RendObj));
 			}
 			EmitterObj->SetArrayField(TEXT("renderers"), RendererArray);
@@ -2010,6 +2242,438 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleSetNiagaraRendererPrope
 	ResultJson->SetNumberField(TEXT("renderer_index"), SelectedIndex);
 	ResultJson->SetStringField(TEXT("renderer_type"), TargetRenderer->GetClass()->GetName());
 	ResultJson->SetStringField(TEXT("property"), PropertyName);
+	return ResultJson;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Module input helpers (used by list_module_inputs / enable_module_input)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Map a script_type string to the emitter script + its usage.
+static bool ResolveEmitterScript(FVersionedNiagaraEmitterData* EmitterData, const FString& ScriptType,
+	UNiagaraScript*& OutScript, ENiagaraScriptUsage& OutUsage, FString& OutError)
+{
+	const FString S = ScriptType.ToLower();
+	if (S == TEXT("spawn"))               { OutScript = EmitterData->SpawnScriptProps.Script;        OutUsage = ENiagaraScriptUsage::ParticleSpawnScript; }
+	else if (S == TEXT("update"))         { OutScript = EmitterData->UpdateScriptProps.Script;       OutUsage = ENiagaraScriptUsage::ParticleUpdateScript; }
+	else if (S == TEXT("emitter_spawn"))  { OutScript = EmitterData->EmitterSpawnScriptProps.Script; OutUsage = ENiagaraScriptUsage::EmitterSpawnScript; }
+	else if (S == TEXT("emitter_update")) { OutScript = EmitterData->EmitterUpdateScriptProps.Script;OutUsage = ENiagaraScriptUsage::EmitterUpdateScript; }
+	else { OutError = FString::Printf(TEXT("Invalid script_type '%s'. Must be 'spawn', 'update', 'emitter_spawn', or 'emitter_update'."), *ScriptType); return false; }
+	if (!OutScript) { OutError = FString::Printf(TEXT("No %s script found on emitter"), *ScriptType); return false; }
+	return true;
+}
+
+// Find a module function-call node in a script's graph by name (matches function name or display title).
+static UNiagaraNodeFunctionCall* FindModuleNodeByName(UNiagaraScript* Script, const FString& ModuleName)
+{
+	UNiagaraScriptSource* Source = Cast<UNiagaraScriptSource>(Script->GetLatestSource());
+	if (!Source || !Source->NodeGraph) return nullptr;
+	UNiagaraNodeFunctionCall* Fallback = nullptr;
+	for (UEdGraphNode* Node : Source->NodeGraph->Nodes)
+	{
+		UNiagaraNodeFunctionCall* FuncNode = Cast<UNiagaraNodeFunctionCall>(Node);
+		if (!FuncNode) continue;
+		const FString FuncName = FuncNode->GetFunctionName();
+		const FString Title = FuncNode->GetNodeTitle(ENodeTitleType::ListView).ToString();
+		if (FuncName.Equals(ModuleName, ESearchCase::IgnoreCase) || Title.Equals(ModuleName, ESearchCase::IgnoreCase))
+			return FuncNode;
+		if (!Fallback && (FuncName.Contains(ModuleName) || Title.Contains(ModuleName)))
+			Fallback = FuncNode;
+	}
+	return Fallback;
+}
+
+// Strip the leading "Module." namespace from an input handle string for display / matching.
+static FString StripModuleNamespace(const FString& HandleString)
+{
+	const FString Prefix = TEXT("Module.");
+	return HandleString.StartsWith(Prefix) ? HandleString.RightChop(Prefix.Len()) : HandleString;
+}
+
+// Fill a rapid-iteration-typed FNiagaraVariable's data from a JSON value.
+// Supports float, int, bool, vec2, vec3/position, vec4/quat, color.
+static bool WriteJsonToRapidVariable(FNiagaraVariable& Var, const TSharedPtr<FJsonValue>& JsonVal, FString& OutError)
+{
+	if (!JsonVal.IsValid()) { OutError = TEXT("initial_value is not a valid JSON value"); return false; }
+	const FNiagaraTypeDefinition& Type = Var.GetType();
+	Var.AllocateData();
+
+	if (Type == FNiagaraTypeDefinition::GetFloatDef())
+	{
+		double N = 0; if (!JsonVal->TryGetNumber(N)) { OutError = TEXT("Expected a number for float input"); return false; }
+		Var.SetValue<float>(static_cast<float>(N)); return true;
+	}
+	if (Type == FNiagaraTypeDefinition::GetIntDef())
+	{
+		double N = 0; if (!JsonVal->TryGetNumber(N)) { OutError = TEXT("Expected a number for int input"); return false; }
+		Var.SetValue<int32>(static_cast<int32>(N)); return true;
+	}
+	if (Type == FNiagaraTypeDefinition::GetBoolDef())
+	{
+		bool B = false; if (!JsonVal->TryGetBool(B)) { OutError = TEXT("Expected a boolean for bool input"); return false; }
+		FNiagaraBool NB; NB.SetValue(B); Var.SetValue<FNiagaraBool>(NB); return true;
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* Arr = nullptr;
+	if (Type == FNiagaraTypeDefinition::GetVec2Def())
+	{
+		if (!JsonVal->TryGetArray(Arr) || Arr->Num() < 2) { OutError = TEXT("Expected array of 2 numbers for vec2 input"); return false; }
+		Var.SetValue<FVector2f>(FVector2f((*Arr)[0]->AsNumber(), (*Arr)[1]->AsNumber())); return true;
+	}
+	if (Type == FNiagaraTypeDefinition::GetVec3Def() || Type == FNiagaraTypeDefinition::GetPositionDef())
+	{
+		if (!JsonVal->TryGetArray(Arr) || Arr->Num() < 3) { OutError = TEXT("Expected array of 3 numbers for vec3 input"); return false; }
+		Var.SetValue<FVector3f>(FVector3f((*Arr)[0]->AsNumber(), (*Arr)[1]->AsNumber(), (*Arr)[2]->AsNumber())); return true;
+	}
+	if (Type == FNiagaraTypeDefinition::GetVec4Def() || Type == FNiagaraTypeDefinition::GetQuatDef())
+	{
+		if (!JsonVal->TryGetArray(Arr) || Arr->Num() < 4) { OutError = TEXT("Expected array of 4 numbers for vec4/quat input"); return false; }
+		Var.SetValue<FVector4f>(FVector4f((*Arr)[0]->AsNumber(), (*Arr)[1]->AsNumber(), (*Arr)[2]->AsNumber(), (*Arr)[3]->AsNumber())); return true;
+	}
+	if (Type == FNiagaraTypeDefinition::GetColorDef())
+	{
+		const TSharedPtr<FJsonObject>* Obj = nullptr;
+		if (JsonVal->TryGetObject(Obj))
+		{
+			FLinearColor C((*Obj)->GetNumberField(TEXT("r")), (*Obj)->GetNumberField(TEXT("g")), (*Obj)->GetNumberField(TEXT("b")),
+				(*Obj)->HasField(TEXT("a")) ? (*Obj)->GetNumberField(TEXT("a")) : 1.0);
+			Var.SetValue<FLinearColor>(C); return true;
+		}
+		if (JsonVal->TryGetArray(Arr) && Arr->Num() >= 3)
+		{
+			FLinearColor C((*Arr)[0]->AsNumber(), (*Arr)[1]->AsNumber(), (*Arr)[2]->AsNumber(), Arr->Num() >= 4 ? (*Arr)[3]->AsNumber() : 1.0);
+			Var.SetValue<FLinearColor>(C); return true;
+		}
+		OutError = TEXT("Expected {r,g,b,a} object or [r,g,b,a] array for color input"); return false;
+	}
+
+	OutError = FString::Printf(TEXT("Unsupported input type for local value: %s"), *Type.GetName());
+	return false;
+}
+
+// Read a rapid-iteration parameter's current value into JSON (mirrors WriteJsonToRapidVariable types).
+static TSharedPtr<FJsonValue> ReadRapidVariableToJson(FNiagaraParameterStore& Store, const FNiagaraVariable& Var)
+{
+	const FNiagaraTypeDefinition& Type = Var.GetType();
+	if (Type == FNiagaraTypeDefinition::GetFloatDef())
+		return MakeShared<FJsonValueNumber>(Store.GetParameterValue<float>(Var));
+	if (Type == FNiagaraTypeDefinition::GetIntDef())
+		return MakeShared<FJsonValueNumber>(Store.GetParameterValue<int32>(Var));
+	if (Type == FNiagaraTypeDefinition::GetBoolDef())
+		return MakeShared<FJsonValueBoolean>(Store.GetParameterValue<FNiagaraBool>(Var).GetValue());
+	if (Type == FNiagaraTypeDefinition::GetVec2Def())
+	{
+		FVector2f V = Store.GetParameterValue<FVector2f>(Var);
+		TArray<TSharedPtr<FJsonValue>> A; A.Add(MakeShared<FJsonValueNumber>(V.X)); A.Add(MakeShared<FJsonValueNumber>(V.Y));
+		return MakeShared<FJsonValueArray>(A);
+	}
+	if (Type == FNiagaraTypeDefinition::GetVec3Def() || Type == FNiagaraTypeDefinition::GetPositionDef())
+	{
+		FVector3f V = Store.GetParameterValue<FVector3f>(Var);
+		TArray<TSharedPtr<FJsonValue>> A; A.Add(MakeShared<FJsonValueNumber>(V.X)); A.Add(MakeShared<FJsonValueNumber>(V.Y)); A.Add(MakeShared<FJsonValueNumber>(V.Z));
+		return MakeShared<FJsonValueArray>(A);
+	}
+	if (Type == FNiagaraTypeDefinition::GetVec4Def() || Type == FNiagaraTypeDefinition::GetQuatDef())
+	{
+		FVector4f V = Store.GetParameterValue<FVector4f>(Var);
+		TArray<TSharedPtr<FJsonValue>> A; A.Add(MakeShared<FJsonValueNumber>(V.X)); A.Add(MakeShared<FJsonValueNumber>(V.Y)); A.Add(MakeShared<FJsonValueNumber>(V.Z)); A.Add(MakeShared<FJsonValueNumber>(V.W));
+		return MakeShared<FJsonValueArray>(A);
+	}
+	if (Type == FNiagaraTypeDefinition::GetColorDef())
+	{
+		FLinearColor C = Store.GetParameterValue<FLinearColor>(Var);
+		TSharedPtr<FJsonObject> O = MakeShared<FJsonObject>();
+		O->SetNumberField(TEXT("r"), C.R); O->SetNumberField(TEXT("g"), C.G); O->SetNumberField(TEXT("b"), C.B); O->SetNumberField(TEXT("a"), C.A);
+		return MakeShared<FJsonValueObject>(O);
+	}
+	return MakeShared<FJsonValueNull>();
+}
+
+// Collect the set of rapid-iteration parameter names currently present in a script store.
+static TSet<FName> GetRapidParameterNameSet(FNiagaraParameterStore& Store)
+{
+	TSet<FName> Names;
+	TArray<FNiagaraVariable> All;
+	Store.GetParameters(All);
+	for (const FNiagaraVariable& V : All) Names.Add(V.GetName());
+	return Names;
+}
+
+// Local reimplementations of two NiagaraEditor helpers that lack NIAGARAEDITOR_API
+// (so they can't be linked from another module). Logic mirrors
+// FNiagaraStackGraphUtilities in UE 5.7.
+static bool IsRapidIterationInputType(const FNiagaraTypeDefinition& InputType)
+{
+	if (!InputType.IsValid()) return false;
+	if (InputType.IsStatic()) return true;
+	return InputType != FNiagaraTypeDefinition::GetBoolDef() && !InputType.IsEnum()
+		&& InputType != FNiagaraTypeDefinition::GetParameterMapDef() && !InputType.IsUObject();
+}
+
+static FNiagaraVariable MakeRapidIterationParameter(const FString& UniqueEmitterName, ENiagaraScriptUsage Usage,
+	const FName& AliasedInputName, const FNiagaraTypeDefinition& InputType)
+{
+	FNiagaraVariable InputVariable(InputType, AliasedInputName);
+	const bool bSystemScript = (Usage == ENiagaraScriptUsage::SystemSpawnScript || Usage == ENiagaraScriptUsage::SystemUpdateScript);
+	return FNiagaraUtilities::ConvertVariableToRapidIterationConstantName(InputVariable, bSystemScript ? nullptr : *UniqueEmitterName, Usage);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// list_module_inputs
+// ─────────────────────────────────────────────────────────────────────────────
+
+TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleListModuleInputs(const TSharedPtr<FJsonObject>& Params)
+{
+	if (!Params->HasField(TEXT("emitter_name")))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing required parameter: 'emitter_name'"));
+	if (!Params->HasField(TEXT("module_name")))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing required parameter: 'module_name'"));
+
+	FString LoadError;
+	UNiagaraSystem* System = LoadNiagaraSystemByNameOrPath(Params, LoadError);
+	if (!System)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(LoadError);
+
+	const FString EmitterName = Params->GetStringField(TEXT("emitter_name"));
+	const FString ModuleName = Params->GetStringField(TEXT("module_name"));
+	const FString ScriptType = Params->HasField(TEXT("script_type")) ? Params->GetStringField(TEXT("script_type")).ToLower() : TEXT("spawn");
+
+	// Find the emitter handle
+	TArray<FNiagaraEmitterHandle>& EmitterHandles = System->GetEmitterHandles();
+	FNiagaraEmitterHandle* TargetHandle = nullptr;
+	for (FNiagaraEmitterHandle& Handle : EmitterHandles)
+	{
+		if (Handle.GetName().ToString().Equals(EmitterName, ESearchCase::IgnoreCase)) { TargetHandle = &Handle; break; }
+	}
+	if (!TargetHandle)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Emitter '%s' not found in system '%s'"), *EmitterName, *System->GetName()));
+
+	FVersionedNiagaraEmitter VersionedEmitter = TargetHandle->GetInstance();
+	FVersionedNiagaraEmitterData* EmitterData = VersionedEmitter.GetEmitterData();
+	if (!EmitterData)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get emitter data"));
+
+	UNiagaraScript* Script = nullptr;
+	ENiagaraScriptUsage Usage;
+	FString ScriptError;
+	if (!ResolveEmitterScript(EmitterData, ScriptType, Script, Usage, ScriptError))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(ScriptError);
+
+	UNiagaraNodeFunctionCall* ModuleNode = FindModuleNodeByName(Script, ModuleName);
+	if (!ModuleNode)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+			TEXT("Module '%s' not found in %s script of emitter '%s'"), *ModuleName, *ScriptType, *EmitterName));
+
+	FCompileConstantResolver ConstantResolver(VersionedEmitter, Usage);
+	TArray<FNiagaraVariable> InputVars;
+	TSet<FNiagaraVariable> HiddenVars;
+	FNiagaraStackGraphUtilities::GetStackFunctionInputs(
+		*ModuleNode, InputVars, HiddenVars, ConstantResolver,
+		FNiagaraStackGraphUtilities::ENiagaraGetStackFunctionInputPinsOptions::ModuleInputsOnly, false);
+
+	const FString UniqueEmitterName = VersionedEmitter.Emitter ? VersionedEmitter.Emitter->GetUniqueEmitterName() : FString();
+	FNiagaraParameterStore& RapidParams = Script->RapidIterationParameters;
+	const TSet<FName> ExistingRapidNames = GetRapidParameterNameSet(RapidParams);
+
+	TArray<TSharedPtr<FJsonValue>> InputArray;
+	for (const FNiagaraVariable& InputVar : InputVars)
+	{
+		TSharedPtr<FJsonObject> Obj = MakeShared<FJsonObject>();
+		Obj->SetStringField(TEXT("name"), StripModuleNamespace(InputVar.GetName().ToString()));
+		Obj->SetStringField(TEXT("type"), InputVar.GetType().GetName());
+		Obj->SetBoolField(TEXT("is_static"), InputVar.GetType().IsStatic());
+		Obj->SetBoolField(TEXT("is_hidden"), HiddenVars.Contains(InputVar));
+
+		const bool bRapidType = IsRapidIterationInputType(InputVar.GetType());
+		Obj->SetBoolField(TEXT("can_enable_local"), bRapidType);
+
+		FNiagaraParameterHandle InputHandle(InputVar.GetName());
+		FNiagaraParameterHandle Aliased = FNiagaraParameterHandle::CreateAliasedModuleParameterHandle(InputHandle, ModuleNode);
+
+		FString CurrentMode = TEXT("Default");
+		if (bRapidType)
+		{
+			FNiagaraVariable RapidVar = MakeRapidIterationParameter(
+				UniqueEmitterName, Usage, Aliased.GetParameterHandleString(), InputVar.GetType());
+			Obj->SetStringField(TEXT("rapid_parameter_name"), RapidVar.GetName().ToString());
+			if (ExistingRapidNames.Contains(RapidVar.GetName()))
+			{
+				CurrentMode = TEXT("Local");
+				Obj->SetField(TEXT("value"), ReadRapidVariableToJson(RapidParams, RapidVar));
+			}
+		}
+		Obj->SetStringField(TEXT("current_mode"), CurrentMode);
+
+		InputArray.Add(MakeShared<FJsonValueObject>(Obj));
+	}
+
+	TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
+	ResultJson->SetStringField(TEXT("status"), TEXT("success"));
+	ResultJson->SetStringField(TEXT("system"), System->GetName());
+	ResultJson->SetStringField(TEXT("emitter"), EmitterName);
+	ResultJson->SetStringField(TEXT("script_type"), ScriptType);
+	ResultJson->SetStringField(TEXT("module"), ModuleName);
+	ResultJson->SetNumberField(TEXT("input_count"), InputArray.Num());
+	ResultJson->SetArrayField(TEXT("inputs"), InputArray);
+	return ResultJson;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// enable_module_input
+// ─────────────────────────────────────────────────────────────────────────────
+
+TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleEnableModuleInput(const TSharedPtr<FJsonObject>& Params)
+{
+	if (!Params->HasField(TEXT("emitter_name")))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing required parameter: 'emitter_name'"));
+	if (!Params->HasField(TEXT("module_name")))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing required parameter: 'module_name'"));
+	if (!Params->HasField(TEXT("input_name")))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing required parameter: 'input_name'"));
+
+	FString LoadError;
+	UNiagaraSystem* System = LoadNiagaraSystemByNameOrPath(Params, LoadError);
+	if (!System)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(LoadError);
+
+	const FString EmitterName = Params->GetStringField(TEXT("emitter_name"));
+	const FString ModuleName = Params->GetStringField(TEXT("module_name"));
+	const FString InputName = Params->GetStringField(TEXT("input_name"));
+	const FString ScriptType = Params->HasField(TEXT("script_type")) ? Params->GetStringField(TEXT("script_type")).ToLower() : TEXT("spawn");
+
+	// Find the emitter handle
+	TArray<FNiagaraEmitterHandle>& EmitterHandles = System->GetEmitterHandles();
+	FNiagaraEmitterHandle* TargetHandle = nullptr;
+	for (FNiagaraEmitterHandle& Handle : EmitterHandles)
+	{
+		if (Handle.GetName().ToString().Equals(EmitterName, ESearchCase::IgnoreCase)) { TargetHandle = &Handle; break; }
+	}
+	if (!TargetHandle)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Emitter '%s' not found in system '%s'"), *EmitterName, *System->GetName()));
+
+	FVersionedNiagaraEmitter VersionedEmitter = TargetHandle->GetInstance();
+	FVersionedNiagaraEmitterData* EmitterData = VersionedEmitter.GetEmitterData();
+	if (!EmitterData)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get emitter data"));
+
+	UNiagaraScript* Script = nullptr;
+	ENiagaraScriptUsage Usage;
+	FString ScriptError;
+	if (!ResolveEmitterScript(EmitterData, ScriptType, Script, Usage, ScriptError))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(ScriptError);
+
+	UNiagaraNodeFunctionCall* ModuleNode = FindModuleNodeByName(Script, ModuleName);
+	if (!ModuleNode)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+			TEXT("Module '%s' not found in %s script of emitter '%s'"), *ModuleName, *ScriptType, *EmitterName));
+
+	FCompileConstantResolver ConstantResolver(VersionedEmitter, Usage);
+	TArray<FNiagaraVariable> InputVars;
+	TSet<FNiagaraVariable> HiddenVars;
+	FNiagaraStackGraphUtilities::GetStackFunctionInputs(
+		*ModuleNode, InputVars, HiddenVars, ConstantResolver,
+		FNiagaraStackGraphUtilities::ENiagaraGetStackFunctionInputPinsOptions::ModuleInputsOnly, false);
+
+	// Match the requested input by short name (case-insensitive).
+	const FNiagaraVariable* MatchVar = nullptr;
+	TArray<FString> Candidates;
+	for (const FNiagaraVariable& InputVar : InputVars)
+	{
+		const FString ShortName = StripModuleNamespace(InputVar.GetName().ToString());
+		Candidates.Add(ShortName);
+		if (ShortName.Equals(InputName, ESearchCase::IgnoreCase)) { MatchVar = &InputVar; break; }
+	}
+	if (!MatchVar)
+	{
+		// Second pass: contains match
+		for (const FNiagaraVariable& InputVar : InputVars)
+		{
+			const FString ShortName = StripModuleNamespace(InputVar.GetName().ToString());
+			if (ShortName.Contains(InputName)) { MatchVar = &InputVar; break; }
+		}
+	}
+	if (!MatchVar)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+			TEXT("Input '%s' not found on module '%s'. Available inputs: %s"),
+			*InputName, *ModuleName, *FString::Join(Candidates, TEXT(", "))));
+
+	const FNiagaraVariable InputVar = *MatchVar;
+	const FNiagaraTypeDefinition InputType = InputVar.GetType();
+
+	if (!IsRapidIterationInputType(InputType))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+			TEXT("Input '%s' has type '%s' which cannot be enabled as a Local Value (only constant/rapid-iteration types are supported; data interfaces and object assets use dedicated tools)."),
+			*InputName, *InputType.GetName()));
+
+	// Build the rapid iteration parameter for this module input.
+	const FString UniqueEmitterName = VersionedEmitter.Emitter ? VersionedEmitter.Emitter->GetUniqueEmitterName() : FString();
+	FNiagaraParameterHandle InputHandle(InputVar.GetName());
+	FNiagaraParameterHandle Aliased = FNiagaraParameterHandle::CreateAliasedModuleParameterHandle(InputHandle, ModuleNode);
+	FNiagaraVariable RapidVar = MakeRapidIterationParameter(
+		UniqueEmitterName, Usage, Aliased.GetParameterHandleString(), InputType);
+
+	FNiagaraParameterStore& RapidParams = Script->RapidIterationParameters;
+	const bool bAlreadyEnabled = GetRapidParameterNameSet(RapidParams).Contains(RapidVar.GetName());
+	const bool bHasInitialValue = Params->HasField(TEXT("initial_value"));
+
+	// If it's already enabled and the caller didn't ask to change the value, report a no-op success.
+	if (bAlreadyEnabled && !bHasInitialValue)
+	{
+		TSharedPtr<FJsonObject> NoopJson = MakeShared<FJsonObject>();
+		NoopJson->SetStringField(TEXT("status"), TEXT("success"));
+		NoopJson->SetBoolField(TEXT("noop"), true);
+		NoopJson->SetBoolField(TEXT("already_enabled"), true);
+		NoopJson->SetStringField(TEXT("system"), System->GetName());
+		NoopJson->SetStringField(TEXT("emitter"), EmitterName);
+		NoopJson->SetStringField(TEXT("script_type"), ScriptType);
+		NoopJson->SetStringField(TEXT("module"), ModuleName);
+		NoopJson->SetStringField(TEXT("input"), InputName);
+		NoopJson->SetStringField(TEXT("parameter_name"), RapidVar.GetName().ToString());
+		NoopJson->SetStringField(TEXT("type"), InputType.GetName());
+		NoopJson->SetField(TEXT("value"), ReadRapidVariableToJson(RapidParams, RapidVar));
+		return NoopJson;
+	}
+
+	// Determine the value bytes to write.
+	FNiagaraVariable ValueVar(InputType, NAME_None);
+	if (bHasInitialValue)
+	{
+		FString WriteError;
+		if (!WriteJsonToRapidVariable(ValueVar, Params->Values.FindRef(TEXT("initial_value")), WriteError))
+			return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+				TEXT("Failed to set initial_value for input '%s': %s"), *InputName, *WriteError));
+	}
+	else
+	{
+		// No explicit value: seed the rapid iteration parameter with zero-initialized data.
+		// (The module's own default still applies until a value is set; callers who want a
+		// specific starting value should pass initial_value.)
+		ValueVar.AllocateData();
+		FMemory::Memzero(ValueVar.GetData(), ValueVar.GetSizeInBytes());
+	}
+
+	// Write the rapid iteration parameter (creates it if missing), mirroring the Niagara stack behavior.
+	Script->Modify();
+	RapidParams.SetParameterData(ValueVar.GetData(), RapidVar, /*bAddParameterIfMissing*/ true);
+
+	// Recompile and save.
+	System->RequestCompile(true);
+	System->WaitForCompilationComplete();
+	System->MarkPackageDirty();
+	SaveNiagaraSystemAsset(System);
+	System->PostEditChange();
+
+	TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
+	ResultJson->SetStringField(TEXT("status"), TEXT("success"));
+	ResultJson->SetBoolField(TEXT("already_enabled"), bAlreadyEnabled);
+	ResultJson->SetStringField(TEXT("system"), System->GetName());
+	ResultJson->SetStringField(TEXT("emitter"), EmitterName);
+	ResultJson->SetStringField(TEXT("script_type"), ScriptType);
+	ResultJson->SetStringField(TEXT("module"), ModuleName);
+	ResultJson->SetStringField(TEXT("input"), InputName);
+	ResultJson->SetStringField(TEXT("parameter_name"), RapidVar.GetName().ToString());
+	ResultJson->SetStringField(TEXT("type"), InputType.GetName());
+	ResultJson->SetField(TEXT("value"), ReadRapidVariableToJson(RapidParams, RapidVar));
 	return ResultJson;
 }
 

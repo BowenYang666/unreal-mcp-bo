@@ -53,4 +53,10 @@ private:
 
 	/** Set a property (Material, SubImageSize, etc.) on an emitter's renderer. */
 	TSharedPtr<FJsonObject> HandleSetNiagaraRendererProperty(const TSharedPtr<FJsonObject>& Params);
+
+	/** List all input pins of a module in an emitter script, with their type and current value mode. */
+	TSharedPtr<FJsonObject> HandleListModuleInputs(const TSharedPtr<FJsonObject>& Params);
+
+	/** Enable a module input pin as a Local Value (creates a rapid-iteration parameter) so it can be read/written. */
+	TSharedPtr<FJsonObject> HandleEnableModuleInput(const TSharedPtr<FJsonObject>& Params);
 };
