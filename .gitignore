@@ -1,6 +1,9 @@
 # Unreal MCP
 Python/unreal_mcp.log
 
+# uv 本地镜像配置（环境相关，不提交）
+Python/uv.toml
+
 # AI-related files
 .cursorrules
 .cursorignore
