@@ -22,6 +22,10 @@
 #include "NiagaraRendererProperties.h"
 #include "ViewModels/Stack/NiagaraParameterHandle.h"
 #include "NiagaraParameterMapHistory.h"
+#include "NiagaraNode.h"
+#include "NiagaraDataInterface.h"
+#include "NiagaraNodeInput.h"
+#include "Curves/RichCurve.h"
 
 // Editor includes
 #include "AssetRegistry/AssetRegistryModule.h"
@@ -201,6 +205,30 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleCommand(const FString& 
 	else if (CommandType == TEXT("enable_module_input"))
 	{
 		return HandleEnableModuleInput(Params);
+	}
+	else if (CommandType == TEXT("list_module_static_switches"))
+	{
+		return HandleListModuleStaticSwitches(Params);
+	}
+	else if (CommandType == TEXT("set_module_static_switch"))
+	{
+		return HandleSetModuleStaticSwitch(Params);
+	}
+	else if (CommandType == TEXT("bind_module_input_datainterface"))
+	{
+		return HandleBindModuleInputDataInterface(Params);
+	}
+	else if (CommandType == TEXT("read_curve"))
+	{
+		return HandleReadCurve(Params);
+	}
+	else if (CommandType == TEXT("set_curve_keys"))
+	{
+		return HandleSetCurveKeys(Params);
+	}
+	else if (CommandType == TEXT("set_module_dynamic_input"))
+	{
+		return HandleSetModuleDynamicInput(Params);
 	}
 
 	return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown Niagara command: %s"), *CommandType));
@@ -2487,6 +2515,21 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleListModuleInputs(const 
 		const bool bRapidType = IsRapidIterationInputType(InputVar.GetType());
 		Obj->SetBoolField(TEXT("can_enable_local"), bRapidType);
 
+		// DataInterface-typed inputs (Sprite/Mesh Renderer info, Curve, StaticMesh, etc.)
+		// can't be a Local Value but can be bound via bind_module_input_datainterface.
+		const bool bIsDataInterface = InputVar.GetType().IsDataInterface();
+		Obj->SetBoolField(TEXT("can_bind_datainterface"), bIsDataInterface);
+		if (bIsDataInterface)
+		{
+			const FString DIClass = InputVar.GetType().GetClass() ? InputVar.GetType().GetClass()->GetName() : FString();
+			TArray<TSharedPtr<FJsonValue>> Kinds;
+			if (DIClass.Contains(TEXT("RendererInfo")))
+				Kinds.Add(MakeShared<FJsonValueString>(TEXT("Renderer")));
+			else
+				Kinds.Add(MakeShared<FJsonValueString>(TEXT("Asset")));
+			Obj->SetArrayField(TEXT("compatible_binding_kinds"), Kinds);
+		}
+
 		FNiagaraParameterHandle InputHandle(InputVar.GetName());
 		FNiagaraParameterHandle Aliased = FNiagaraParameterHandle::CreateAliasedModuleParameterHandle(InputHandle, ModuleNode);
 
@@ -2674,6 +2717,1060 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleEnableModuleInput(const
 	ResultJson->SetStringField(TEXT("parameter_name"), RapidVar.GetName().ToString());
 	ResultJson->SetStringField(TEXT("type"), InputType.GetName());
 	ResultJson->SetField(TEXT("value"), ReadRapidVariableToJson(RapidParams, RapidVar));
+	return ResultJson;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Static switch helpers (used by list_module_static_switches / set_module_static_switch)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Resolve system + emitter + script + module node from common params. Returns false + error.
+static bool ResolveModuleContext(const TSharedPtr<FJsonObject>& Params,
+	UNiagaraSystem*& OutSystem, FVersionedNiagaraEmitter& OutVersionedEmitter,
+	UNiagaraScript*& OutScript, ENiagaraScriptUsage& OutUsage, UNiagaraNodeFunctionCall*& OutModuleNode,
+	FString& OutEmitterName, FString& OutModuleName, FString& OutScriptType, FString& OutError)
+{
+	if (!Params->HasField(TEXT("emitter_name"))) { OutError = TEXT("Missing required parameter: 'emitter_name'"); return false; }
+	if (!Params->HasField(TEXT("module_name"))) { OutError = TEXT("Missing required parameter: 'module_name'"); return false; }
+
+	OutSystem = LoadNiagaraSystemByNameOrPath(Params, OutError);
+	if (!OutSystem) return false;
+
+	OutEmitterName = Params->GetStringField(TEXT("emitter_name"));
+	OutModuleName = Params->GetStringField(TEXT("module_name"));
+	OutScriptType = Params->HasField(TEXT("script_type")) ? Params->GetStringField(TEXT("script_type")).ToLower() : TEXT("spawn");
+
+	TArray<FNiagaraEmitterHandle>& EmitterHandles = OutSystem->GetEmitterHandles();
+	FNiagaraEmitterHandle* TargetHandle = nullptr;
+	for (FNiagaraEmitterHandle& Handle : EmitterHandles)
+	{
+		if (Handle.GetName().ToString().Equals(OutEmitterName, ESearchCase::IgnoreCase)) { TargetHandle = &Handle; break; }
+	}
+	if (!TargetHandle) { OutError = FString::Printf(TEXT("Emitter '%s' not found in system '%s'"), *OutEmitterName, *OutSystem->GetName()); return false; }
+
+	OutVersionedEmitter = TargetHandle->GetInstance();
+	FVersionedNiagaraEmitterData* EmitterData = OutVersionedEmitter.GetEmitterData();
+	if (!EmitterData) { OutError = TEXT("Failed to get emitter data"); return false; }
+
+	if (!ResolveEmitterScript(EmitterData, OutScriptType, OutScript, OutUsage, OutError)) return false;
+
+	OutModuleNode = FindModuleNodeByName(OutScript, OutModuleName);
+	if (!OutModuleNode) { OutError = FString::Printf(TEXT("Module '%s' not found in %s script of emitter '%s'"), *OutModuleName, *OutScriptType, *OutEmitterName); return false; }
+	return true;
+}
+
+// Read a static switch pin's current value as a display string, and (optionally) fill allowed values.
+static FString ReadStaticSwitchValue(const UEdGraphPin* Pin, TArray<TSharedPtr<FJsonValue>>* OutAllowed, FString& OutTypeName)
+{
+	FNiagaraVariable Var = UEdGraphSchema_Niagara::PinToNiagaraVariable(Pin, true);
+	const FNiagaraTypeDefinition Type = Var.GetType();
+	OutTypeName = Type.GetName();
+
+	if (Type.IsEnum())
+	{
+		UEnum* Enum = Type.GetEnum();
+		const int32 Cur = Var.IsDataAllocated() ? *reinterpret_cast<const int32*>(Var.GetData()) : 0;
+		if (OutAllowed && Enum)
+		{
+			for (int32 i = 0; i < Enum->NumEnums() - 1; ++i) // skip auto-generated _MAX
+			{
+				// Prefer the UI display name (e.g. "Random Range"); fall back to the raw
+				// enumerator identifier (e.g. "NewEnumerator2") only if no display name exists.
+				FString Display = Enum->GetDisplayNameTextByIndex(i).ToString();
+				if (Display.IsEmpty()) Display = Enum->GetNameStringByIndex(i);
+				OutAllowed->Add(MakeShared<FJsonValueString>(Display));
+			}
+		}
+		if (!Enum) return FString::FromInt(Cur);
+		FString CurDisplay = Enum->GetDisplayNameTextByValue(Cur).ToString();
+		if (CurDisplay.IsEmpty()) CurDisplay = Enum->GetNameStringByValue(Cur);
+		return CurDisplay;
+	}
+	if (Type == FNiagaraTypeDefinition::GetBoolDef())
+	{
+		if (OutAllowed)
+		{
+			OutAllowed->Add(MakeShared<FJsonValueString>(TEXT("false")));
+			OutAllowed->Add(MakeShared<FJsonValueString>(TEXT("true")));
+		}
+		const bool b = Var.IsDataAllocated() ? Var.GetValue<FNiagaraBool>().GetValue() : false;
+		return b ? TEXT("true") : TEXT("false");
+	}
+	if (Type == FNiagaraTypeDefinition::GetIntDef())
+	{
+		const int32 Cur = Var.IsDataAllocated() ? *reinterpret_cast<const int32*>(Var.GetData()) : 0;
+		return FString::FromInt(Cur);
+	}
+	return Pin->DefaultValue;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// list_module_static_switches
+// ─────────────────────────────────────────────────────────────────────────────
+
+TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleListModuleStaticSwitches(const TSharedPtr<FJsonObject>& Params)
+{
+	UNiagaraSystem* System = nullptr;
+	FVersionedNiagaraEmitter VersionedEmitter;
+	UNiagaraScript* Script = nullptr;
+	ENiagaraScriptUsage Usage;
+	UNiagaraNodeFunctionCall* ModuleNode = nullptr;
+	FString EmitterName, ModuleName, ScriptType, Error;
+	if (!ResolveModuleContext(Params, System, VersionedEmitter, Script, Usage, ModuleNode, EmitterName, ModuleName, ScriptType, Error))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(Error);
+
+	FCompileConstantResolver ConstantResolver(VersionedEmitter, Usage);
+	TArray<UEdGraphPin*> SwitchPins;
+	TSet<UEdGraphPin*> HiddenPins;
+	FNiagaraStackGraphUtilities::GetStackFunctionStaticSwitchPins(*ModuleNode, SwitchPins, HiddenPins, ConstantResolver);
+
+	TArray<TSharedPtr<FJsonValue>> SwitchArray;
+	for (const UEdGraphPin* Pin : SwitchPins)
+	{
+		if (!Pin) continue;
+		TSharedPtr<FJsonObject> Obj = MakeShared<FJsonObject>();
+		Obj->SetStringField(TEXT("name"), Pin->PinName.ToString());
+		TArray<TSharedPtr<FJsonValue>> Allowed;
+		FString TypeName;
+		const FString CurrentValue = ReadStaticSwitchValue(Pin, &Allowed, TypeName);
+		Obj->SetStringField(TEXT("type"), TypeName);
+		Obj->SetStringField(TEXT("current_value"), CurrentValue);
+		Obj->SetBoolField(TEXT("is_hidden"), HiddenPins.Contains(const_cast<UEdGraphPin*>(Pin)));
+		Obj->SetArrayField(TEXT("allowed_values"), Allowed);
+		SwitchArray.Add(MakeShared<FJsonValueObject>(Obj));
+	}
+
+	TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
+	ResultJson->SetStringField(TEXT("status"), TEXT("success"));
+	ResultJson->SetStringField(TEXT("system"), System->GetName());
+	ResultJson->SetStringField(TEXT("emitter"), EmitterName);
+	ResultJson->SetStringField(TEXT("script_type"), ScriptType);
+	ResultJson->SetStringField(TEXT("module"), ModuleName);
+	ResultJson->SetNumberField(TEXT("switch_count"), SwitchArray.Num());
+	ResultJson->SetArrayField(TEXT("switches"), SwitchArray);
+	return ResultJson;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// set_module_static_switch
+// ─────────────────────────────────────────────────────────────────────────────
+
+TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleSetModuleStaticSwitch(const TSharedPtr<FJsonObject>& Params)
+{
+	if (!Params->HasField(TEXT("switch_name")))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing required parameter: 'switch_name'"));
+	if (!Params->HasField(TEXT("value")))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing required parameter: 'value'"));
+
+	UNiagaraSystem* System = nullptr;
+	FVersionedNiagaraEmitter VersionedEmitter;
+	UNiagaraScript* Script = nullptr;
+	ENiagaraScriptUsage Usage;
+	UNiagaraNodeFunctionCall* ModuleNode = nullptr;
+	FString EmitterName, ModuleName, ScriptType, Error;
+	if (!ResolveModuleContext(Params, System, VersionedEmitter, Script, Usage, ModuleNode, EmitterName, ModuleName, ScriptType, Error))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(Error);
+
+	const FString SwitchName = Params->GetStringField(TEXT("switch_name"));
+	const FString DesiredValue = Params->GetStringField(TEXT("value"));
+
+	FCompileConstantResolver ConstantResolver(VersionedEmitter, Usage);
+	TArray<UEdGraphPin*> SwitchPins;
+	TSet<UEdGraphPin*> HiddenPins;
+	FNiagaraStackGraphUtilities::GetStackFunctionStaticSwitchPins(*ModuleNode, SwitchPins, HiddenPins, ConstantResolver);
+
+	// Find the target switch pin (exact match first, then contains).
+	UEdGraphPin* TargetPin = nullptr;
+	TArray<FString> Candidates;
+	for (UEdGraphPin* Pin : SwitchPins)
+	{
+		if (!Pin) continue;
+		const FString PinName = Pin->PinName.ToString();
+		Candidates.Add(PinName);
+		if (PinName.Equals(SwitchName, ESearchCase::IgnoreCase)) { TargetPin = Pin; break; }
+	}
+	if (!TargetPin)
+	{
+		for (UEdGraphPin* Pin : SwitchPins)
+		{
+			if (Pin && Pin->PinName.ToString().Contains(SwitchName)) { TargetPin = Pin; break; }
+		}
+	}
+	if (!TargetPin)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+			TEXT("Static switch '%s' not found on module '%s'. Available switches: %s"),
+			*SwitchName, *ModuleName, *FString::Join(Candidates, TEXT(", "))));
+
+	// Determine the target value bytes from the desired display string.
+	FNiagaraVariable Var = UEdGraphSchema_Niagara::PinToNiagaraVariable(TargetPin, true);
+	const FNiagaraTypeDefinition Type = Var.GetType();
+
+	TArray<TSharedPtr<FJsonValue>> DummyAllowed;
+	FString DummyType;
+	const FString PreviousValue = ReadStaticSwitchValue(TargetPin, &DummyAllowed, DummyType);
+
+	FNiagaraVariable NewVar(Type, TargetPin->PinName);
+	NewVar.AllocateData();
+	FString NewDisplay;
+
+	if (Type.IsEnum())
+	{
+		UEnum* Enum = Type.GetEnum();
+		int32 Target = INDEX_NONE;
+		if (Enum)
+		{
+			// Accept the UI display name ("Random Range"), the raw enumerator identifier
+			// ("NewEnumerator2"), or a numeric value — matched case-insensitively.
+			for (int32 i = 0; i < Enum->NumEnums() - 1; ++i)
+			{
+				const FString Display = Enum->GetDisplayNameTextByIndex(i).ToString();
+				const FString Raw = Enum->GetNameStringByIndex(i);
+				if (Display.Equals(DesiredValue, ESearchCase::IgnoreCase) || Raw.Equals(DesiredValue, ESearchCase::IgnoreCase))
+				{
+					Target = static_cast<int32>(Enum->GetValueByIndex(i));
+					break;
+				}
+			}
+		}
+		if (Target == INDEX_NONE)
+		{
+			if (DesiredValue.IsNumeric())
+			{
+				Target = FCString::Atoi(*DesiredValue);
+			}
+			else
+			{
+				TArray<FString> Allowed;
+				if (Enum)
+				{
+					for (int32 i = 0; i < Enum->NumEnums() - 1; ++i)
+					{
+						FString Display = Enum->GetDisplayNameTextByIndex(i).ToString();
+						if (Display.IsEmpty()) Display = Enum->GetNameStringByIndex(i);
+						Allowed.Add(Display);
+					}
+				}
+				return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+					TEXT("Invalid value '%s' for switch '%s'. Allowed: %s"),
+					*DesiredValue, *SwitchName, *FString::Join(Allowed, TEXT(", "))));
+			}
+		}
+		NewVar.SetValue<int32>(Target);
+		if (Enum)
+		{
+			NewDisplay = Enum->GetDisplayNameTextByValue(Target).ToString();
+			if (NewDisplay.IsEmpty()) NewDisplay = Enum->GetNameStringByValue(Target);
+		}
+		else
+		{
+			NewDisplay = FString::FromInt(Target);
+		}
+	}
+	else if (Type == FNiagaraTypeDefinition::GetBoolDef())
+	{
+		const bool b = DesiredValue.Equals(TEXT("true"), ESearchCase::IgnoreCase) || DesiredValue == TEXT("1");
+		FNiagaraBool NB; NB.SetValue(b);
+		NewVar.SetValue<FNiagaraBool>(NB);
+		NewDisplay = b ? TEXT("true") : TEXT("false");
+	}
+	else if (Type == FNiagaraTypeDefinition::GetIntDef())
+	{
+		if (!DesiredValue.IsNumeric())
+			return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Integer switch '%s' requires a numeric value"), *SwitchName));
+		const int32 v = FCString::Atoi(*DesiredValue);
+		NewVar.SetValue<int32>(v);
+		NewDisplay = FString::FromInt(v);
+	}
+	else
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+			TEXT("Unsupported static switch type '%s' for switch '%s'"), *Type.GetName(), *SwitchName));
+	}
+
+	const UEdGraphSchema_Niagara* Schema = GetDefault<UEdGraphSchema_Niagara>();
+	FString PinDefault;
+	if (!Schema->TryGetPinDefaultValueFromNiagaraVariable(NewVar, PinDefault))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to convert value to a pin default string"));
+
+	// Commit the change on the function call node's static switch pin, then recompile.
+	TargetPin->Modify();
+	TargetPin->DefaultValue = PinDefault;
+	if (UNiagaraNode* OwningNode = Cast<UNiagaraNode>(TargetPin->GetOwningNode()))
+	{
+		OwningNode->MarkNodeRequiresSynchronization(TEXT("Static switch value changed via MCP"), true);
+	}
+
+	System->RequestCompile(true);
+	System->WaitForCompilationComplete();
+	System->MarkPackageDirty();
+	SaveNiagaraSystemAsset(System);
+	System->PostEditChange();
+
+	// Re-read visible value pins after the switch change (they become usable now).
+	TArray<TSharedPtr<FJsonValue>> VisiblePins;
+	{
+		TArray<FNiagaraVariable> InputVars;
+		TSet<FNiagaraVariable> HiddenVars;
+		FNiagaraStackGraphUtilities::GetStackFunctionInputs(
+			*ModuleNode, InputVars, HiddenVars, ConstantResolver,
+			FNiagaraStackGraphUtilities::ENiagaraGetStackFunctionInputPinsOptions::ModuleInputsOnly, false);
+		for (const FNiagaraVariable& InputVar : InputVars)
+		{
+			if (!HiddenVars.Contains(InputVar))
+				VisiblePins.Add(MakeShared<FJsonValueString>(StripModuleNamespace(InputVar.GetName().ToString())));
+		}
+	}
+
+	TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
+	ResultJson->SetStringField(TEXT("status"), TEXT("success"));
+	ResultJson->SetStringField(TEXT("system"), System->GetName());
+	ResultJson->SetStringField(TEXT("emitter"), EmitterName);
+	ResultJson->SetStringField(TEXT("script_type"), ScriptType);
+	ResultJson->SetStringField(TEXT("module"), ModuleName);
+	ResultJson->SetStringField(TEXT("switch_name"), TargetPin->PinName.ToString());
+	ResultJson->SetStringField(TEXT("previous_value"), PreviousValue);
+	ResultJson->SetStringField(TEXT("new_value"), NewDisplay);
+	ResultJson->SetArrayField(TEXT("resulting_visible_pins"), VisiblePins);
+	return ResultJson;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// bind_module_input_datainterface
+//
+// Binds a DataInterface-typed module input (e.g. SubUVAnimation."Sprite Renderer",
+// type NiagaraDataInterfaceSpriteRendererInfo) to either an emitter renderer or a
+// referenced asset. This is the layer enable_module_input can't handle — DI inputs
+// are object/interface bindings, not rapid-iteration constants.
+// ─────────────────────────────────────────────────────────────────────────────
+
+TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleBindModuleInputDataInterface(const TSharedPtr<FJsonObject>& Params)
+{
+	if (!Params->HasField(TEXT("input_name")))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing required parameter: 'input_name'"));
+
+	UNiagaraSystem* System = nullptr;
+	FVersionedNiagaraEmitter VersionedEmitter;
+	UNiagaraScript* Script = nullptr;
+	ENiagaraScriptUsage Usage;
+	UNiagaraNodeFunctionCall* ModuleNode = nullptr;
+	FString EmitterName, ModuleName, ScriptType, Error;
+	if (!ResolveModuleContext(Params, System, VersionedEmitter, Script, Usage, ModuleNode, EmitterName, ModuleName, ScriptType, Error))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(Error);
+
+	const FString InputName = Params->GetStringField(TEXT("input_name"));
+	const FString BindingKind = Params->HasField(TEXT("binding_kind")) ? Params->GetStringField(TEXT("binding_kind")) : TEXT("Renderer");
+
+	FVersionedNiagaraEmitterData* EmitterData = VersionedEmitter.GetEmitterData();
+	if (!EmitterData)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get emitter data"));
+
+	// Find the matching DataInterface input on the module.
+	FCompileConstantResolver ConstantResolver(VersionedEmitter, Usage);
+	TArray<FNiagaraVariable> InputVars;
+	TSet<FNiagaraVariable> HiddenVars;
+	FNiagaraStackGraphUtilities::GetStackFunctionInputs(
+		*ModuleNode, InputVars, HiddenVars, ConstantResolver,
+		FNiagaraStackGraphUtilities::ENiagaraGetStackFunctionInputPinsOptions::ModuleInputsOnly, false);
+
+	const FNiagaraVariable* MatchVar = nullptr;
+	TArray<FString> DICandidates;
+	for (const FNiagaraVariable& InputVar : InputVars)
+	{
+		if (!InputVar.GetType().IsDataInterface()) continue;
+		const FString ShortName = StripModuleNamespace(InputVar.GetName().ToString());
+		DICandidates.Add(ShortName);
+		// Trim trailing spaces (some module inputs like "Sprite Renderer " have them).
+		if (ShortName.TrimStartAndEnd().Equals(InputName.TrimStartAndEnd(), ESearchCase::IgnoreCase)) { MatchVar = &InputVar; break; }
+	}
+	if (!MatchVar)
+	{
+		for (const FNiagaraVariable& InputVar : InputVars)
+		{
+			if (!InputVar.GetType().IsDataInterface()) continue;
+			if (StripModuleNamespace(InputVar.GetName().ToString()).Contains(InputName)) { MatchVar = &InputVar; break; }
+		}
+	}
+	if (!MatchVar)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+			TEXT("DataInterface input '%s' not found on module '%s'. Available DI inputs: %s"),
+			*InputName, *ModuleName, *FString::Join(DICandidates, TEXT(", "))));
+
+	const FNiagaraVariable InputVar = *MatchVar;
+	UClass* DIClass = InputVar.GetType().GetClass();
+	if (!DIClass || !DIClass->IsChildOf(UNiagaraDataInterface::StaticClass()))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+			TEXT("Input '%s' is not a DataInterface type"), *InputName));
+
+	// Get or create the override pin for this input. If it already has a linked value,
+	// report it as already bound (rebinding requires clearing, which we don't do here).
+	FNiagaraParameterHandle InputHandle(InputVar.GetName());
+	FNiagaraParameterHandle Aliased = FNiagaraParameterHandle::CreateAliasedModuleParameterHandle(InputHandle, ModuleNode);
+	UEdGraphPin& OverridePin = FNiagaraStackGraphUtilities::GetOrCreateStackFunctionInputOverridePin(
+		*ModuleNode, Aliased, InputVar.GetType(), FGuid(), FGuid());
+
+	if (OverridePin.LinkedTo.Num() > 0)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+			TEXT("Input '%s' already has a bound value. Clearing/rebinding an existing DataInterface binding is not supported yet."), *InputName));
+
+	// Create the DataInterface instance on the override pin.
+	UNiagaraDataInterface* NewDI = nullptr;
+	FNiagaraStackGraphUtilities::SetDataInterfaceValueForFunctionInput(
+		OverridePin, DIClass, Aliased.GetParameterHandleString().ToString(), NewDI);
+	if (!NewDI)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create DataInterface instance for the input"));
+
+	FString ResolvedBinding;
+
+	if (BindingKind.Equals(TEXT("Renderer"), ESearchCase::IgnoreCase))
+	{
+		// Find the DI's renderer-properties object slot via reflection.
+		FObjectProperty* RendererSlot = nullptr;
+		for (TFieldIterator<FObjectProperty> It(DIClass); It; ++It)
+		{
+			if (It->PropertyClass && It->PropertyClass->IsChildOf(UNiagaraRendererProperties::StaticClass()))
+			{
+				RendererSlot = *It;
+				break;
+			}
+		}
+		if (!RendererSlot)
+			return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+				TEXT("DataInterface '%s' has no renderer-properties slot; try binding_kind='Asset'."), *DIClass->GetName()));
+
+		// Select the emitter renderer matching the slot's class (and optional type filter).
+		const FString RendererTypeFilter = Params->HasField(TEXT("renderer_type")) ? Params->GetStringField(TEXT("renderer_type")) : FString();
+		const int32 RendererIndex = Params->HasField(TEXT("renderer_index")) ? static_cast<int32>(Params->GetNumberField(TEXT("renderer_index"))) : 0;
+
+		const TArray<UNiagaraRendererProperties*>& Renderers = EmitterData->GetRenderers();
+		TArray<UNiagaraRendererProperties*> Matching;
+		for (UNiagaraRendererProperties* R : Renderers)
+		{
+			if (!R) continue;
+			if (!R->GetClass()->IsChildOf(RendererSlot->PropertyClass)) continue;
+			if (!RendererTypeFilter.IsEmpty() && !R->GetClass()->GetName().Contains(RendererTypeFilter)) continue;
+			Matching.Add(R);
+		}
+		if (!Matching.IsValidIndex(RendererIndex))
+			return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+				TEXT("No matching %s renderer at index %d on emitter '%s' (found %d)."),
+				*RendererSlot->PropertyClass->GetName(), RendererIndex, *EmitterName, Matching.Num()));
+
+		UNiagaraRendererProperties* TargetRenderer = Matching[RendererIndex];
+		NewDI->Modify();
+		RendererSlot->SetObjectPropertyValue(RendererSlot->ContainerPtrToValuePtr<void>(NewDI), TargetRenderer);
+		NewDI->PostEditChange();
+		ResolvedBinding = FString::Printf(TEXT("Renderer[%d] %s"), RendererIndex, *TargetRenderer->GetClass()->GetName());
+	}
+	else if (BindingKind.Equals(TEXT("Asset"), ESearchCase::IgnoreCase))
+	{
+		if (!Params->HasField(TEXT("asset_path")))
+			return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("binding_kind='Asset' requires 'asset_path'"));
+		const FString AssetPath = Params->GetStringField(TEXT("asset_path"));
+		UObject* Asset = UEditorAssetLibrary::LoadAsset(AssetPath);
+		if (!Asset)
+			return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Asset not found: %s"), *AssetPath));
+
+		// Find the DI object slot whose class matches the asset.
+		FObjectProperty* AssetSlot = nullptr;
+		for (TFieldIterator<FObjectProperty> It(DIClass); It; ++It)
+		{
+			if (It->PropertyClass && Asset->GetClass()->IsChildOf(It->PropertyClass))
+			{
+				AssetSlot = *It;
+				break;
+			}
+		}
+		if (!AssetSlot)
+			return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+				TEXT("DataInterface '%s' has no object slot accepting asset of type '%s'."), *DIClass->GetName(), *Asset->GetClass()->GetName()));
+
+		NewDI->Modify();
+		AssetSlot->SetObjectPropertyValue(AssetSlot->ContainerPtrToValuePtr<void>(NewDI), Asset);
+		NewDI->PostEditChange();
+		ResolvedBinding = FString::Printf(TEXT("Asset %s"), *Asset->GetPathName());
+	}
+	else
+	{
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+			TEXT("Unsupported binding_kind '%s'. Supported: 'Renderer', 'Asset'."), *BindingKind));
+	}
+
+	// Recompile and save.
+	System->RequestCompile(true);
+	System->WaitForCompilationComplete();
+	System->MarkPackageDirty();
+	SaveNiagaraSystemAsset(System);
+	System->PostEditChange();
+
+	TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
+	ResultJson->SetStringField(TEXT("status"), TEXT("success"));
+	ResultJson->SetStringField(TEXT("system"), System->GetName());
+	ResultJson->SetStringField(TEXT("emitter"), EmitterName);
+	ResultJson->SetStringField(TEXT("script_type"), ScriptType);
+	ResultJson->SetStringField(TEXT("module"), ModuleName);
+	ResultJson->SetStringField(TEXT("input"), InputName);
+	ResultJson->SetStringField(TEXT("data_interface_class"), DIClass->GetName());
+	ResultJson->SetStringField(TEXT("binding_kind"), BindingKind);
+	ResultJson->SetStringField(TEXT("resolved_binding"), ResolvedBinding);
+	return ResultJson;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Curve helpers (used by read_curve / set_curve_keys)
+//
+// Niagara modules hold curves as Curve DataInterfaces (NiagaraDataInterfaceCurve /
+// ColorCurve / Vector[2/4]Curve) whose FRichCurve members are public UPROPERTYs.
+// We reach the bound DI via the UNiagaraNodeInput linked to the input's override
+// (or module default) pin, then read/write FRichCurve keys by reflection.
+// ─────────────────────────────────────────────────────────────────────────────
+
+static FString RichInterpToString(ERichCurveInterpMode M)
+{
+	switch (M)
+	{
+	case RCIM_Linear:   return TEXT("Linear");
+	case RCIM_Constant: return TEXT("Constant");
+	case RCIM_Cubic:    return TEXT("Cubic");
+	default:            return TEXT("None");
+	}
+}
+
+static ERichCurveInterpMode StringToRichInterp(const FString& S)
+{
+	if (S.Equals(TEXT("Linear"), ESearchCase::IgnoreCase)) return RCIM_Linear;
+	if (S.Equals(TEXT("Constant"), ESearchCase::IgnoreCase)) return RCIM_Constant;
+	if (S.Equals(TEXT("None"), ESearchCase::IgnoreCase)) return RCIM_None;
+	return RCIM_Cubic; // default for authoring
+}
+
+static FString RichExtrapToString(TEnumAsByte<ERichCurveExtrapolation> E)
+{
+	switch (E.GetValue())
+	{
+	case RCCE_Cycle:           return TEXT("Cycle");
+	case RCCE_CycleWithOffset: return TEXT("CycleWithOffset");
+	case RCCE_Oscillate:       return TEXT("Oscillate");
+	case RCCE_Linear:          return TEXT("Linear");
+	case RCCE_Constant:        return TEXT("Constant");
+	default:                   return TEXT("None");
+	}
+}
+
+static ERichCurveExtrapolation StringToRichExtrap(const FString& S)
+{
+	if (S.Equals(TEXT("Cycle"), ESearchCase::IgnoreCase)) return RCCE_Cycle;
+	if (S.Equals(TEXT("CycleWithOffset"), ESearchCase::IgnoreCase)) return RCCE_CycleWithOffset;
+	if (S.Equals(TEXT("Oscillate"), ESearchCase::IgnoreCase)) return RCCE_Oscillate;
+	if (S.Equals(TEXT("Linear"), ESearchCase::IgnoreCase)) return RCCE_Linear;
+	if (S.Equals(TEXT("Constant"), ESearchCase::IgnoreCase)) return RCCE_Constant;
+	return RCCE_None;
+}
+
+// Map an FRichCurve UPROPERTY name to a short channel key.
+static FString CurvePropToChannel(const FString& PropName)
+{
+	if (PropName == TEXT("Curve")) return FString();
+	if (PropName == TEXT("RedCurve")) return TEXT("r");
+	if (PropName == TEXT("GreenCurve")) return TEXT("g");
+	if (PropName == TEXT("BlueCurve")) return TEXT("b");
+	if (PropName == TEXT("AlphaCurve")) return TEXT("a");
+	if (PropName == TEXT("XCurve")) return TEXT("x");
+	if (PropName == TEXT("YCurve")) return TEXT("y");
+	if (PropName == TEXT("ZCurve")) return TEXT("z");
+	if (PropName == TEXT("WCurve")) return TEXT("w");
+	return PropName.ToLower();
+}
+
+// Collect a DataInterface's editable FRichCurve channels (excludes the cooked caches).
+static void CollectCurveChannels(UNiagaraDataInterface* DI, TArray<TPair<FString, FRichCurve*>>& Out)
+{
+	if (!DI) return;
+	for (TFieldIterator<FStructProperty> It(DI->GetClass()); It; ++It)
+	{
+		if (It->Struct != TBaseStructure<FRichCurve>::Get()) continue;
+		const FString PropName = It->GetName();
+		if (PropName.Contains(TEXT("CookedEditorCache"))) continue;
+		FRichCurve* Curve = It->ContainerPtrToValuePtr<FRichCurve>(DI);
+		Out.Add(TPair<FString, FRichCurve*>(CurvePropToChannel(PropName), Curve));
+	}
+}
+
+// Serialize an FRichCurve to a JSON object {keys, pre_infinity, post_infinity}.
+static TSharedPtr<FJsonObject> RichCurveToJson(const FRichCurve& Curve)
+{
+	TSharedPtr<FJsonObject> O = MakeShared<FJsonObject>();
+	TArray<TSharedPtr<FJsonValue>> Keys;
+	for (const FRichCurveKey& K : Curve.GetConstRefOfKeys())
+	{
+		TSharedPtr<FJsonObject> KO = MakeShared<FJsonObject>();
+		KO->SetNumberField(TEXT("time"), K.Time);
+		KO->SetNumberField(TEXT("value"), K.Value);
+		KO->SetNumberField(TEXT("arrive_tangent"), K.ArriveTangent);
+		KO->SetNumberField(TEXT("leave_tangent"), K.LeaveTangent);
+		KO->SetStringField(TEXT("interp_mode"), RichInterpToString(K.InterpMode));
+		Keys.Add(MakeShared<FJsonValueObject>(KO));
+	}
+	O->SetArrayField(TEXT("keys"), Keys);
+	O->SetStringField(TEXT("pre_infinity"), RichExtrapToString(Curve.PreInfinityExtrap));
+	O->SetStringField(TEXT("post_infinity"), RichExtrapToString(Curve.PostInfinityExtrap));
+	return O;
+}
+
+// Replace an FRichCurve's keys from a JSON keys array. Auto-sets tangents for keys
+// that don't supply explicit tangents.
+static void WriteJsonToRichCurve(FRichCurve& Curve, const TArray<TSharedPtr<FJsonValue>>& Keys,
+	const FString& PreInf, const FString& PostInf)
+{
+	Curve.Reset();
+	bool bAnyMissingTangent = false;
+	for (const TSharedPtr<FJsonValue>& KV : Keys)
+	{
+		const TSharedPtr<FJsonObject>* KOPtr = nullptr;
+		if (!KV->TryGetObject(KOPtr)) continue;
+		const TSharedPtr<FJsonObject>& KO = *KOPtr;
+
+		double Time = 0.0, Value = 0.0;
+		KO->TryGetNumberField(TEXT("time"), Time);
+		KO->TryGetNumberField(TEXT("value"), Value);
+
+		FKeyHandle H = Curve.AddKey(static_cast<float>(Time), static_cast<float>(Value));
+		FRichCurveKey& K = Curve.GetKey(H);
+		K.InterpMode = StringToRichInterp(KO->HasField(TEXT("interp_mode")) ? KO->GetStringField(TEXT("interp_mode")) : TEXT("Cubic"));
+
+		double AT = 0.0, LT = 0.0;
+		if (KO->TryGetNumberField(TEXT("arrive_tangent"), AT)) K.ArriveTangent = static_cast<float>(AT); else bAnyMissingTangent = true;
+		if (KO->TryGetNumberField(TEXT("leave_tangent"), LT)) K.LeaveTangent = static_cast<float>(LT); else bAnyMissingTangent = true;
+	}
+	if (!PreInf.IsEmpty()) Curve.PreInfinityExtrap = StringToRichExtrap(PreInf);
+	if (!PostInf.IsEmpty()) Curve.PostInfinityExtrap = StringToRichExtrap(PostInf);
+	if (bAnyMissingTangent) Curve.AutoSetTangents();
+}
+
+// Reflectively read the DataInterface held by a UNiagaraNodeInput (getter is not exported).
+static UNiagaraDataInterface* GetInputNodeDataInterface(UNiagaraNodeInput* InputNode)
+{
+	if (!InputNode) return nullptr;
+	FObjectProperty* Prop = CastField<FObjectProperty>(InputNode->GetClass()->FindPropertyByName(TEXT("DataInterface")));
+	if (!Prop) return nullptr;
+	return Cast<UNiagaraDataInterface>(Prop->GetObjectPropertyValue(Prop->ContainerPtrToValuePtr<void>(InputNode)));
+}
+
+// Find the DataInterface bound to a module input by locating the UNiagaraNodeInput in a graph
+// whose Input name matches. Used for both override (emitter graph, aliased name) and default
+// (module graph, module-namespaced name).
+static UNiagaraDataInterface* FindDataInterfaceInputInGraph(UNiagaraGraph* Graph, const FString& MatchName)
+{
+	if (!Graph) return nullptr;
+	for (UEdGraphNode* Node : Graph->Nodes)
+	{
+		UNiagaraNodeInput* In = Cast<UNiagaraNodeInput>(Node);
+		if (!In) continue;
+		if (In->Input.GetName().ToString().Equals(MatchName, ESearchCase::IgnoreCase))
+			return GetInputNodeDataInterface(In);
+	}
+	return nullptr;
+}
+
+// Resolve the curve DataInterface for a module input, handling two cases:
+//  (a) the input is itself a curve DI (edit it directly), or
+//  (b) the input is a scalar driven by a dynamic-input function (e.g. FloatFromCurve) — dive
+//      into that dynamic node and edit its curve DI.
+// If bCreate, an override curve DI is created when none exists yet (for writing).
+static UNiagaraDataInterface* ResolveCurveDI(
+	UNiagaraScript* EmitterScript, UNiagaraNodeFunctionCall* ModuleNode, FCompileConstantResolver& ConstantResolver,
+	const TArray<FNiagaraVariable>& ModuleInputs, const FString& InputName,
+	bool bCreate, bool& bOutIsDefault, bool& bOutViaDynamic, FString& OutDynamicName, FString& OutError)
+{
+	bOutIsDefault = false;
+	bOutViaDynamic = false;
+
+	// Find the requested input by short name (any type).
+	const FNiagaraVariable* MatchVar = nullptr;
+	TArray<FString> Candidates;
+	for (const FNiagaraVariable& V : ModuleInputs)
+	{
+		const FString S = StripModuleNamespace(V.GetName().ToString());
+		Candidates.Add(S);
+		if (S.TrimStartAndEnd().Equals(InputName.TrimStartAndEnd(), ESearchCase::IgnoreCase)) { MatchVar = &V; break; }
+	}
+	if (!MatchVar)
+		for (const FNiagaraVariable& V : ModuleInputs)
+			if (StripModuleNamespace(V.GetName().ToString()).Contains(InputName)) { MatchVar = &V; break; }
+	if (!MatchVar)
+	{
+		OutError = FString::Printf(TEXT("Input '%s' not found on module. Available: %s"), *InputName, *FString::Join(Candidates, TEXT(", ")));
+		return nullptr;
+	}
+
+	const FNiagaraVariable InputVar = *MatchVar;
+	UNiagaraNodeFunctionCall* HostNode = ModuleNode;
+	FNiagaraVariable CurveInputVar = InputVar;
+
+	auto IsCurveDIType = [](const FNiagaraTypeDefinition& T) -> bool
+	{
+		return T.IsDataInterface() && T.GetClass() && T.GetClass()->GetName().Contains(TEXT("Curve"));
+	};
+
+	if (!InputVar.GetType().IsDataInterface())
+	{
+		// Not a DI: look for a dynamic-input function-call node linked to the input's override pin.
+		FNiagaraParameterHandle H(InputVar.GetName());
+		FNiagaraParameterHandle Aliased = FNiagaraParameterHandle::CreateAliasedModuleParameterHandle(H, ModuleNode);
+		UEdGraphPin& Pin = FNiagaraStackGraphUtilities::GetOrCreateStackFunctionInputOverridePin(
+			*ModuleNode, Aliased, InputVar.GetType(), FGuid(), FGuid());
+		UNiagaraNodeFunctionCall* DynNode = (Pin.LinkedTo.Num() == 1) ? Cast<UNiagaraNodeFunctionCall>(Pin.LinkedTo[0]->GetOwningNode()) : nullptr;
+		if (!DynNode)
+		{
+			OutError = FString::Printf(TEXT("Input '%s' is not a curve and has no curve dynamic input. Use set_module_dynamic_input (e.g. FloatFromCurve) first."), *InputName);
+			return nullptr;
+		}
+		TArray<FNiagaraVariable> DynInputs;
+		TSet<FNiagaraVariable> DynHidden;
+		FNiagaraStackGraphUtilities::GetStackFunctionInputs(*DynNode, DynInputs, DynHidden, ConstantResolver,
+			FNiagaraStackGraphUtilities::ENiagaraGetStackFunctionInputPinsOptions::ModuleInputsOnly, false);
+		const FNiagaraVariable* CurveVar = nullptr;
+		for (const FNiagaraVariable& V : DynInputs)
+			if (IsCurveDIType(V.GetType())) { CurveVar = &V; break; }
+		if (!CurveVar)
+		{
+			OutError = FString::Printf(TEXT("Dynamic input '%s' has no curve input."), *DynNode->GetFunctionName());
+			return nullptr;
+		}
+		HostNode = DynNode;
+		CurveInputVar = *CurveVar;
+		bOutViaDynamic = true;
+		OutDynamicName = DynNode->GetFunctionName();
+	}
+	else if (!IsCurveDIType(InputVar.GetType()))
+	{
+		OutError = FString::Printf(TEXT("Input '%s' is a DataInterface but not a curve type."), *InputName);
+		return nullptr;
+	}
+
+	// Find an existing override curve DI on the host node (emitter graph, aliased name).
+	FNiagaraParameterHandle CH(CurveInputVar.GetName());
+	FNiagaraParameterHandle CAliased = FNiagaraParameterHandle::CreateAliasedModuleParameterHandle(CH, HostNode);
+	if (UNiagaraScriptSource* Source = Cast<UNiagaraScriptSource>(EmitterScript->GetLatestSource()))
+	{
+		if (UNiagaraDataInterface* DI = FindDataInterfaceInputInGraph(Source->NodeGraph, CAliased.GetParameterHandleString().ToString()))
+			return DI;
+	}
+	// Else the host's module-default curve (in the called graph).
+	if (UNiagaraGraph* Called = HostNode->GetCalledGraph())
+	{
+		if (UNiagaraDataInterface* DI = FindDataInterfaceInputInGraph(Called, CurveInputVar.GetName().ToString()))
+		{
+			bOutIsDefault = true;
+			if (!bCreate) return DI;
+		}
+	}
+	if (!bCreate)
+	{
+		OutError = FString::Printf(TEXT("No curve DataInterface bound for input '%s'."), *InputName);
+		return nullptr;
+	}
+
+	// Create an override curve DI so we don't mutate the shared default.
+	UEdGraphPin& CPin = FNiagaraStackGraphUtilities::GetOrCreateStackFunctionInputOverridePin(
+		*HostNode, CAliased, CurveInputVar.GetType(), FGuid(), FGuid());
+	if (CPin.LinkedTo.Num() > 0)
+	{
+		if (UNiagaraNodeInput* In = Cast<UNiagaraNodeInput>(CPin.LinkedTo[0]->GetOwningNode()))
+			return GetInputNodeDataInterface(In);
+		OutError = FString::Printf(TEXT("Curve input for '%s' already has a non-DI override."), *InputName);
+		return nullptr;
+	}
+	UNiagaraDataInterface* NewDI = nullptr;
+	FNiagaraStackGraphUtilities::SetDataInterfaceValueForFunctionInput(
+		CPin, CurveInputVar.GetType().GetClass(), CAliased.GetParameterHandleString().ToString(), NewDI);
+	bOutIsDefault = false;
+	return NewDI;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// read_curve
+// ─────────────────────────────────────────────────────────────────────────────
+
+TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleReadCurve(const TSharedPtr<FJsonObject>& Params)
+{
+	if (!Params->HasField(TEXT("input_name")))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing required parameter: 'input_name'"));
+
+	UNiagaraSystem* System = nullptr;
+	FVersionedNiagaraEmitter VersionedEmitter;
+	UNiagaraScript* Script = nullptr;
+	ENiagaraScriptUsage Usage;
+	UNiagaraNodeFunctionCall* ModuleNode = nullptr;
+	FString EmitterName, ModuleName, ScriptType, Error;
+	if (!ResolveModuleContext(Params, System, VersionedEmitter, Script, Usage, ModuleNode, EmitterName, ModuleName, ScriptType, Error))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(Error);
+
+	const FString InputName = Params->GetStringField(TEXT("input_name"));
+
+	FCompileConstantResolver ConstantResolver(VersionedEmitter, Usage);
+	TArray<FNiagaraVariable> InputVars;
+	TSet<FNiagaraVariable> HiddenVars;
+	FNiagaraStackGraphUtilities::GetStackFunctionInputs(
+		*ModuleNode, InputVars, HiddenVars, ConstantResolver,
+		FNiagaraStackGraphUtilities::ENiagaraGetStackFunctionInputPinsOptions::ModuleInputsOnly, false);
+
+	bool bIsDefault = false;
+	bool bViaDynamic = false;
+	FString DynamicName, ResolveError;
+	UNiagaraDataInterface* DI = ResolveCurveDI(Script, ModuleNode, ConstantResolver, InputVars, InputName,
+		/*bCreate*/ false, bIsDefault, bViaDynamic, DynamicName, ResolveError);
+	if (!DI)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(ResolveError);
+
+	TArray<TPair<FString, FRichCurve*>> Channels;
+	CollectCurveChannels(DI, Channels);
+	if (Channels.Num() == 0)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+			TEXT("DataInterface '%s' has no editable curves."), *DI->GetClass()->GetName()));
+
+	TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
+	ResultJson->SetStringField(TEXT("status"), TEXT("success"));
+	ResultJson->SetStringField(TEXT("system"), System->GetName());
+	ResultJson->SetStringField(TEXT("emitter"), EmitterName);
+	ResultJson->SetStringField(TEXT("script_type"), ScriptType);
+	ResultJson->SetStringField(TEXT("module"), ModuleName);
+	ResultJson->SetStringField(TEXT("input"), InputName);
+	ResultJson->SetStringField(TEXT("data_interface_class"), DI->GetClass()->GetName());
+	ResultJson->SetBoolField(TEXT("is_default"), bIsDefault);
+	ResultJson->SetBoolField(TEXT("via_dynamic_input"), bViaDynamic);
+	if (bViaDynamic) ResultJson->SetStringField(TEXT("dynamic_input"), DynamicName);
+
+	if (Channels.Num() == 1 && Channels[0].Key.IsEmpty())
+	{
+		// Single float curve: inline keys / pre / post at the top level.
+		TSharedPtr<FJsonObject> CurveJson = RichCurveToJson(*Channels[0].Value);
+		ResultJson->SetStringField(TEXT("type"), TEXT("FloatCurve"));
+		ResultJson->SetArrayField(TEXT("keys"), CurveJson->GetArrayField(TEXT("keys")));
+		ResultJson->SetStringField(TEXT("pre_infinity"), CurveJson->GetStringField(TEXT("pre_infinity")));
+		ResultJson->SetStringField(TEXT("post_infinity"), CurveJson->GetStringField(TEXT("post_infinity")));
+	}
+	else
+	{
+		TSharedPtr<FJsonObject> ChannelsJson = MakeShared<FJsonObject>();
+		for (const TPair<FString, FRichCurve*>& Ch : Channels)
+			ChannelsJson->SetObjectField(Ch.Key, RichCurveToJson(*Ch.Value));
+		ResultJson->SetStringField(TEXT("type"), FString::Printf(TEXT("MultiCurve(%d)"), Channels.Num()));
+		ResultJson->SetObjectField(TEXT("channels"), ChannelsJson);
+	}
+	return ResultJson;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// set_curve_keys
+// ─────────────────────────────────────────────────────────────────────────────
+
+TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleSetCurveKeys(const TSharedPtr<FJsonObject>& Params)
+{
+	if (!Params->HasField(TEXT("input_name")))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing required parameter: 'input_name'"));
+	if (!Params->HasField(TEXT("keys")) && !Params->HasField(TEXT("channels")))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Provide either 'keys' (single-channel) or 'channels' (multi-channel)"));
+
+	UNiagaraSystem* System = nullptr;
+	FVersionedNiagaraEmitter VersionedEmitter;
+	UNiagaraScript* Script = nullptr;
+	ENiagaraScriptUsage Usage;
+	UNiagaraNodeFunctionCall* ModuleNode = nullptr;
+	FString EmitterName, ModuleName, ScriptType, Error;
+	if (!ResolveModuleContext(Params, System, VersionedEmitter, Script, Usage, ModuleNode, EmitterName, ModuleName, ScriptType, Error))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(Error);
+
+	const FString InputName = Params->GetStringField(TEXT("input_name"));
+	const FString PreInf = Params->HasField(TEXT("pre_infinity")) ? Params->GetStringField(TEXT("pre_infinity")) : FString();
+	const FString PostInf = Params->HasField(TEXT("post_infinity")) ? Params->GetStringField(TEXT("post_infinity")) : FString();
+
+	FCompileConstantResolver ConstantResolver(VersionedEmitter, Usage);
+	TArray<FNiagaraVariable> InputVars;
+	TSet<FNiagaraVariable> HiddenVars;
+	FNiagaraStackGraphUtilities::GetStackFunctionInputs(
+		*ModuleNode, InputVars, HiddenVars, ConstantResolver,
+		FNiagaraStackGraphUtilities::ENiagaraGetStackFunctionInputPinsOptions::ModuleInputsOnly, false);
+
+	TArray<FString> Candidates;
+	bool bWasDefault = false;
+	bool bViaDynamic = false;
+	FString DynamicName, ResolveError;
+	UNiagaraDataInterface* DI = ResolveCurveDI(Script, ModuleNode, ConstantResolver, InputVars, InputName,
+		/*bCreate*/ true, bWasDefault, bViaDynamic, DynamicName, ResolveError);
+	if (!DI)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(ResolveError);
+
+	TArray<TPair<FString, FRichCurve*>> Channels;
+	CollectCurveChannels(DI, Channels);
+	if (Channels.Num() == 0)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+			TEXT("DataInterface '%s' has no editable curves."), *DI->GetClass()->GetName()));
+
+	DI->Modify();
+	TSharedPtr<FJsonObject> AppliedJson = MakeShared<FJsonObject>();
+
+	if (Channels.Num() == 1 && Channels[0].Key.IsEmpty())
+	{
+		if (!Params->HasField(TEXT("keys")))
+			return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("This is a single-channel curve; provide 'keys'."));
+		const TArray<TSharedPtr<FJsonValue>>& Keys = Params->GetArrayField(TEXT("keys"));
+		WriteJsonToRichCurve(*Channels[0].Value, Keys, PreInf, PostInf);
+		AppliedJson->SetNumberField(TEXT("keys"), Keys.Num());
+	}
+	else
+	{
+		if (!Params->HasField(TEXT("channels")))
+			return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+				TEXT("This is a multi-channel curve; provide 'channels' with keys per channel. Channels: %s"),
+				*FString::JoinBy(Channels, TEXT(","), [](const TPair<FString, FRichCurve*>& C){ return C.Key; })));
+		const TSharedPtr<FJsonObject>& ChannelsObj = Params->GetObjectField(TEXT("channels"));
+		for (const TPair<FString, FRichCurve*>& Ch : Channels)
+		{
+			if (!ChannelsObj->HasField(Ch.Key)) continue;
+			const TArray<TSharedPtr<FJsonValue>>& Keys = ChannelsObj->GetArrayField(Ch.Key);
+			WriteJsonToRichCurve(*Ch.Value, Keys, PreInf, PostInf);
+			AppliedJson->SetNumberField(Ch.Key, Keys.Num());
+		}
+	}
+
+	DI->PostEditChange();
+
+	System->RequestCompile(true);
+	System->WaitForCompilationComplete();
+	System->MarkPackageDirty();
+	SaveNiagaraSystemAsset(System);
+	System->PostEditChange();
+
+	TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
+	ResultJson->SetStringField(TEXT("status"), TEXT("success"));
+	ResultJson->SetStringField(TEXT("system"), System->GetName());
+	ResultJson->SetStringField(TEXT("emitter"), EmitterName);
+	ResultJson->SetStringField(TEXT("script_type"), ScriptType);
+	ResultJson->SetStringField(TEXT("module"), ModuleName);
+	ResultJson->SetStringField(TEXT("input"), InputName);
+	ResultJson->SetStringField(TEXT("data_interface_class"), DI->GetClass()->GetName());
+	ResultJson->SetBoolField(TEXT("created_override"), bWasDefault);
+	ResultJson->SetBoolField(TEXT("via_dynamic_input"), bViaDynamic);
+	if (bViaDynamic) ResultJson->SetStringField(TEXT("dynamic_input"), DynamicName);
+	ResultJson->SetObjectField(TEXT("applied_key_counts"), AppliedJson);
+	return ResultJson;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// set_module_dynamic_input
+//
+// Sets a module input's "dynamic input" (a sub-function like "Float from Curve" /
+// "Color from Curve") so the input is driven by that function instead of a constant.
+// After this, set_curve_keys can author the curve nested inside the dynamic input.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Find a UNiagaraScript asset by name (used for dynamic input scripts like "FloatFromCurve").
+static UNiagaraScript* FindNiagaraScriptByName(const FString& Name)
+{
+	IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+	FARFilter Filter;
+	Filter.ClassPaths.Add(UNiagaraScript::StaticClass()->GetClassPathName());
+	Filter.bRecursiveClasses = true;
+	Filter.bRecursivePaths = true;
+	TArray<FAssetData> Assets;
+	AssetRegistry.GetAssets(Filter, Assets);
+	for (const FAssetData& A : Assets)
+	{
+		if (A.AssetName.ToString().Equals(Name, ESearchCase::IgnoreCase))
+			return Cast<UNiagaraScript>(A.GetAsset());
+	}
+	return nullptr;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleSetModuleDynamicInput(const TSharedPtr<FJsonObject>& Params)
+{
+	if (!Params->HasField(TEXT("input_name")))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing required parameter: 'input_name'"));
+	if (!Params->HasField(TEXT("dynamic_input_name")))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing required parameter: 'dynamic_input_name'"));
+
+	UNiagaraSystem* System = nullptr;
+	FVersionedNiagaraEmitter VersionedEmitter;
+	UNiagaraScript* Script = nullptr;
+	ENiagaraScriptUsage Usage;
+	UNiagaraNodeFunctionCall* ModuleNode = nullptr;
+	FString EmitterName, ModuleName, ScriptType, Error;
+	if (!ResolveModuleContext(Params, System, VersionedEmitter, Script, Usage, ModuleNode, EmitterName, ModuleName, ScriptType, Error))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(Error);
+
+	const FString InputName = Params->GetStringField(TEXT("input_name"));
+	const FString DynamicInputName = Params->GetStringField(TEXT("dynamic_input_name"));
+
+	FCompileConstantResolver ConstantResolver(VersionedEmitter, Usage);
+	TArray<FNiagaraVariable> InputVars;
+	TSet<FNiagaraVariable> HiddenVars;
+	FNiagaraStackGraphUtilities::GetStackFunctionInputs(
+		*ModuleNode, InputVars, HiddenVars, ConstantResolver,
+		FNiagaraStackGraphUtilities::ENiagaraGetStackFunctionInputPinsOptions::ModuleInputsOnly, false);
+
+	const FNiagaraVariable* MatchVar = nullptr;
+	TArray<FString> Candidates;
+	for (const FNiagaraVariable& InputVar : InputVars)
+	{
+		const FString ShortName = StripModuleNamespace(InputVar.GetName().ToString());
+		Candidates.Add(ShortName);
+		if (ShortName.TrimStartAndEnd().Equals(InputName.TrimStartAndEnd(), ESearchCase::IgnoreCase)) { MatchVar = &InputVar; break; }
+	}
+	if (!MatchVar)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+			TEXT("Input '%s' not found on module '%s'. Available inputs: %s"),
+			*InputName, *ModuleName, *FString::Join(Candidates, TEXT(", "))));
+
+	const FNiagaraVariable InputVar = *MatchVar;
+
+	// Locate the dynamic input script asset.
+	UNiagaraScript* DynScript = FindNiagaraScriptByName(DynamicInputName);
+	if (!DynScript)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+			TEXT("Dynamic input script '%s' not found. Common curve dynamic inputs: FloatFromCurve, ColorFromCurve, VectorFromCurve, Vector2DFromCurve, Vector4FromCurve."), *DynamicInputName));
+
+	// Get/create the override pin. Only fresh inputs are supported (replacing an existing
+	// override needs node removal that isn't exposed to external modules).
+	FNiagaraParameterHandle InputHandle(InputVar.GetName());
+	FNiagaraParameterHandle Aliased = FNiagaraParameterHandle::CreateAliasedModuleParameterHandle(InputHandle, ModuleNode);
+	UEdGraphPin& OverridePin = FNiagaraStackGraphUtilities::GetOrCreateStackFunctionInputOverridePin(
+		*ModuleNode, Aliased, InputVar.GetType(), FGuid(), FGuid());
+	if (OverridePin.LinkedTo.Num() > 0)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+			TEXT("Input '%s' already has an override (dynamic input / linked value). Replacing it is not supported yet."), *InputName));
+
+	// If the input was a Local (rapid iteration) value, remove that rapid parameter so the
+	// dynamic input drives the value instead.
+	if (IsRapidIterationInputType(InputVar.GetType()))
+	{
+		const FString UniqueEmitterName = VersionedEmitter.Emitter ? VersionedEmitter.Emitter->GetUniqueEmitterName() : FString();
+		FNiagaraVariable RapidVar = MakeRapidIterationParameter(UniqueEmitterName, Usage, Aliased.GetParameterHandleString(), InputVar.GetType());
+		Script->Modify();
+		Script->RapidIterationParameters.RemoveParameter(RapidVar);
+	}
+
+	UNiagaraNodeFunctionCall* DynNode = nullptr;
+	FNiagaraStackGraphUtilities::SetDynamicInputForFunctionInput(OverridePin, DynScript, DynNode, FGuid(), DynamicInputName, FGuid());
+	if (!DynNode)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create the dynamic input node"));
+
+	System->RequestCompile(true);
+	System->WaitForCompilationComplete();
+	System->MarkPackageDirty();
+	SaveNiagaraSystemAsset(System);
+	System->PostEditChange();
+
+	TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
+	ResultJson->SetStringField(TEXT("status"), TEXT("success"));
+	ResultJson->SetStringField(TEXT("system"), System->GetName());
+	ResultJson->SetStringField(TEXT("emitter"), EmitterName);
+	ResultJson->SetStringField(TEXT("script_type"), ScriptType);
+	ResultJson->SetStringField(TEXT("module"), ModuleName);
+	ResultJson->SetStringField(TEXT("input"), InputName);
+	ResultJson->SetStringField(TEXT("dynamic_input"), DynScript->GetName());
+	ResultJson->SetStringField(TEXT("dynamic_input_function"), DynNode->GetFunctionName());
+	ResultJson->SetStringField(TEXT("message"), FString::Printf(
+		TEXT("Set '%s' to dynamic input '%s'. Use set_curve_keys on this input to author its curve."), *InputName, *DynScript->GetName()));
 	return ResultJson;
 }
 

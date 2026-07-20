@@ -59,4 +59,22 @@ private:
 
 	/** Enable a module input pin as a Local Value (creates a rapid-iteration parameter) so it can be read/written. */
 	TSharedPtr<FJsonObject> HandleEnableModuleInput(const TSharedPtr<FJsonObject>& Params);
+
+	/** List a module's static-switch selectors ("Mode" dropdowns) with current + allowed values. */
+	TSharedPtr<FJsonObject> HandleListModuleStaticSwitches(const TSharedPtr<FJsonObject>& Params);
+
+	/** Set a module static-switch selector (e.g. "Sprite Rotation Mode" = "Random Range"). */
+	TSharedPtr<FJsonObject> HandleSetModuleStaticSwitch(const TSharedPtr<FJsonObject>& Params);
+
+	/** Bind a DataInterface-typed module input (e.g. SubUVAnimation."Sprite Renderer") to an emitter renderer or asset. */
+	TSharedPtr<FJsonObject> HandleBindModuleInputDataInterface(const TSharedPtr<FJsonObject>& Params);
+
+	/** Read the keyframes of a curve DataInterface module input (ScaleColor, ScaleSpriteSize, FloatFromCurve, ...). */
+	TSharedPtr<FJsonObject> HandleReadCurve(const TSharedPtr<FJsonObject>& Params);
+
+	/** Write the keyframes of a curve DataInterface module input (creates an override curve). */
+	TSharedPtr<FJsonObject> HandleSetCurveKeys(const TSharedPtr<FJsonObject>& Params);
+
+	/** Set a module input's dynamic input (e.g. "Float from Curve") so it samples a curve/function. */
+	TSharedPtr<FJsonObject> HandleSetModuleDynamicInput(const TSharedPtr<FJsonObject>& Params);
 };

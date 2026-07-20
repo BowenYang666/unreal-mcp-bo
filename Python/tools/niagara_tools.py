@@ -78,41 +78,12 @@ def register_niagara_tools(mcp: FastMCP):
         ctx: Context,
         asset_full_path: str
     ) -> Dict[str, Any]:
-        """Read detailed info about a specific Niagara system asset.
+        """Read a Niagara system: emitters, User parameters, and per-emitter renderers.
 
-        Returns the system's emitters (names, sim targets, settings) and all
-        User-exposed parameters (names, types, default values). This is the key
-        tool for understanding what a Niagara system does and what can be tweaked.
-
-        Args:
-            ctx: The MCP context
-            asset_full_path: Full asset path (e.g. "/Game/VFX/NS_Explosion") or
-                short asset name (e.g. "NS_Explosion").
-
-        Returns:
-            Dict with system info including:
-            - name, path
-            - emitters: list of {name, enabled, sim_target, local_space, determinism}
-            - user_parameters: list of {name, type, default_value}
-
-            Each emitter also includes a "renderers" list. Every renderer entry has
-            "type" and "enabled", plus type-specific fields reflected from its
-            UPROPERTYs, e.g.:
-            - Sprite: material (asset path), sub_image_size {x,y}, sub_uv_blending_enabled,
-              alignment, facing_mode, sort_mode, pivot_offset, min/max_facing_camera_blend_distance,
-              sort_only_when_translucent, use_gpu_init, material_user_binding
-            - Mesh: meshes (array), override_materials, source_mode, facing_mode,
-              mesh_alignment, sort_mode, enable_frustum_culling, enable_camera_distance_culling,
-              sub_image_size
-            - Ribbon: material, facing_mode, uv0_settings, uv1_settings, draw_direction,
-              tessellation_mode, curve_tension, tessellation_factor, sub_image_size, shape
-            - Light: radius_scale, color_add {r,g,b}, use_inverse_squared_falloff,
-              affects_translucency, light_rendering_enabled, volumetric_scattering_intensity
-            Common to all: motion_vector_setting, renderer_visibility_tag, platforms.
-
-        Examples:
-            read_niagara_system(asset_full_path="/Game/VFX/NS_Explosion")
-            read_niagara_system(asset_full_path="NS_Explosion")
+        asset_full_path: full path ("/Game/VFX/NS_Explosion") or short name.
+        Returns name, path, emitters (name, sim_target, local_space, module stacks) and
+        each emitter's renderers with fully reflected properties (Sprite/Mesh/Ribbon/Light:
+        material, sub_image_size, alignment, facing_mode, sort_mode, etc.).
         """
         from unreal_mcp_server import get_unreal_connection
 
@@ -861,35 +832,13 @@ def register_niagara_tools(mcp: FastMCP):
         module_name: str,
         script_type: str = "spawn"
     ) -> Dict[str, Any]:
-        """List every input pin of a module in an emitter script, with its type and value mode.
+        """List a module's input pins with type and value mode (discovery for enable_module_input).
 
-        This solves the "which pins can I enable?" exploration problem. Niagara module
-        templates only expose a few inputs as rapid-iteration parameters by default; the rest
-        are on their module default and cannot be set with set_niagara_rapid_parameter until
-        enabled. Use this to discover the full input list, then enable_module_input to expose one.
+        script_type: "spawn"/"update"/"emitter_spawn"/"emitter_update". Each input returns
+        name, type, current_mode (Local=has value / Default=not exposed), can_enable_local,
+        rapid_parameter_name, value.
 
-        Args:
-            ctx: The MCP context
-            asset_full_path: Full asset path (e.g. "/Game/VFX/NS_Fire") or short asset name.
-            emitter_name: Name of the emitter within the system (e.g. "Fire").
-            module_name: Module/function name in the stack (e.g. "InitializeParticle", "AddVelocity").
-            script_type: One of "spawn", "update", "emitter_spawn", "emitter_update" (default: "spawn").
-
-        Returns:
-            Dict with "inputs" (list). Each input has:
-            - name: short input name (e.g. "Color", "Uniform Sprite Size", "Cone Angle")
-            - type: Niagara type name (e.g. "float", "Vector2D", "LinearColor")
-            - current_mode: "Local" (has a rapid-iteration value), "Linked", or "Default" (not exposed)
-            - can_enable_local: True if it can be enabled as a Local Value via enable_module_input
-            - is_static / is_hidden: metadata flags
-            - rapid_parameter_name: the full Constants.* name that enabling would create (rapid types)
-            - value: current value when already Local
-
-        Examples:
-            list_module_inputs(asset_full_path="/Game/VFX/NS_Fire", emitter_name="Fire",
-                module_name="InitializeParticle", script_type="spawn")
-            list_module_inputs(asset_full_path="NS_Fire", emitter_name="Fire",
-                module_name="AddVelocity", script_type="spawn")
+        Example: list_module_inputs("NS_Fire", "Fire", "InitializeParticle", "spawn")
         """
         from unreal_mcp_server import get_unreal_connection
 
@@ -932,44 +881,16 @@ def register_niagara_tools(mcp: FastMCP):
         script_type: str = "spawn",
         initial_value: Any = None
     ) -> Dict[str, Any]:
-        """Enable a module input pin as a Local Value so it can be read/written.
+        """Enable a module input pin as a Local Value (creates a rapid-iteration parameter).
 
-        Equivalent to opening the input's dropdown in the Niagara editor and choosing
-        "Local Value". For constant (rapid-iteration) input types this creates a rapid
-        iteration parameter, after which set_niagara_rapid_parameter can read/write it.
-        Only constant types are supported (float, int, bool, vec2, vec3, vec4/quat, color);
-        data interfaces and object assets cannot be enabled this way.
+        Like choosing "Local Value" in the editor dropdown, so set_niagara_rapid_parameter can
+        then write it. Only constant types (float/int/bool/vec2/vec3/vec4/quat/color); not data
+        interfaces/objects. Run list_module_inputs first. initial_value optionally assigns a value
+        (color as {"r","g","b","a"}, vectors as arrays). For pins gated by a "Mode" dropdown, also
+        call set_module_static_switch or the value is ignored.
 
-        Use list_module_inputs first to discover the exact input_name and confirm
-        can_enable_local is True.
-
-        Args:
-            ctx: The MCP context
-            asset_full_path: Full asset path (e.g. "/Game/VFX/NS_Fire") or short asset name.
-            emitter_name: Name of the emitter within the system (e.g. "Fire").
-            module_name: Module/function name (e.g. "InitializeParticle", "AddVelocity").
-            input_name: Short input name to enable (e.g. "Color", "Uniform Sprite Size", "Cone Angle").
-            script_type: One of "spawn", "update", "emitter_spawn", "emitter_update" (default: "spawn").
-            initial_value: Optional value to set at the same time. Omit to use the module default.
-                Format matches the input type:
-                - float/int: a number (e.g. 60)
-                - bool: true/false
-                - vec2: [x, y]
-                - vec3: [x, y, z]
-                - vec4/quat: [x, y, z, w]
-                - color: {"r": 1.0, "g": 0.5, "b": 0.0, "a": 1.0} or [r, g, b, a]
-
-        Returns:
-            Dict with parameter_name (full Constants.* name), type, value, and already_enabled flag.
-
-        Examples:
-            enable_module_input(asset_full_path="/Game/VFX/NS_Fire", emitter_name="Fire",
-                module_name="InitializeParticle", input_name="Color",
-                initial_value={"r": 5.0, "g": 1.5, "b": 0.2, "a": 1.0})
-            enable_module_input(asset_full_path="NS_Fire", emitter_name="Fire",
-                module_name="AddVelocity", input_name="Cone Angle", initial_value=45.0)
-            enable_module_input(asset_full_path="NS_Fire", emitter_name="Fire",
-                module_name="InitializeParticle", input_name="Uniform Sprite Size")
+        Example: enable_module_input("NS_Fire","Fire","InitializeParticle","Color",
+            initial_value={"r":5,"g":1.5,"b":0.2,"a":1})
         """
         from unreal_mcp_server import get_unreal_connection
 
@@ -1003,4 +924,341 @@ def register_niagara_tools(mcp: FastMCP):
 
         except Exception as e:
             logger.error(f"Error enabling module input: {e}")
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def list_module_static_switches(
+        ctx: Context,
+        asset_full_path: str,
+        emitter_name: str,
+        module_name: str,
+        script_type: str = "spawn"
+    ) -> Dict[str, Any]:
+        """List a module's static-switch "Mode" selectors with current + allowed values.
+
+        Modules like InitializeParticle gate value pins behind a Mode switch; if Mode is "Unset"
+        the compiler ignores enabled pins. Discover switches here, then set_module_static_switch.
+        Each switch returns name, current_value, allowed_values (UI names, e.g.
+        Unset/Direct Set/Random Range).
+
+        Example: list_module_static_switches("NS_Fire","Fire","InitializeParticle","spawn")
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                logger.error("Failed to connect to Unreal Engine")
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            params = {
+                **_map_asset_path(asset_full_path),
+                "emitter_name": emitter_name,
+                "module_name": module_name,
+                "script_type": script_type,
+            }
+
+            response = unreal.send_command("list_module_static_switches", params)
+
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+
+            result = response.get("result", response)
+            logger.info(f"Listed {result.get('switch_count', 0)} static switches of module {module_name}")
+            return result
+
+        except Exception as e:
+            logger.error(f"Error listing module static switches: {e}")
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def set_module_static_switch(
+        ctx: Context,
+        asset_full_path: str,
+        emitter_name: str,
+        module_name: str,
+        switch_name: str,
+        value: str,
+        script_type: str = "spawn"
+    ) -> Dict[str, Any]:
+        """Set a module static-switch "Mode" selector (e.g. "Sprite Rotation Mode" = "Random Range").
+
+        The missing layer above enable_module_input: flips the Mode so the compiler uses the value
+        pins (otherwise they're ignored and the emitter shows a warning). value is the UI name from
+        list_module_static_switches (case-insensitive), or "true"/"false" for bool switches.
+        Returns previous_value, new_value, resulting_visible_pins.
+
+        Example: set_module_static_switch("NS_Fire","Fire","InitializeParticle",
+            "Sprite Rotation Mode","Random Range")
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                logger.error("Failed to connect to Unreal Engine")
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            params = {
+                **_map_asset_path(asset_full_path),
+                "emitter_name": emitter_name,
+                "module_name": module_name,
+                "switch_name": switch_name,
+                "value": value,
+                "script_type": script_type,
+            }
+
+            response = unreal.send_command("set_module_static_switch", params)
+
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+
+            result = response.get("result", response)
+            logger.info(f"Set static switch {module_name}.{switch_name} = {result.get('new_value', '?')}")
+            return result
+
+        except Exception as e:
+            logger.error(f"Error setting module static switch: {e}")
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def bind_module_input_datainterface(
+        ctx: Context,
+        asset_full_path: str,
+        emitter_name: str,
+        module_name: str,
+        input_name: str,
+        binding_kind: str = "Renderer",
+        renderer_type: str = "",
+        renderer_index: int = 0,
+        asset_path: str = "",
+        script_type: str = "spawn"
+    ) -> Dict[str, Any]:
+        """Bind a DataInterface-typed module input (e.g. SubUVAnimation "Sprite Renderer") to an emitter renderer or asset.
+
+        DataInterface inputs (Sprite/Mesh Renderer info, Curve, StaticMesh...) are object bindings,
+        not Local values — enable_module_input can't set them. Use list_module_inputs to find inputs
+        with can_bind_datainterface=true. binding_kind: "Renderer" (bind to the emitter's renderer of
+        renderer_type at renderer_index — the common SubUVAnimation case) or "Asset" (bind asset_path).
+        Rebinding an already-bound input is not supported yet.
+
+        Example: bind_module_input_datainterface("NS_Fire","Fire","SubUVAnimation","Sprite Renderer",
+            binding_kind="Renderer", renderer_type="Sprite", script_type="update")
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                logger.error("Failed to connect to Unreal Engine")
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            params = {
+                **_map_asset_path(asset_full_path),
+                "emitter_name": emitter_name,
+                "module_name": module_name,
+                "input_name": input_name,
+                "binding_kind": binding_kind,
+                "renderer_index": renderer_index,
+                "script_type": script_type,
+            }
+            if renderer_type:
+                params["renderer_type"] = renderer_type
+            if asset_path:
+                params["asset_path"] = asset_path
+
+            response = unreal.send_command("bind_module_input_datainterface", params)
+
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+
+            result = response.get("result", response)
+            logger.info(f"Bound DI input {module_name}.{input_name} -> {result.get('resolved_binding', '?')}")
+            return result
+
+        except Exception as e:
+            logger.error(f"Error binding module input data interface: {e}")
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def read_ns_curve(
+        ctx: Context,
+        asset_full_path: str,
+        emitter_name: str,
+        module_name: str,
+        input_name: str,
+        script_type: str = "spawn"
+    ) -> Dict[str, Any]:
+        """Read the keyframes of a Niagara curve module input (ScaleColor, ScaleSpriteSize, FloatFromCurve...).
+
+        Curves hold the time-based aesthetic of VFX (size grow/peak/fade, color-over-life). Locate the
+        curve by module + input_name (use list_module_inputs). Single-channel curves return top-level
+        "keys"; multi-channel (color/vector) return "channels" (r/g/b/a or x/y/z/w). Each key: time,
+        value, arrive_tangent, leave_tangent, interp_mode. via_dynamic_input=true means the curve was
+        reached through a "...FromCurve" dynamic input on the requested input.
+
+        Example: read_ns_curve("NS_Fire","Fire","ScaleColor","Scale Alpha","spawn")
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                logger.error("Failed to connect to Unreal Engine")
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            params = {
+                **_map_asset_path(asset_full_path),
+                "emitter_name": emitter_name,
+                "module_name": module_name,
+                "input_name": input_name,
+                "script_type": script_type,
+            }
+
+            response = unreal.send_command("read_curve", params)
+
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+
+            result = response.get("result", response)
+            logger.info(f"Read curve {module_name}.{input_name} ({result.get('type', '?')})")
+            return result
+
+        except Exception as e:
+            logger.error(f"Error reading curve: {e}")
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def set_ns_curve_keys(
+        ctx: Context,
+        asset_full_path: str,
+        emitter_name: str,
+        module_name: str,
+        input_name: str,
+        script_type: str = "spawn",
+        keys: Any = None,
+        channels: Any = None,
+        pre_infinity: str = "",
+        post_infinity: str = ""
+    ) -> Dict[str, Any]:
+        """Author the keyframes of a Niagara curve module input (creates an override curve).
+
+        Scripts the "grow-peak-fade" / color-over-life curves that make VFX look alive. Provide
+        `keys` for single-channel curves (float), or `channels` for multi-channel (color: r/g/b/a,
+        vector: x/y/z/w). Each key: {time, value, interp_mode?("Cubic"/"Linear"/"Constant"),
+        arrive_tangent?, leave_tangent?}. Missing tangents are auto-set. pre_infinity/post_infinity:
+        "Constant"/"Cycle"/"CycleWithOffset"/"Oscillate"/"Linear". Replaces all existing keys. If the
+        input is a scalar with a "...FromCurve" dynamic input, it edits that dynamic input's curve.
+
+        Example: set_ns_curve_keys("NS_Fire","Fire","ScaleSpriteSize","Scale Factor","spawn",
+            keys=[{"time":0,"value":0},{"time":0.15,"value":1.5},{"time":1,"value":0}])
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        if keys is None and channels is None:
+            return {"success": False, "message": "Provide either 'keys' (single-channel) or 'channels' (multi-channel)"}
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                logger.error("Failed to connect to Unreal Engine")
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            params = {
+                **_map_asset_path(asset_full_path),
+                "emitter_name": emitter_name,
+                "module_name": module_name,
+                "input_name": input_name,
+                "script_type": script_type,
+            }
+            if keys is not None:
+                params["keys"] = keys
+            if channels is not None:
+                params["channels"] = channels
+            if pre_infinity:
+                params["pre_infinity"] = pre_infinity
+            if post_infinity:
+                params["post_infinity"] = post_infinity
+
+            response = unreal.send_command("set_curve_keys", params)
+
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+
+            result = response.get("result", response)
+            logger.info(f"Set curve keys {module_name}.{input_name} -> {result.get('applied_key_counts', '?')}")
+            return result
+
+        except Exception as e:
+            logger.error(f"Error setting curve keys: {e}")
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def set_module_dynamic_input(
+        ctx: Context,
+        asset_full_path: str,
+        emitter_name: str,
+        module_name: str,
+        input_name: str,
+        dynamic_input_name: str,
+        script_type: str = "spawn"
+    ) -> Dict[str, Any]:
+        """Set a module input's dynamic input (e.g. "Float from Curve") so it's driven by a sub-function.
+
+        Many curves live behind a dynamic input rather than a direct curve DI: an input like
+        ScaleColor.Scale RGB or ScaleSpriteSize.Scale Factor is a scalar until you attach a
+        "...FromCurve" dynamic input. dynamic_input_name is the script asset name (no spaces):
+        FloatFromCurve, ColorFromCurve, VectorFromCurve, Vector2DFromCurve, Vector4FromCurve, or a
+        ScaleByCurve variant. Pick one whose output type matches the input. After this, call
+        set_ns_curve_keys on the SAME input — it dives into the dynamic input and authors its curve.
+        Only fresh inputs are supported (replacing an existing override isn't yet).
+
+        Example: set_module_dynamic_input("NS_Fire","Fire","ScaleColor","Scale RGB","VectorFromCurve","spawn")
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                logger.error("Failed to connect to Unreal Engine")
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            params = {
+                **_map_asset_path(asset_full_path),
+                "emitter_name": emitter_name,
+                "module_name": module_name,
+                "input_name": input_name,
+                "dynamic_input_name": dynamic_input_name,
+                "script_type": script_type,
+            }
+
+            response = unreal.send_command("set_module_dynamic_input", params)
+
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+
+            result = response.get("result", response)
+            logger.info(f"Set dynamic input {module_name}.{input_name} = {dynamic_input_name}")
+            return result
+
+        except Exception as e:
+            logger.error(f"Error setting module dynamic input: {e}")
             return {"success": False, "message": str(e)}
