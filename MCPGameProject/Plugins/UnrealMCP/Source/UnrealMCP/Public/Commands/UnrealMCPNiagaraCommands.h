@@ -83,4 +83,7 @@ private:
 
 	/** Remove a renderer from an emitter by index. */
 	TSharedPtr<FJsonObject> HandleRemoveRendererFromEmitter(const TSharedPtr<FJsonObject>& Params);
+
+	/** Assign a static mesh to a Mesh renderer's Meshes[] array slot. */
+	TSharedPtr<FJsonObject> HandleSetMeshRendererMesh(const TSharedPtr<FJsonObject>& Params);
 };

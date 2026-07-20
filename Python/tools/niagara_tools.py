@@ -1363,3 +1363,59 @@ def register_niagara_tools(mcp: FastMCP):
             "renderer_types": ["Sprite", "Mesh", "Ribbon", "Light", "Decal", "Component"],
             "note": "Sprite=billboard particles, Mesh=3D mesh particles, Ribbon=trails/beams, Light=per-particle lights, Decal=projected decals.",
         }
+
+    @mcp.tool()
+    def set_mesh_renderer_mesh(
+        ctx: Context,
+        asset_full_path: str,
+        emitter_name: str,
+        static_mesh_path: str,
+        renderer_index: int = -1,
+        mesh_slot: int = 0,
+        scale: List[float] = None
+    ) -> Dict[str, Any]:
+        """Assign a static mesh to a Niagara Mesh renderer's Meshes[] array slot.
+
+        A Mesh renderer created by add_renderer_to_emitter has an empty Meshes[] array, so nothing
+        is drawn until you assign a mesh with this tool. Selects the Mesh renderer by renderer_index,
+        or (when renderer_index < 0) the first Mesh renderer on the emitter. Grows the Meshes[] array
+        to fit mesh_slot if needed. Optional scale is per-slot [x, y, z].
+
+        static_mesh_path examples: "/Engine/BasicShapes/Plane", "/Game/Meshes/SM_Shockwave"
+
+        Example: set_mesh_renderer_mesh("NS_MagicShockwave","Wave","/Engine/BasicShapes/Plane")
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                logger.error("Failed to connect to Unreal Engine")
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            params = {
+                **_map_asset_path(asset_full_path),
+                "emitter_name": emitter_name,
+                "static_mesh_path": static_mesh_path,
+                "mesh_slot": mesh_slot,
+            }
+            if renderer_index >= 0:
+                params["renderer_index"] = renderer_index
+            if scale is not None:
+                params["scale"] = scale
+
+            response = unreal.send_command("set_mesh_renderer_mesh", params)
+
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+
+            result = response.get("result", response)
+            logger.info(f"Assigned mesh {static_mesh_path} to {emitter_name} slot {mesh_slot}")
+            return result
+
+        except Exception as e:
+            logger.error(f"Error setting mesh renderer mesh: {e}")
+            return {"success": False, "message": str(e)}

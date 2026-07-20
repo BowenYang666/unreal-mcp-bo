@@ -20,6 +20,8 @@
 #include "NiagaraSystemEditorData.h"
 #include "NiagaraOverviewNode.h"
 #include "NiagaraRendererProperties.h"
+#include "NiagaraMeshRendererProperties.h"
+#include "Engine/StaticMesh.h"
 #include "ViewModels/Stack/NiagaraParameterHandle.h"
 #include "NiagaraParameterMapHistory.h"
 #include "NiagaraNode.h"
@@ -237,6 +239,10 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleCommand(const FString& 
 	else if (CommandType == TEXT("remove_renderer_from_emitter"))
 	{
 		return HandleRemoveRendererFromEmitter(Params);
+	}
+	else if (CommandType == TEXT("set_mesh_renderer_mesh"))
+	{
+		return HandleSetMeshRendererMesh(Params);
 	}
 
 	return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown Niagara command: %s"), *CommandType));
@@ -3914,6 +3920,115 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleRemoveRendererFromEmitt
 	ResultJson->SetNumberField(TEXT("removed_index"), Index);
 	ResultJson->SetStringField(TEXT("removed_class"), RemovedClass);
 	ResultJson->SetNumberField(TEXT("remaining_count"), VersionedEmitter.GetEmitterData() ? VersionedEmitter.GetEmitterData()->GetRenderers().Num() : 0);
+	return ResultJson;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// set_mesh_renderer_mesh — assign a static mesh to a Mesh renderer's Meshes[] slot
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Load a UStaticMesh from a content path, tolerating "/Game/Path/SM_X" (no object suffix).
+static UStaticMesh* LoadStaticMeshByPath(const FString& InPath)
+{
+	FString Path = InPath;
+	if (!Path.Contains(TEXT(".")))
+	{
+		FString Left, Right;
+		if (Path.Split(TEXT("/"), &Left, &Right, ESearchCase::IgnoreCase, ESearchDir::FromEnd))
+			Path = FString::Printf(TEXT("%s.%s"), *InPath, *Right);
+	}
+	return LoadObject<UStaticMesh>(nullptr, *Path);
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleSetMeshRendererMesh(const TSharedPtr<FJsonObject>& Params)
+{
+	if (!Params->HasField(TEXT("static_mesh_path")))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing required parameter: 'static_mesh_path'"));
+
+	UNiagaraSystem* System = nullptr;
+	FNiagaraEmitterHandle* Handle = nullptr;
+	FVersionedNiagaraEmitter VersionedEmitter;
+	FString EmitterName, Error;
+	if (!ResolveEmitterContext(Params, System, Handle, VersionedEmitter, EmitterName, Error))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(Error);
+
+	FVersionedNiagaraEmitterData* EmitterData = VersionedEmitter.GetEmitterData();
+	if (!EmitterData)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get emitter data"));
+
+	const TArray<UNiagaraRendererProperties*>& Renderers = EmitterData->GetRenderers();
+
+	// Select the Mesh renderer: by 'renderer_index' if given, else first UNiagaraMeshRendererProperties.
+	UNiagaraMeshRendererProperties* MeshRenderer = nullptr;
+	int32 SelectedIndex = INDEX_NONE;
+	if (Params->HasField(TEXT("renderer_index")))
+	{
+		const int32 Index = static_cast<int32>(Params->GetNumberField(TEXT("renderer_index")));
+		if (!Renderers.IsValidIndex(Index))
+			return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+				TEXT("renderer_index %d out of range (emitter '%s' has %d renderer(s))"), Index, *EmitterName, Renderers.Num()));
+		MeshRenderer = Cast<UNiagaraMeshRendererProperties>(Renderers[Index]);
+		if (!MeshRenderer)
+			return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+				TEXT("Renderer at index %d is %s, not a Mesh renderer"), Index,
+				Renderers[Index] ? *Renderers[Index]->GetClass()->GetName() : TEXT("(null)")));
+		SelectedIndex = Index;
+	}
+	else
+	{
+		for (int32 i = 0; i < Renderers.Num(); ++i)
+		{
+			if (UNiagaraMeshRendererProperties* MR = Cast<UNiagaraMeshRendererProperties>(Renderers[i]))
+			{
+				MeshRenderer = MR; SelectedIndex = i; break;
+			}
+		}
+		if (!MeshRenderer)
+			return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+				TEXT("Emitter '%s' has no Mesh renderer. Use add_renderer_to_emitter first."), *EmitterName));
+	}
+
+	const FString MeshPath = Params->GetStringField(TEXT("static_mesh_path"));
+	UStaticMesh* StaticMesh = LoadStaticMeshByPath(MeshPath);
+	if (!StaticMesh)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Static mesh not found at path: %s"), *MeshPath));
+
+	int32 Slot = 0;
+	if (Params->HasField(TEXT("mesh_slot")))
+		Slot = FMath::Max(0, static_cast<int32>(Params->GetNumberField(TEXT("mesh_slot"))));
+
+	MeshRenderer->Modify();
+	if (MeshRenderer->Meshes.Num() <= Slot)
+		MeshRenderer->Meshes.SetNum(Slot + 1);
+	MeshRenderer->Meshes[Slot].Mesh = StaticMesh;
+
+	// Optional per-slot scale [x, y, z].
+	if (Params->HasField(TEXT("scale")))
+	{
+		const TArray<TSharedPtr<FJsonValue>>* ScaleArr = nullptr;
+		if (Params->TryGetArrayField(TEXT("scale"), ScaleArr) && ScaleArr->Num() >= 3)
+		{
+			MeshRenderer->Meshes[Slot].Scale = FVector(
+				(*ScaleArr)[0]->AsNumber(), (*ScaleArr)[1]->AsNumber(), (*ScaleArr)[2]->AsNumber());
+		}
+	}
+
+	MeshRenderer->PostEditChange();
+
+	System->RequestCompile(true);
+	System->WaitForCompilationComplete();
+	System->MarkPackageDirty();
+	SaveNiagaraSystemAsset(System);
+	System->PostEditChange();
+
+	TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
+	ResultJson->SetStringField(TEXT("status"), TEXT("success"));
+	ResultJson->SetStringField(TEXT("system"), System->GetName());
+	ResultJson->SetStringField(TEXT("emitter"), EmitterName);
+	ResultJson->SetNumberField(TEXT("renderer_index"), SelectedIndex);
+	ResultJson->SetNumberField(TEXT("mesh_slot"), Slot);
+	ResultJson->SetStringField(TEXT("mesh"), StaticMesh->GetPathName());
+	ResultJson->SetNumberField(TEXT("mesh_count"), MeshRenderer->Meshes.Num());
 	return ResultJson;
 }
 

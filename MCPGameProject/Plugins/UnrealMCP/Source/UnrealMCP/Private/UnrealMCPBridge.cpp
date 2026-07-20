@@ -352,7 +352,8 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("set_curve_keys") ||
                      CommandType == TEXT("set_module_dynamic_input") ||
                      CommandType == TEXT("add_renderer_to_emitter") ||
-                     CommandType == TEXT("remove_renderer_from_emitter"))
+                     CommandType == TEXT("remove_renderer_from_emitter") ||
+                     CommandType == TEXT("set_mesh_renderer_mesh"))
             {
                 ResultJson = NiagaraCommands->HandleCommand(CommandType, Params);
             }
