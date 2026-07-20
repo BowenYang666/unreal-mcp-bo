@@ -28,6 +28,7 @@ public class UnrealMCP : ModuleRules
 				"Core",
 				"CoreUObject",
 				"Engine",
+				"RHI",
 				"InputCore",
 				"Networking",
 				"Sockets",

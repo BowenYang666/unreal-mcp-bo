@@ -16,6 +16,8 @@
 #include "EditorAssetLibrary.h"
 #include "Engine/Font.h"
 #include "MaterialEditingLibrary.h"
+#include "MaterialShared.h"
+#include "RHI.h"
 #include "Factories/MaterialFactoryNew.h"
 #include "Factories/MaterialInstanceConstantFactoryNew.h"
 #include "FileHelpers.h"
@@ -456,6 +458,31 @@ TSharedPtr<FJsonObject> FUnrealMCPMaterialCommands::HandleReadMaterial(const TSh
             CommentArray.Add(MakeShareable(new FJsonValueObject(CommentObj)));
         }
         ResultJson->SetArrayField(TEXT("comments"), CommentArray);
+    }
+
+    // -- Compile check: recompile the material and surface translation errors --
+    // This lets an AI verify a material actually compiles after editing it, instead of
+    // only seeing the graph structure. Recompile is synchronous in the editor.
+    {
+        UMaterialEditingLibrary::RecompileMaterial(Material);
+
+        TArray<FString> CompileErrors;
+        const EShaderPlatform ShaderPlatform = GShaderPlatformForFeatureLevel[GMaxRHIFeatureLevel];
+        if (FMaterialResource* Res = Material->GetMaterialResource(ShaderPlatform))
+        {
+            CompileErrors = Res->GetCompileErrors();
+        }
+
+        TSharedPtr<FJsonObject> CompileObj = MakeShareable(new FJsonObject);
+        CompileObj->SetBoolField(TEXT("ok"), CompileErrors.Num() == 0);
+        CompileObj->SetNumberField(TEXT("error_count"), CompileErrors.Num());
+        TArray<TSharedPtr<FJsonValue>> ErrArray;
+        for (const FString& Err : CompileErrors)
+        {
+            ErrArray.Add(MakeShareable(new FJsonValueString(Err)));
+        }
+        CompileObj->SetArrayField(TEXT("errors"), ErrArray);
+        ResultJson->SetObjectField(TEXT("compile_result"), CompileObj);
     }
 
     return ResultJson;
