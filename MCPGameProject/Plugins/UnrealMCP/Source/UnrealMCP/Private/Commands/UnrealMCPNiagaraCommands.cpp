@@ -22,6 +22,7 @@
 #include "NiagaraRendererProperties.h"
 #include "NiagaraMeshRendererProperties.h"
 #include "Engine/StaticMesh.h"
+#include "Materials/MaterialInterface.h"
 #include "ViewModels/Stack/NiagaraParameterHandle.h"
 #include "NiagaraParameterMapHistory.h"
 #include "NiagaraNode.h"
@@ -3924,7 +3925,8 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleRemoveRendererFromEmitt
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// set_mesh_renderer_mesh — assign a static mesh to a Mesh renderer's Meshes[] slot
+// set_mesh_renderer_mesh — assign a static mesh and/or override material to a
+// Mesh renderer's Meshes[] / OverrideMaterials[] slots.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Load a UStaticMesh from a content path, tolerating "/Game/Path/SM_X" (no object suffix).
@@ -3940,10 +3942,25 @@ static UStaticMesh* LoadStaticMeshByPath(const FString& InPath)
 	return LoadObject<UStaticMesh>(nullptr, *Path);
 }
 
+// Load a UMaterialInterface from a content path, tolerating a missing object suffix.
+static UMaterialInterface* LoadMaterialByPath(const FString& InPath)
+{
+	FString Path = InPath;
+	if (!Path.Contains(TEXT(".")))
+	{
+		FString Left, Right;
+		if (Path.Split(TEXT("/"), &Left, &Right, ESearchCase::IgnoreCase, ESearchDir::FromEnd))
+			Path = FString::Printf(TEXT("%s.%s"), *InPath, *Right);
+	}
+	return LoadObject<UMaterialInterface>(nullptr, *Path);
+}
+
 TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleSetMeshRendererMesh(const TSharedPtr<FJsonObject>& Params)
 {
-	if (!Params->HasField(TEXT("static_mesh_path")))
-		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing required parameter: 'static_mesh_path'"));
+	const bool bHasMesh = Params->HasField(TEXT("static_mesh_path")) && !Params->GetStringField(TEXT("static_mesh_path")).IsEmpty();
+	const bool bHasMaterial = Params->HasField(TEXT("override_material_path")) && !Params->GetStringField(TEXT("override_material_path")).IsEmpty();
+	if (!bHasMesh && !bHasMaterial)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Provide at least one of 'static_mesh_path' or 'override_material_path'"));
 
 	UNiagaraSystem* System = nullptr;
 	FNiagaraEmitterHandle* Handle = nullptr;
@@ -3988,29 +4005,63 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleSetMeshRendererMesh(con
 				TEXT("Emitter '%s' has no Mesh renderer. Use add_renderer_to_emitter first."), *EmitterName));
 	}
 
-	const FString MeshPath = Params->GetStringField(TEXT("static_mesh_path"));
-	UStaticMesh* StaticMesh = LoadStaticMeshByPath(MeshPath);
-	if (!StaticMesh)
-		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Static mesh not found at path: %s"), *MeshPath));
-
-	int32 Slot = 0;
-	if (Params->HasField(TEXT("mesh_slot")))
-		Slot = FMath::Max(0, static_cast<int32>(Params->GetNumberField(TEXT("mesh_slot"))));
-
 	MeshRenderer->Modify();
-	if (MeshRenderer->Meshes.Num() <= Slot)
-		MeshRenderer->Meshes.SetNum(Slot + 1);
-	MeshRenderer->Meshes[Slot].Mesh = StaticMesh;
 
-	// Optional per-slot scale [x, y, z].
-	if (Params->HasField(TEXT("scale")))
+	TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
+
+	// --- Assign static mesh (optional) ---
+	if (bHasMesh)
 	{
-		const TArray<TSharedPtr<FJsonValue>>* ScaleArr = nullptr;
-		if (Params->TryGetArrayField(TEXT("scale"), ScaleArr) && ScaleArr->Num() >= 3)
+		const FString MeshPath = Params->GetStringField(TEXT("static_mesh_path"));
+		UStaticMesh* StaticMesh = LoadStaticMeshByPath(MeshPath);
+		if (!StaticMesh)
+			return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Static mesh not found at path: %s"), *MeshPath));
+
+		int32 Slot = 0;
+		if (Params->HasField(TEXT("mesh_slot")))
+			Slot = FMath::Max(0, static_cast<int32>(Params->GetNumberField(TEXT("mesh_slot"))));
+
+		if (MeshRenderer->Meshes.Num() <= Slot)
+			MeshRenderer->Meshes.SetNum(Slot + 1);
+		MeshRenderer->Meshes[Slot].Mesh = StaticMesh;
+
+		// Optional per-slot scale [x, y, z].
+		if (Params->HasField(TEXT("scale")))
 		{
-			MeshRenderer->Meshes[Slot].Scale = FVector(
-				(*ScaleArr)[0]->AsNumber(), (*ScaleArr)[1]->AsNumber(), (*ScaleArr)[2]->AsNumber());
+			const TArray<TSharedPtr<FJsonValue>>* ScaleArr = nullptr;
+			if (Params->TryGetArrayField(TEXT("scale"), ScaleArr) && ScaleArr->Num() >= 3)
+			{
+				MeshRenderer->Meshes[Slot].Scale = FVector(
+					(*ScaleArr)[0]->AsNumber(), (*ScaleArr)[1]->AsNumber(), (*ScaleArr)[2]->AsNumber());
+			}
 		}
+
+		ResultJson->SetNumberField(TEXT("mesh_slot"), Slot);
+		ResultJson->SetStringField(TEXT("mesh"), StaticMesh->GetPathName());
+		ResultJson->SetNumberField(TEXT("mesh_count"), MeshRenderer->Meshes.Num());
+	}
+
+	// --- Assign override material (optional) ---
+	if (bHasMaterial)
+	{
+		const FString MatPath = Params->GetStringField(TEXT("override_material_path"));
+		UMaterialInterface* Material = LoadMaterialByPath(MatPath);
+		if (!Material)
+			return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Material not found at path: %s"), *MatPath));
+
+		int32 MatSlot = 0;
+		if (Params->HasField(TEXT("material_slot")))
+			MatSlot = FMath::Max(0, static_cast<int32>(Params->GetNumberField(TEXT("material_slot"))));
+
+		// OverrideMaterials only take effect when bOverrideMaterials is enabled.
+		MeshRenderer->bOverrideMaterials = true;
+		if (MeshRenderer->OverrideMaterials.Num() <= MatSlot)
+			MeshRenderer->OverrideMaterials.SetNum(MatSlot + 1);
+		MeshRenderer->OverrideMaterials[MatSlot].ExplicitMat = Material;
+
+		ResultJson->SetNumberField(TEXT("material_slot"), MatSlot);
+		ResultJson->SetStringField(TEXT("override_material"), Material->GetPathName());
+		ResultJson->SetNumberField(TEXT("override_material_count"), MeshRenderer->OverrideMaterials.Num());
 	}
 
 	MeshRenderer->PostEditChange();
@@ -4021,14 +4072,10 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleSetMeshRendererMesh(con
 	SaveNiagaraSystemAsset(System);
 	System->PostEditChange();
 
-	TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
 	ResultJson->SetStringField(TEXT("status"), TEXT("success"));
 	ResultJson->SetStringField(TEXT("system"), System->GetName());
 	ResultJson->SetStringField(TEXT("emitter"), EmitterName);
 	ResultJson->SetNumberField(TEXT("renderer_index"), SelectedIndex);
-	ResultJson->SetNumberField(TEXT("mesh_slot"), Slot);
-	ResultJson->SetStringField(TEXT("mesh"), StaticMesh->GetPathName());
-	ResultJson->SetNumberField(TEXT("mesh_count"), MeshRenderer->Meshes.Num());
 	return ResultJson;
 }
 

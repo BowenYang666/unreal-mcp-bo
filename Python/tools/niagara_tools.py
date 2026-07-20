@@ -1369,21 +1369,27 @@ def register_niagara_tools(mcp: FastMCP):
         ctx: Context,
         asset_full_path: str,
         emitter_name: str,
-        static_mesh_path: str,
+        static_mesh_path: str = "",
+        override_material_path: str = "",
         renderer_index: int = -1,
         mesh_slot: int = 0,
+        material_slot: int = 0,
         scale: List[float] = None
     ) -> Dict[str, Any]:
-        """Assign a static mesh to a Niagara Mesh renderer's Meshes[] array slot.
+        """Assign a static mesh and/or override material to a Niagara Mesh renderer.
 
         A Mesh renderer created by add_renderer_to_emitter has an empty Meshes[] array, so nothing
-        is drawn until you assign a mesh with this tool. Selects the Mesh renderer by renderer_index,
-        or (when renderer_index < 0) the first Mesh renderer on the emitter. Grows the Meshes[] array
-        to fit mesh_slot if needed. Optional scale is per-slot [x, y, z].
+        is drawn until you assign a mesh. Provide at least one of static_mesh_path (fills Meshes[mesh_slot])
+        or override_material_path (fills OverrideMaterials[material_slot] and enables bOverrideMaterials
+        so the material replaces the mesh's own). Selects the Mesh renderer by renderer_index, or
+        (when renderer_index < 0) the first Mesh renderer on the emitter. Arrays grow to fit the slot.
+        Optional scale is per-mesh-slot [x, y, z].
 
-        static_mesh_path examples: "/Engine/BasicShapes/Plane", "/Game/Meshes/SM_Shockwave"
+        Paths tolerate a missing object suffix, e.g. "/Engine/BasicShapes/Plane", "/Game/FX/M_Glow".
 
-        Example: set_mesh_renderer_mesh("NS_MagicShockwave","Wave","/Engine/BasicShapes/Plane")
+        Examples:
+            set_mesh_renderer_mesh("NS_MagicShockwave","Wave","/Engine/BasicShapes/Plane")
+            set_mesh_renderer_mesh("NS_MagicShockwave","Wave",override_material_path="/Game/FX/M_Wave")
         """
         from unreal_mcp_server import get_unreal_connection
 
@@ -1396,9 +1402,13 @@ def register_niagara_tools(mcp: FastMCP):
             params = {
                 **_map_asset_path(asset_full_path),
                 "emitter_name": emitter_name,
-                "static_mesh_path": static_mesh_path,
                 "mesh_slot": mesh_slot,
+                "material_slot": material_slot,
             }
+            if static_mesh_path:
+                params["static_mesh_path"] = static_mesh_path
+            if override_material_path:
+                params["override_material_path"] = override_material_path
             if renderer_index >= 0:
                 params["renderer_index"] = renderer_index
             if scale is not None:
@@ -1413,7 +1423,7 @@ def register_niagara_tools(mcp: FastMCP):
                 return {"success": False, "message": response.get("error", "Unknown error")}
 
             result = response.get("result", response)
-            logger.info(f"Assigned mesh {static_mesh_path} to {emitter_name} slot {mesh_slot}")
+            logger.info(f"Configured mesh renderer on {emitter_name}: mesh={static_mesh_path or '-'} mat={override_material_path or '-'}")
             return result
 
         except Exception as e:
