@@ -404,6 +404,7 @@ if _read_only:
         "list_module_inputs",
         "list_module_static_switches",
         "read_ns_curve",
+        "list_renderer_types",
     }
 
     all_tool_names = list(mcp._tool_manager._tools.keys())
@@ -453,6 +454,7 @@ _CATEGORY_TOOLS = {
         "set_niagara_renderer_property", "list_module_inputs", "enable_module_input",
         "list_module_static_switches", "set_module_static_switch", "bind_module_input_datainterface",
         "read_ns_curve", "set_ns_curve_keys", "set_module_dynamic_input",
+        "add_renderer_to_emitter", "remove_renderer_from_emitter", "list_renderer_types",
     },
     "blueprint": {
         "create_blueprint", "add_component_to_blueprint", "set_component_property",

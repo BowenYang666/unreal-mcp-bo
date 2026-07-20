@@ -230,6 +230,14 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleCommand(const FString& 
 	{
 		return HandleSetModuleDynamicInput(Params);
 	}
+	else if (CommandType == TEXT("add_renderer_to_emitter"))
+	{
+		return HandleAddRendererToEmitter(Params);
+	}
+	else if (CommandType == TEXT("remove_renderer_from_emitter"))
+	{
+		return HandleRemoveRendererFromEmitter(Params);
+	}
 
 	return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown Niagara command: %s"), *CommandType));
 }
@@ -3771,6 +3779,141 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleSetModuleDynamicInput(c
 	ResultJson->SetStringField(TEXT("dynamic_input_function"), DynNode->GetFunctionName());
 	ResultJson->SetStringField(TEXT("message"), FString::Printf(
 		TEXT("Set '%s' to dynamic input '%s'. Use set_curve_keys on this input to author its curve."), *InputName, *DynScript->GetName()));
+	return ResultJson;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// add_renderer_to_emitter / remove_renderer_from_emitter
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Resolve a friendly renderer type ("Sprite"/"Mesh"/"Ribbon"/"Light"/"Decal") to its
+// UNiagaraRendererProperties subclass by enumerating derived classes.
+static UClass* FindRendererClassByType(const FString& Type, TArray<FString>& OutAvailable)
+{
+	TArray<UClass*> Classes;
+	GetDerivedClasses(UNiagaraRendererProperties::StaticClass(), Classes);
+	const FString Needle = FString::Printf(TEXT("%sRenderer"), *Type); // e.g. "MeshRenderer"
+	UClass* Found = nullptr;
+	for (UClass* C : Classes)
+	{
+		if (!C || C->HasAnyClassFlags(CLASS_Abstract)) continue;
+		// Friendly name = strip "Niagara" prefix and "RendererProperties" suffix.
+		FString Friendly = C->GetName();
+		Friendly.RemoveFromStart(TEXT("Niagara"));
+		Friendly.RemoveFromEnd(TEXT("RendererProperties"));
+		OutAvailable.AddUnique(Friendly);
+		if (!Found && C->GetName().Contains(Needle, ESearchCase::IgnoreCase))
+			Found = C;
+	}
+	return Found;
+}
+
+// Resolve system + emitter handle + versioned emitter from params.
+static bool ResolveEmitterContext(const TSharedPtr<FJsonObject>& Params, UNiagaraSystem*& OutSystem,
+	FNiagaraEmitterHandle*& OutHandle, FVersionedNiagaraEmitter& OutVersionedEmitter, FString& OutEmitterName, FString& OutError)
+{
+	if (!Params->HasField(TEXT("emitter_name"))) { OutError = TEXT("Missing required parameter: 'emitter_name'"); return false; }
+	OutSystem = LoadNiagaraSystemByNameOrPath(Params, OutError);
+	if (!OutSystem) return false;
+	OutEmitterName = Params->GetStringField(TEXT("emitter_name"));
+	TArray<FNiagaraEmitterHandle>& Handles = OutSystem->GetEmitterHandles();
+	OutHandle = nullptr;
+	for (FNiagaraEmitterHandle& H : Handles)
+		if (H.GetName().ToString().Equals(OutEmitterName, ESearchCase::IgnoreCase)) { OutHandle = &H; break; }
+	if (!OutHandle) { OutError = FString::Printf(TEXT("Emitter '%s' not found in system '%s'"), *OutEmitterName, *OutSystem->GetName()); return false; }
+	OutVersionedEmitter = OutHandle->GetInstance();
+	if (!OutVersionedEmitter.Emitter) { OutError = TEXT("Emitter instance is null"); return false; }
+	return true;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleAddRendererToEmitter(const TSharedPtr<FJsonObject>& Params)
+{
+	if (!Params->HasField(TEXT("renderer_type")))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing required parameter: 'renderer_type'"));
+
+	UNiagaraSystem* System = nullptr;
+	FNiagaraEmitterHandle* Handle = nullptr;
+	FVersionedNiagaraEmitter VersionedEmitter;
+	FString EmitterName, Error;
+	if (!ResolveEmitterContext(Params, System, Handle, VersionedEmitter, EmitterName, Error))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(Error);
+
+	const FString RendererType = Params->GetStringField(TEXT("renderer_type"));
+	TArray<FString> Available;
+	UClass* RendererClass = FindRendererClassByType(RendererType, Available);
+	if (!RendererClass)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+			TEXT("Unknown renderer_type '%s'. Available: %s"), *RendererType, *FString::Join(Available, TEXT(", "))));
+
+	UNiagaraEmitter* Emitter = VersionedEmitter.Emitter;
+	UNiagaraRendererProperties* NewRenderer = NewObject<UNiagaraRendererProperties>(Emitter, RendererClass, NAME_None, RF_Transactional);
+	if (!NewRenderer)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create renderer object"));
+
+	Emitter->Modify();
+	Emitter->AddRenderer(NewRenderer, VersionedEmitter.Version);
+
+	System->RequestCompile(true);
+	System->WaitForCompilationComplete();
+	System->MarkPackageDirty();
+	SaveNiagaraSystemAsset(System);
+	System->PostEditChange();
+
+	FVersionedNiagaraEmitterData* EmitterData = VersionedEmitter.GetEmitterData();
+	const int32 RendererIndex = EmitterData ? EmitterData->GetRenderers().Num() - 1 : INDEX_NONE;
+
+	TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
+	ResultJson->SetStringField(TEXT("status"), TEXT("success"));
+	ResultJson->SetStringField(TEXT("system"), System->GetName());
+	ResultJson->SetStringField(TEXT("emitter"), EmitterName);
+	ResultJson->SetStringField(TEXT("renderer_type"), RendererType);
+	ResultJson->SetStringField(TEXT("renderer_class_name"), RendererClass->GetName());
+	ResultJson->SetNumberField(TEXT("renderer_index"), RendererIndex);
+	return ResultJson;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleRemoveRendererFromEmitter(const TSharedPtr<FJsonObject>& Params)
+{
+	if (!Params->HasField(TEXT("renderer_index")))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing required parameter: 'renderer_index'"));
+
+	UNiagaraSystem* System = nullptr;
+	FNiagaraEmitterHandle* Handle = nullptr;
+	FVersionedNiagaraEmitter VersionedEmitter;
+	FString EmitterName, Error;
+	if (!ResolveEmitterContext(Params, System, Handle, VersionedEmitter, EmitterName, Error))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(Error);
+
+	FVersionedNiagaraEmitterData* EmitterData = VersionedEmitter.GetEmitterData();
+	if (!EmitterData)
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to get emitter data"));
+
+	const int32 Index = static_cast<int32>(Params->GetNumberField(TEXT("renderer_index")));
+	const TArray<UNiagaraRendererProperties*>& Renderers = EmitterData->GetRenderers();
+	if (!Renderers.IsValidIndex(Index))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(
+			TEXT("renderer_index %d out of range (emitter '%s' has %d renderer(s))"), Index, *EmitterName, Renderers.Num()));
+
+	UNiagaraRendererProperties* Renderer = Renderers[Index];
+	const FString RemovedClass = Renderer ? Renderer->GetClass()->GetName() : TEXT("(null)");
+
+	UNiagaraEmitter* Emitter = VersionedEmitter.Emitter;
+	Emitter->Modify();
+	Emitter->RemoveRenderer(Renderer, VersionedEmitter.Version);
+
+	System->RequestCompile(true);
+	System->WaitForCompilationComplete();
+	System->MarkPackageDirty();
+	SaveNiagaraSystemAsset(System);
+	System->PostEditChange();
+
+	TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
+	ResultJson->SetStringField(TEXT("status"), TEXT("success"));
+	ResultJson->SetStringField(TEXT("system"), System->GetName());
+	ResultJson->SetStringField(TEXT("emitter"), EmitterName);
+	ResultJson->SetNumberField(TEXT("removed_index"), Index);
+	ResultJson->SetStringField(TEXT("removed_class"), RemovedClass);
+	ResultJson->SetNumberField(TEXT("remaining_count"), VersionedEmitter.GetEmitterData() ? VersionedEmitter.GetEmitterData()->GetRenderers().Num() : 0);
 	return ResultJson;
 }
 

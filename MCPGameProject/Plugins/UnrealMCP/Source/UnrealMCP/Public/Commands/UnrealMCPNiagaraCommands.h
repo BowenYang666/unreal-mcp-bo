@@ -77,4 +77,10 @@ private:
 
 	/** Set a module input's dynamic input (e.g. "Float from Curve") so it samples a curve/function. */
 	TSharedPtr<FJsonObject> HandleSetModuleDynamicInput(const TSharedPtr<FJsonObject>& Params);
+
+	/** Add a renderer (Sprite/Mesh/Ribbon/Light/Decal) to an emitter. */
+	TSharedPtr<FJsonObject> HandleAddRendererToEmitter(const TSharedPtr<FJsonObject>& Params);
+
+	/** Remove a renderer from an emitter by index. */
+	TSharedPtr<FJsonObject> HandleRemoveRendererFromEmitter(const TSharedPtr<FJsonObject>& Params);
 };

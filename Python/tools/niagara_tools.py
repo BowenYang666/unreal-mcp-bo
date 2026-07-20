@@ -1262,3 +1262,104 @@ def register_niagara_tools(mcp: FastMCP):
         except Exception as e:
             logger.error(f"Error setting module dynamic input: {e}")
             return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def add_renderer_to_emitter(
+        ctx: Context,
+        asset_full_path: str,
+        emitter_name: str,
+        renderer_type: str
+    ) -> Dict[str, Any]:
+        """Add a renderer (Sprite/Mesh/Ribbon/Light/Decal) to a Niagara emitter.
+
+        Emitters from the Minimal template ship with only a Sprite renderer. Use this to add a
+        Mesh renderer (shockwaves, portals, debris), Ribbon (lightning, trails, beams), or Light
+        (fire glow, explosion flash). After adding, configure it with set_niagara_renderer_property
+        using the returned renderer_index (or renderer_type). Use list_renderer_types for options.
+
+        Example: add_renderer_to_emitter("NS_Wave","Wave","Mesh")
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                logger.error("Failed to connect to Unreal Engine")
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            params = {
+                **_map_asset_path(asset_full_path),
+                "emitter_name": emitter_name,
+                "renderer_type": renderer_type,
+            }
+
+            response = unreal.send_command("add_renderer_to_emitter", params)
+
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+
+            result = response.get("result", response)
+            logger.info(f"Added {renderer_type} renderer to {emitter_name} -> index {result.get('renderer_index', '?')}")
+            return result
+
+        except Exception as e:
+            logger.error(f"Error adding renderer: {e}")
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def remove_renderer_from_emitter(
+        ctx: Context,
+        asset_full_path: str,
+        emitter_name: str,
+        renderer_index: int
+    ) -> Dict[str, Any]:
+        """Remove a renderer from a Niagara emitter by index.
+
+        Use read_niagara_system to see each emitter's renderers and their indices. Commonly used
+        to drop the default Sprite renderer after adding a Mesh/Ribbon/Light renderer.
+
+        Example: remove_renderer_from_emitter("NS_Wave","Wave",0)
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                logger.error("Failed to connect to Unreal Engine")
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            params = {
+                **_map_asset_path(asset_full_path),
+                "emitter_name": emitter_name,
+                "renderer_index": renderer_index,
+            }
+
+            response = unreal.send_command("remove_renderer_from_emitter", params)
+
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+
+            result = response.get("result", response)
+            logger.info(f"Removed renderer {renderer_index} from {emitter_name}")
+            return result
+
+        except Exception as e:
+            logger.error(f"Error removing renderer: {e}")
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def list_renderer_types(ctx: Context) -> Dict[str, Any]:
+        """List the Niagara renderer types that add_renderer_to_emitter accepts.
+
+        Returns the common built-in renderer types. Pass one of these as renderer_type.
+        """
+        return {
+            "renderer_types": ["Sprite", "Mesh", "Ribbon", "Light", "Decal", "Component"],
+            "note": "Sprite=billboard particles, Mesh=3D mesh particles, Ribbon=trails/beams, Light=per-particle lights, Decal=projected decals.",
+        }
