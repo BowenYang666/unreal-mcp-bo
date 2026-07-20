@@ -356,6 +356,7 @@ def register_material_tools(mcp: FastMCP):
         - Noise: property_name="NoiseFunction", value="VoronoiALU" (enum)
         - MaterialFunctionCall: property_name="MaterialFunction", value="/Engine/Functions/Engine_MaterialFunctions02/AntiAliasing/DitherTemporalAA.DitherTemporalAA"
         - TextureSample: property_name="Texture", value="/Game/Textures/T_MyTexture.T_MyTexture"
+        - DynamicParameter: property_name="ParamNames", value=["Emissive","Dissolve","Param3","Param4"] (rename output pins; keep 4 entries)
         - Custom HLSL: property_name="Inputs", value=["A","B","C"]  (replaces the full input list)
         - Custom HLSL: property_name="IncludeFilePaths", value=["/Engine/Private/MyFile.ush"]
         - Custom HLSL: property_name="AdditionalDefines", value=[{"name":"MAX_ITER","value":"16"}] or ["MAX_ITER=16"]

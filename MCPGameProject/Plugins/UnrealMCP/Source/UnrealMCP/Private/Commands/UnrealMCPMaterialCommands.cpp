@@ -12,6 +12,7 @@
 #include "Materials/MaterialExpressionTextureSampleParameter.h"
 #include "Materials/MaterialExpressionComment.h"
 #include "Materials/MaterialExpressionCustom.h"
+#include "Materials/MaterialExpressionDynamicParameter.h"
 #include "EditorAssetLibrary.h"
 #include "Engine/Font.h"
 #include "MaterialEditingLibrary.h"
@@ -1130,12 +1131,52 @@ TSharedPtr<FJsonObject> FUnrealMCPMaterialCommands::HandleSetMaterialExpressionP
         SoftObjProp->SetPropertyValue_InContainer(Expr, SoftPtr);
         bSuccess = true;
     }
+    else if (FArrayProperty* ArrProp = CastField<FArrayProperty>(Prop))
+    {
+        // String/name arrays, e.g. DynamicParameter.ParamNames (TArray<FName>).
+        if (ValueJson->Type != EJson::Array)
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(
+                FString::Printf(TEXT("Property '%s' is an array; provide a JSON array of strings"), *PropertyName));
+        }
+        const TArray<TSharedPtr<FJsonValue>>& Arr = ValueJson->AsArray();
+        FScriptArrayHelper Helper(ArrProp, ArrProp->ContainerPtrToValuePtr<void>(Expr));
+        if (FNameProperty* InnerName = CastField<FNameProperty>(ArrProp->Inner))
+        {
+            Helper.Resize(Arr.Num());
+            for (int32 i = 0; i < Arr.Num(); ++i)
+                InnerName->SetPropertyValue(Helper.GetRawPtr(i), FName(*Arr[i]->AsString()));
+            bSuccess = true;
+        }
+        else if (FStrProperty* InnerStr = CastField<FStrProperty>(ArrProp->Inner))
+        {
+            Helper.Resize(Arr.Num());
+            for (int32 i = 0; i < Arr.Num(); ++i)
+                InnerStr->SetPropertyValue(Helper.GetRawPtr(i), Arr[i]->AsString());
+            bSuccess = true;
+        }
+        else
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(
+                FString::Printf(TEXT("Array property '%s' has unsupported inner type '%s' (only string/name arrays are supported)"),
+                    *PropertyName, *ArrProp->Inner->GetCPPType()));
+        }
+
+        // DynamicParameter::GetOutputs() indexes ParamNames[0..3] unconditionally, so keep
+        // at least 4 entries to avoid an out-of-bounds crash, then refresh the output pins.
+        if (UMaterialExpressionDynamicParameter* DynParam = Cast<UMaterialExpressionDynamicParameter>(Expr))
+        {
+            while (DynParam->ParamNames.Num() < 4)
+                DynParam->ParamNames.Add(FString::Printf(TEXT("Param%d"), DynParam->ParamNames.Num() + 1));
+            DynParam->UpdateDynamicParameterProperties();
+        }
+    }
     } // end if (!bSuccess) wrapper
 
     if (!bSuccess)
     {
         return FUnrealMCPCommonUtils::CreateErrorResponse(
-            FString::Printf(TEXT("Unsupported property type '%s' for property '%s'. Supported: float, double, int, bool, string, name, LinearColor, Color, Vector, Vector4, enum, object (asset path), soft_object (asset path). Custom HLSL arrays (Inputs, AdditionalOutputs, AdditionalDefines, IncludeFilePaths) are also supported."),
+            FString::Printf(TEXT("Unsupported property type '%s' for property '%s'. Supported: float, double, int, bool, string, name, LinearColor, Color, Vector, Vector4, enum, object (asset path), soft_object (asset path), string/name arrays (e.g. DynamicParameter.ParamNames). Custom HLSL arrays (Inputs, AdditionalOutputs, AdditionalDefines, IncludeFilePaths) are also supported."),
                 *Prop->GetCPPType(), *PropertyName));
     }
 
@@ -1154,6 +1195,113 @@ TSharedPtr<FJsonObject> FUnrealMCPMaterialCommands::HandleSetMaterialExpressionP
 // ============================================================================
 // connect_material_expressions
 // ============================================================================
+
+// Resolve a material expression output pin to an index, using the virtual GetOutputs()
+// (which populates dynamic names like DynamicParameter's ParamNames). Handles empty/None
+// (default output 0, valid even when Outputs is empty), numeric index, and name match.
+static bool ResolveExpressionOutputIndex(UMaterialExpression* FromExpr, const FString& FromOutputName, int32& OutIndex, FString& OutError)
+{
+    TArray<FExpressionOutput>& Outputs = FromExpr->GetOutputs();
+    if (FromOutputName.IsEmpty() || FromOutputName.Equals(TEXT("None"), ESearchCase::IgnoreCase))
+    {
+        OutIndex = 0; // default/first output — valid even when Outputs is empty
+        return true;
+    }
+    if (FromOutputName.IsNumeric())
+    {
+        const int32 Idx = FCString::Atoi(*FromOutputName);
+        if (Outputs.Num() > 0 && !Outputs.IsValidIndex(Idx))
+        {
+            OutError = FString::Printf(TEXT("Output index %d out of range on %s (%d outputs)"),
+                Idx, *FromExpr->GetClass()->GetName(), Outputs.Num());
+            return false;
+        }
+        OutIndex = Idx;
+        return true;
+    }
+    for (int32 i = 0; i < Outputs.Num(); ++i)
+    {
+        if (Outputs[i].OutputName.ToString().Equals(FromOutputName, ESearchCase::IgnoreCase))
+        {
+            OutIndex = i;
+            return true;
+        }
+    }
+    TArray<FString> Avail;
+    for (const FExpressionOutput& O : Outputs)
+        Avail.Add(O.OutputName.IsNone() ? TEXT("(default)") : O.OutputName.ToString());
+    OutError = FString::Printf(TEXT("Output '%s' not found on %s. Available: %s"),
+        *FromOutputName, *FromExpr->GetClass()->GetName(),
+        Avail.Num() ? *FString::Join(Avail, TEXT(", ")) : TEXT("(default only)"));
+    return false;
+}
+
+// Robust expression-to-expression connection. Replaces UMaterialEditingLibrary::
+// ConnectMaterialExpressions, which resolves outputs against the raw Outputs member
+// (missing dynamic names) and rejects several valid pins. This handles:
+//  - DynamicParameter outputs (names come from the virtual GetOutputs()/ParamNames)
+//  - implicit default outputs on nodes whose Outputs member is empty (TextureCoordinate)
+//  - numeric output index ("0".."3")
+//  - single unnamed primary inputs displayed as "Input" (Clamp, Desaturation, ...)
+static bool ConnectExpressionsRobust(UMaterialExpression* FromExpr, const FString& FromOutputName,
+    UMaterialExpression* ToExpr, const FString& ToInputName, FString& OutError)
+{
+    // ── Resolve the output index (virtual GetOutputs populates dynamic names) ──
+    int32 FromIndex = INDEX_NONE;
+    if (!ResolveExpressionOutputIndex(FromExpr, FromOutputName, FromIndex, OutError))
+    {
+        return false;
+    }
+    if (FromIndex < 0)
+    {
+        OutError = FString::Printf(TEXT("Invalid output index %d"), FromIndex);
+        return false;
+    }
+
+    // ── Resolve the input pin ──
+    FExpressionInput* Input = nullptr;
+    if (ToInputName.IsEmpty() || ToInputName.Equals(TEXT("None"), ESearchCase::IgnoreCase))
+    {
+        Input = ToExpr->GetInput(0);
+    }
+    else
+    {
+        TArray<FString> InputNames;
+        int32 InputCount = 0;
+        for (int32 i = 0; FExpressionInput* In = ToExpr->GetInput(i); ++i)
+        {
+            ++InputCount;
+            const FName Nm = ToExpr->GetInputName(i);
+            InputNames.Add(Nm.IsNone() ? TEXT("(unnamed)") : Nm.ToString());
+            if (!Nm.IsNone() && Nm.ToString().Equals(ToInputName, ESearchCase::IgnoreCase))
+            {
+                Input = In;
+                break;
+            }
+        }
+        if (!Input && (InputCount == 1 || ToInputName.Equals(TEXT("Input"), ESearchCase::IgnoreCase)))
+        {
+            // Nodes with a single, often-unnamed primary input surface it as "Input" in the UI.
+            Input = ToExpr->GetInput(0);
+        }
+        if (!Input)
+        {
+            OutError = FString::Printf(TEXT("Input '%s' not found on %s. Available: %s"),
+                *ToInputName, *ToExpr->GetClass()->GetName(),
+                InputNames.Num() ? *FString::Join(InputNames, TEXT(", ")) : TEXT("(none)"));
+            return false;
+        }
+    }
+    if (!Input)
+    {
+        OutError = TEXT("Target input pin is null");
+        return false;
+    }
+
+    Input->Connect(FromIndex, FromExpr);
+    return true;
+}
+
 TSharedPtr<FJsonObject> FUnrealMCPMaterialCommands::HandleConnectMaterialExpressions(const TSharedPtr<FJsonObject>& Params)
 {
     TSharedPtr<FJsonObject> Error;
@@ -1181,13 +1329,14 @@ TSharedPtr<FJsonObject> FUnrealMCPMaterialCommands::HandleConnectMaterialExpress
     UMaterialExpression* ToExpr = GetExpressionByIndex(Material, ToIndex, Error);
     if (!ToExpr) return Error;
 
-    bool bResult = UMaterialEditingLibrary::ConnectMaterialExpressions(FromExpr, FromOutputName, ToExpr, ToInputName);
+    FString ConnectError;
+    bool bResult = ConnectExpressionsRobust(FromExpr, FromOutputName, ToExpr, ToInputName, ConnectError);
     if (!bResult)
     {
         return FUnrealMCPCommonUtils::CreateErrorResponse(
-            FString::Printf(TEXT("Failed to connect node %d (%s) output '%s' -> node %d (%s) input '%s'"),
+            FString::Printf(TEXT("Failed to connect node %d (%s) output '%s' -> node %d (%s) input '%s': %s"),
                 FromIndex, *FromExpr->GetClass()->GetName(), *FromOutputName,
-                ToIndex, *ToExpr->GetClass()->GetName(), *ToInputName));
+                ToIndex, *ToExpr->GetClass()->GetName(), *ToInputName, *ConnectError));
     }
 
     Material->PostEditChange();
@@ -1253,13 +1402,24 @@ TSharedPtr<FJsonObject> FUnrealMCPMaterialCommands::HandleConnectMaterialToPrope
                 *MaterialPropertyStr));
     }
 
-    bool bResult = UMaterialEditingLibrary::ConnectMaterialProperty(Expr, OutputName, MatProp);
-    if (!bResult)
+    // Resolve the output index robustly (fixes DynamicParameter / empty-Outputs nodes),
+    // then connect directly to the material property input.
+    int32 FromIndex = INDEX_NONE;
+    FString OutputError;
+    if (!ResolveExpressionOutputIndex(Expr, OutputName, FromIndex, OutputError))
     {
         return FUnrealMCPCommonUtils::CreateErrorResponse(
-            FString::Printf(TEXT("Failed to connect node %d (%s) output '%s' -> material property '%s'"),
-                NodeIndex, *Expr->GetClass()->GetName(), *OutputName, *MaterialPropertyStr));
+            FString::Printf(TEXT("Failed to connect node %d (%s) output '%s' -> material property '%s': %s"),
+                NodeIndex, *Expr->GetClass()->GetName(), *OutputName, *MaterialPropertyStr, *OutputError));
     }
+
+    FExpressionInput* PropInput = Material->GetExpressionInputForProperty(MatProp);
+    if (!PropInput)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Material property '%s' has no connectable input on this material"), *MaterialPropertyStr));
+    }
+    PropInput->Connect(FromIndex, Expr);
 
     Material->PostEditChange();
     Material->MarkPackageDirty();
