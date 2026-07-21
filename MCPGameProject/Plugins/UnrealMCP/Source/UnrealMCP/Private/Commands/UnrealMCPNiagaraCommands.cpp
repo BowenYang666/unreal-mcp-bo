@@ -2461,6 +2461,106 @@ static FNiagaraVariable MakeRapidIterationParameter(const FString& UniqueEmitter
 	return FNiagaraUtilities::ConvertVariableToRapidIterationConstantName(InputVariable, bSystemScript ? nullptr : *UniqueEmitterName, Usage);
 }
 
+// Read-only reimplementations of unexported FNiagaraStackGraphUtilities helpers.
+// Find the ParameterMapSet "override node" feeding a module/dynamic-input node: it is the
+// UNiagaraNodeParameterMapSet linked to the node's parameter-map input pin. (Class matched by
+// name because NiagaraNodeParameterMapSet.h is a private NiagaraEditor header.)
+static UNiagaraNode* FindOverrideNodeReadOnly(UNiagaraNodeFunctionCall& FuncNode)
+{
+	TArray<UEdGraphPin*> InputPins;
+	FuncNode.GetInputPins(InputPins);
+	for (UEdGraphPin* Pin : InputPins)
+	{
+		if (Pin && Pin->Direction == EGPD_Input && Pin->LinkedTo.Num() == 1)
+		{
+			UEdGraphNode* Owner = Pin->LinkedTo[0]->GetOwningNode();
+			if (Owner && Owner->GetClass()->GetName() == TEXT("NiagaraNodeParameterMapSet"))
+				return Cast<UNiagaraNode>(Owner);
+		}
+	}
+	return nullptr;
+}
+
+// Find the override pin for a specific aliased input handle, without creating one.
+static UEdGraphPin* FindOverridePinReadOnly(UNiagaraNodeFunctionCall& FuncNode, const FString& AliasedHandleStr)
+{
+	UNiagaraNode* OverrideNode = FindOverrideNodeReadOnly(FuncNode);
+	if (!OverrideNode) return nullptr;
+	TArray<UEdGraphPin*> InputPins;
+	OverrideNode->GetInputPins(InputPins);
+	for (UEdGraphPin* Pin : InputPins)
+		if (Pin && Pin->PinName.ToString() == AliasedHandleStr)
+			return Pin;
+	return nullptr;
+}
+
+// For a dynamic-input function-call node, collect its local (rapid-iteration) sub-input values,
+// e.g. RandomRangeVector's Minimum/Maximum. Values live in the owning module Script's store.
+static TSharedPtr<FJsonObject> ReadDynamicInputInfo(UNiagaraNodeFunctionCall& DynNode, UNiagaraScript* Script,
+	ENiagaraScriptUsage Usage, const FString& UniqueEmitterName, FCompileConstantResolver& ConstantResolver)
+{
+	TSharedPtr<FJsonObject> Info = MakeShared<FJsonObject>();
+	const FString ScriptName = DynNode.FunctionScript ? DynNode.FunctionScript->GetName() : DynNode.GetFunctionName();
+	Info->SetStringField(TEXT("name"), ScriptName);
+	Info->SetStringField(TEXT("node"), DynNode.GetFunctionName());
+
+	if (!Script) return Info;
+	FNiagaraParameterStore& RapidParams = Script->RapidIterationParameters;
+	const TSet<FName> ExistingRapidNames = GetRapidParameterNameSet(RapidParams);
+
+	TArray<FNiagaraVariable> DynInputs;
+	TSet<FNiagaraVariable> DynHidden;
+	FNiagaraStackGraphUtilities::GetStackFunctionInputs(
+		DynNode, DynInputs, DynHidden, ConstantResolver,
+		FNiagaraStackGraphUtilities::ENiagaraGetStackFunctionInputPinsOptions::ModuleInputsOnly, false);
+
+	TSharedPtr<FJsonObject> Values = MakeShared<FJsonObject>();
+	for (const FNiagaraVariable& DynVar : DynInputs)
+	{
+		if (!IsRapidIterationInputType(DynVar.GetType())) continue;
+		FNiagaraParameterHandle H(DynVar.GetName());
+		FNiagaraParameterHandle Aliased = FNiagaraParameterHandle::CreateAliasedModuleParameterHandle(H, &DynNode);
+		FNiagaraVariable RapidVar = MakeRapidIterationParameter(UniqueEmitterName, Usage, Aliased.GetParameterHandleString(), DynVar.GetType());
+		if (ExistingRapidNames.Contains(RapidVar.GetName()))
+		{
+			Values->SetField(StripModuleNamespace(DynVar.GetName().ToString()), ReadRapidVariableToJson(RapidParams, RapidVar));
+		}
+	}
+	if (Values->Values.Num() > 0)
+		Info->SetObjectField(TEXT("values"), Values);
+	return Info;
+}
+
+// Classify what an override pin is bound to and annotate the input JSON object.
+// Returns the mode string ("DynamicInput" / "Expression" / "Linked" / "Override").
+static FString AnnotateOverrideMode(TSharedPtr<FJsonObject> Obj, UEdGraphPin* OverridePin, UNiagaraScript* Script,
+	ENiagaraScriptUsage Usage, const FString& UniqueEmitterName, FCompileConstantResolver& ConstantResolver)
+{
+	if (!OverridePin || OverridePin->LinkedTo.Num() == 0)
+		return FString();
+	UEdGraphNode* Src = OverridePin->LinkedTo[0]->GetOwningNode();
+	if (!Src) return FString();
+
+	const FString SrcClass = Src->GetClass()->GetName();
+
+	// UNiagaraNodeCustomHlsl derives from UNiagaraNodeFunctionCall, so check it first (by name,
+	// since the ParameterMap node headers are private to NiagaraEditor).
+	if (SrcClass == TEXT("NiagaraNodeCustomHlsl"))
+		return TEXT("Expression");
+	if (SrcClass == TEXT("NiagaraNodeParameterMapGet"))
+	{
+		if (OverridePin->LinkedTo[0])
+			Obj->SetStringField(TEXT("linked_parameter"), OverridePin->LinkedTo[0]->PinName.ToString());
+		return TEXT("Linked");
+	}
+	if (UNiagaraNodeFunctionCall* DynNode = Cast<UNiagaraNodeFunctionCall>(Src))
+	{
+		Obj->SetObjectField(TEXT("dynamic_input"), ReadDynamicInputInfo(*DynNode, Script, Usage, UniqueEmitterName, ConstantResolver));
+		return TEXT("DynamicInput");
+	}
+	return TEXT("Override");
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // list_module_inputs
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2549,12 +2649,19 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleListModuleInputs(const 
 		FNiagaraParameterHandle Aliased = FNiagaraParameterHandle::CreateAliasedModuleParameterHandle(InputHandle, ModuleNode);
 
 		FString CurrentMode = TEXT("Default");
+
+		// Detect an override pin bound to a dynamic input / custom expression / linked parameter.
+		UEdGraphPin* OverridePin = FindOverridePinReadOnly(*ModuleNode, Aliased.GetParameterHandleString().ToString());
+		const FString OverrideMode = AnnotateOverrideMode(Obj, OverridePin, Script, Usage, UniqueEmitterName, ConstantResolver);
+		if (!OverrideMode.IsEmpty())
+			CurrentMode = OverrideMode;
+
 		if (bRapidType)
 		{
 			FNiagaraVariable RapidVar = MakeRapidIterationParameter(
 				UniqueEmitterName, Usage, Aliased.GetParameterHandleString(), InputVar.GetType());
 			Obj->SetStringField(TEXT("rapid_parameter_name"), RapidVar.GetName().ToString());
-			if (ExistingRapidNames.Contains(RapidVar.GetName()))
+			if (CurrentMode == TEXT("Default") && ExistingRapidNames.Contains(RapidVar.GetName()))
 			{
 				CurrentMode = TEXT("Local");
 				Obj->SetField(TEXT("value"), ReadRapidVariableToJson(RapidParams, RapidVar));
