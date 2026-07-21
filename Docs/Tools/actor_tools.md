@@ -46,16 +46,15 @@ Find actors in the current level by name pattern.
 }
 ```
 
-### create_actor
+### spawn_actor
 
-Create a new actor in the current level.
+Create a new primitive/light/camera actor in the current level.
 
 **Parameters:**
 - `name` (string) - The name for the new actor (must be unique)
-- `type` (string) - The type of actor to create (must be uppercase)
-- `location` (array, optional) - [X, Y, Z] coordinates for the actor's position, defaults to [0, 0, 0]
-- `rotation` (array, optional) - [Pitch, Yaw, Roll] values for the actor's rotation, defaults to [0, 0, 0]
-- `scale` (array, optional) - [X, Y, Z] values for the actor's scale, defaults to [1, 1, 1]
+- `type` (string) - The type of actor to create (uppercase, see Actor Types below)
+- `location` (array, optional) - [X, Y, Z] coordinates, defaults to [0, 0, 0]
+- `rotation` (array, optional) - [Pitch, Yaw, Roll] values, defaults to [0, 0, 0]
 
 **Returns:**
 - Information about the created actor
@@ -63,13 +62,12 @@ Create a new actor in the current level.
 **Example:**
 ```json
 {
-  "command": "create_actor",
+  "command": "spawn_actor",
   "params": {
     "name": "MyCube",
     "type": "CUBE",
     "location": [0, 0, 100],
-    "rotation": [0, 45, 0],
-    "scale": [2, 2, 2]
+    "rotation": [0, 45, 0]
   }
 }
 ```
@@ -135,6 +133,49 @@ Get all properties of an actor.
   "command": "get_actor_properties",
   "params": {
     "name": "MyCube"
+  }
+}
+```
+
+### set_actor_property
+
+Set a single property on an actor via reflection.
+
+**Parameters:**
+- `name` (string) - The name of the actor
+- `property_name` (string) - The property to set
+- `property_value` - The new value (type depends on the property)
+
+**Example:**
+```json
+{
+  "command": "set_actor_property",
+  "params": {
+    "name": "MyPointLight",
+    "property_name": "Intensity",
+    "property_value": 5000
+  }
+}
+```
+
+### spawn_blueprint_actor
+
+Spawn an actor instance from a Blueprint asset.
+
+**Parameters:**
+- `blueprint_name` (string) - Name or path of the Blueprint to spawn
+- `actor_name` (string) - Unique name for the spawned actor
+- `location` (array, optional) - [X, Y, Z] coordinates, defaults to [0, 0, 0]
+- `rotation` (array, optional) - [Pitch, Yaw, Roll] values, defaults to [0, 0, 0]
+
+**Example:**
+```json
+{
+  "command": "spawn_blueprint_actor",
+  "params": {
+    "blueprint_name": "BP_Enemy",
+    "actor_name": "Enemy_1",
+    "location": [500, 0, 100]
   }
 }
 ```

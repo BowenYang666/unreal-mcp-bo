@@ -95,3 +95,26 @@ Filter by category:
   }
 }
 ```
+
+## AI / Asset Reading
+
+### read_behavior_tree
+
+Read the full structure of a Behavior Tree asset (root, composite/decorator/service/task nodes, hierarchy).
+
+**Parameters:**
+- `asset_path` (string) - Behavior Tree asset path, e.g. `/Game/AI/BT_Enemy`
+
+### read_blackboard
+
+Read all keys from a Blackboard data asset (key names, types, parent blackboard).
+
+**Parameters:**
+- `asset_path` (string) - Blackboard asset path, e.g. `/Game/AI/BB_Enemy`
+
+### read_state_tree
+
+Read the full structure of a StateTree asset (states, tasks, transitions, evaluators).
+
+**Parameters:**
+- `asset_path` (string) - StateTree asset path, e.g. `/Game/AI/ST_Enemy`

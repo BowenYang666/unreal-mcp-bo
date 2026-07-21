@@ -100,6 +100,46 @@ Gracefully close the Unreal Editor. Closes all open asset editor tabs first to a
 }
 ```
 
+## Asset & Level Management
+
+### save_asset
+
+Save an asset to disk.
+
+**Parameters:**
+- `asset_path` (string) - Asset path to save, e.g. `/Game/VFX/NS_Explosion`
+
+### open_asset
+
+Open an asset in its default editor window.
+
+**Parameters:**
+- `asset_path` (string) - Asset path to open
+
+### open_level
+
+Open (load) a level/map into the editor viewport.
+
+**Parameters:**
+- `level_path` (string) - Level asset path, e.g. `/Game/Maps/MyLevel`
+- `save_dirty` (bool, optional) - Save unsaved changes before switching levels (default: false)
+
+### save_level
+
+Save the currently open level/map to disk.
+
+**Parameters:**
+- None
+
+### create_level
+
+Create a new level/map at the given content path, optionally from a template.
+
+**Parameters:**
+- `level_path` (string) - Content path for the new level, e.g. `/Game/Maps/NewLevel`
+- `template_path` (string, optional) - Template level to copy from
+- `partitioned` (bool, optional) - Create as a World Partition level (default: false)
+
 ## Error Handling
 
 All command responses include a "status" field indicating whether the operation succeeded, and an optional "message" field with details in case of failure.
