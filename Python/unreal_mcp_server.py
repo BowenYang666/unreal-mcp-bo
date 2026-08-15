@@ -443,6 +443,7 @@ _CATEGORY_TOOLS = {
         "list_materials", "read_material", "get_material_instance_parameters",
         "create_material", "add_material_expression", "set_material_expression_property",
         "connect_material_expressions", "connect_material_to_property", "create_material_instance",
+        "set_material_instance_parameters",
         "add_material_comment", "reset_material_node_layout", "set_material_property",
         "add_custom_hlsl_expression", "set_material_expression_position",
     },

@@ -29,7 +29,15 @@ Read the parameters (scalar/vector/texture, override state) of a Material Instan
 Create a new Material asset at a content path.
 
 ### `create_material_instance`
-Create a Material Instance Constant from a parent material.
+Create a Material Instance Constant from a parent material, with optional parameter overrides:
+- `scalar_params` — `{"ParamName": value}`
+- `vector_params` — `{"ParamName": {"r":1,"g":0,"b":0,"a":1}}`
+- `texture_params` — `{"ParamName": "/Game/.../T_MyTex"}` (path tolerates a missing object suffix)
+
+This is the vendor pattern: one master material + many instances that only swap the texture (and a scalar or two). No need to duplicate the graph per variant.
+
+### `set_material_instance_parameters`
+Override parameters on an **existing** Material Instance Constant (for iteration, no re-creation). Same `scalar_params` / `vector_params` / `texture_params` shapes as `create_material_instance`; only the parameters you pass are changed.
 
 ## Graph Editing
 

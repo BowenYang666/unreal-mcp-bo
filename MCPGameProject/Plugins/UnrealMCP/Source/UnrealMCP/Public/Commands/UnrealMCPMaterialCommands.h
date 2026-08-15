@@ -46,6 +46,9 @@ private:
     /** Create a MaterialInstanceConstant from a parent Material. */
     TSharedPtr<FJsonObject> HandleCreateMaterialInstance(const TSharedPtr<FJsonObject>& Params);
 
+    /** Override parameters on an existing MaterialInstanceConstant. */
+    TSharedPtr<FJsonObject> HandleSetMaterialInstanceParameters(const TSharedPtr<FJsonObject>& Params);
+
     /** Add a comment box (group) to the material graph. */
     TSharedPtr<FJsonObject> HandleAddMaterialComment(const TSharedPtr<FJsonObject>& Params);
 

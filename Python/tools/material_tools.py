@@ -591,7 +591,8 @@ def register_material_tools(mcp: FastMCP):
         asset_path: str,
         parent_material_path: str,
         scalar_params: Dict[str, float] = None,
-        vector_params: Dict[str, Dict[str, float]] = None
+        vector_params: Dict[str, Dict[str, float]] = None,
+        texture_params: Dict[str, str] = None
     ) -> Dict[str, Any]:
         """Create a MaterialInstanceConstant from a parent Material and set parameter overrides.
 
@@ -601,13 +602,16 @@ def register_material_tools(mcp: FastMCP):
             parent_material_path: Full asset path of the parent material (e.g. "/Game/Materials/M_Frost")
             scalar_params: Dict of scalar parameter overrides {"ParamName": value}. Default: no overrides.
             vector_params: Dict of vector parameter overrides {"ParamName": {"r":1,"g":0,"b":0,"a":1}}. Default: no overrides.
+            texture_params: Dict of texture parameter overrides {"ParamName": "/Game/.../T_MyTex"}. The
+                path tolerates a missing object suffix. This is the vendor pattern of one master material
+                + many instances that only swap the texture. Default: no overrides.
 
         Returns:
-            Dict with name, path, parent, scalar_parameters, vector_parameters
+            Dict with name, path, parent, scalar_parameters, vector_parameters, texture_parameters
 
         Examples:
             create_material_instance(asset_path="/Game/Materials/MI_FrostLight", parent_material_path="/Game/Materials/M_Frost", scalar_params={"FrostAmount": 0.3})
-            create_material_instance(asset_path="/Game/Materials/MI_FrostHeavy", parent_material_path="/Game/Materials/M_Frost", scalar_params={"FrostAmount": 1.0}, vector_params={"IceColor": {"r":0.4,"g":0.7,"b":1.0,"a":1.0}})
+            create_material_instance(asset_path="/Game/Materials/MI_Lightning", parent_material_path="/Game/FX/M_MagicFlash", scalar_params={"Panner_Speed_Y": 0.05}, texture_params={"MainTex": "/Game/FX/T_Lightning"})
         """
         from unreal_mcp_server import get_unreal_connection
 
@@ -624,6 +628,8 @@ def register_material_tools(mcp: FastMCP):
                 params["scalar_params"] = scalar_params
             if vector_params:
                 params["vector_params"] = vector_params
+            if texture_params:
+                params["texture_params"] = texture_params
 
             response = unreal.send_command("create_material_instance", params)
             if not response:
@@ -637,6 +643,61 @@ def register_material_tools(mcp: FastMCP):
 
         except Exception as e:
             logger.error(f"Error creating material instance: {e}")
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def set_material_instance_parameters(
+        ctx: Context,
+        asset_path: str,
+        scalar_params: Dict[str, float] = None,
+        vector_params: Dict[str, Dict[str, float]] = None,
+        texture_params: Dict[str, str] = None
+    ) -> Dict[str, Any]:
+        """Override parameters on an EXISTING MaterialInstanceConstant (no re-creation).
+
+        Use for iteration: tune scalar/vector/texture overrides on an MI you already created.
+        Same value shapes as create_material_instance. Only the parameters you pass are changed.
+
+        Args:
+            ctx: The MCP context
+            asset_path: Full asset path of the existing material instance (e.g. "/Game/Materials/MI_Lightning")
+            scalar_params: Dict of scalar overrides {"ParamName": value}.
+            vector_params: Dict of vector overrides {"ParamName": {"r":1,"g":0,"b":0,"a":1}}.
+            texture_params: Dict of texture overrides {"ParamName": "/Game/.../T_MyTex"}.
+
+        Returns:
+            Dict with name, path, parent, scalar_parameters, vector_parameters, texture_parameters
+
+        Example:
+            set_material_instance_parameters(asset_path="/Game/FX/MI_Lightning", texture_params={"MainTex": "/Game/FX/T_Bolt"}, scalar_params={"Panner_Speed_Y": 0.08})
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            params = {"asset_path": asset_path}
+            if scalar_params:
+                params["scalar_params"] = scalar_params
+            if vector_params:
+                params["vector_params"] = vector_params
+            if texture_params:
+                params["texture_params"] = texture_params
+
+            response = unreal.send_command("set_material_instance_parameters", params)
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+
+            result = response.get("result", response)
+            logger.info(f"Updated material instance: {result.get('name', 'unknown')}")
+            return result
+
+        except Exception as e:
+            logger.error(f"Error setting material instance parameters: {e}")
             return {"success": False, "message": str(e)}
 
     @mcp.tool()

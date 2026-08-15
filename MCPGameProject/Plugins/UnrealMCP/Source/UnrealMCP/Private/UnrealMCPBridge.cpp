@@ -322,6 +322,7 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("connect_material_to_property") ||
                      CommandType == TEXT("add_custom_hlsl_expression") ||
                      CommandType == TEXT("create_material_instance") ||
+                     CommandType == TEXT("set_material_instance_parameters") ||
                      CommandType == TEXT("add_material_comment") ||
                      CommandType == TEXT("reset_material_node_layout") ||
                      CommandType == TEXT("set_expression_position") ||

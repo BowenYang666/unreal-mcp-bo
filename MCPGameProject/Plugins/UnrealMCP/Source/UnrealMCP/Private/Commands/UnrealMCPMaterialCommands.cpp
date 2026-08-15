@@ -15,6 +15,7 @@
 #include "Materials/MaterialExpressionDynamicParameter.h"
 #include "EditorAssetLibrary.h"
 #include "Engine/Font.h"
+#include "Engine/Texture.h"
 #include "MaterialEditingLibrary.h"
 #include "MaterialShared.h"
 #include "RHI.h"
@@ -67,6 +68,10 @@ TSharedPtr<FJsonObject> FUnrealMCPMaterialCommands::HandleCommand(const FString&
     else if (CommandType == TEXT("create_material_instance"))
     {
         return HandleCreateMaterialInstance(Params);
+    }
+    else if (CommandType == TEXT("set_material_instance_parameters"))
+    {
+        return HandleSetMaterialInstanceParameters(Params);
     }
     else if (CommandType == TEXT("add_material_comment"))
     {
@@ -1545,6 +1550,93 @@ TSharedPtr<FJsonObject> FUnrealMCPMaterialCommands::HandleAddCustomHLSLExpressio
 // ============================================================================
 // create_material_instance
 // ============================================================================
+
+// Apply scalar_params / vector_params / texture_params from the request to an MIC.
+static void ApplyMaterialInstanceParams(UMaterialInstanceConstant* Inst, const TSharedPtr<FJsonObject>& Params)
+{
+    if (Params->HasField(TEXT("scalar_params")))
+    {
+        TSharedPtr<FJsonObject> ScalarObj = Params->GetObjectField(TEXT("scalar_params"));
+        for (const auto& Pair : ScalarObj->Values)
+            Inst->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(FName(*Pair.Key)), (float)Pair.Value->AsNumber());
+    }
+    if (Params->HasField(TEXT("vector_params")))
+    {
+        TSharedPtr<FJsonObject> VectorObj = Params->GetObjectField(TEXT("vector_params"));
+        for (const auto& Pair : VectorObj->Values)
+        {
+            TSharedPtr<FJsonObject> ColorObj = Pair.Value->AsObject();
+            if (!ColorObj) continue;
+            FLinearColor Color;
+            Color.R = (float)ColorObj->GetNumberField(TEXT("r"));
+            Color.G = (float)ColorObj->GetNumberField(TEXT("g"));
+            Color.B = (float)ColorObj->GetNumberField(TEXT("b"));
+            Color.A = ColorObj->HasField(TEXT("a")) ? (float)ColorObj->GetNumberField(TEXT("a")) : 1.0f;
+            Inst->SetVectorParameterValueEditorOnly(FMaterialParameterInfo(FName(*Pair.Key)), Color);
+        }
+    }
+    if (Params->HasField(TEXT("texture_params")))
+    {
+        TSharedPtr<FJsonObject> TextureObj = Params->GetObjectField(TEXT("texture_params"));
+        for (const auto& Pair : TextureObj->Values)
+        {
+            FString TexPath = Pair.Value->AsString();
+            if (TexPath.IsEmpty()) continue;
+            if (!TexPath.Contains(TEXT(".")))
+            {
+                FString Left, Right;
+                if (TexPath.Split(TEXT("/"), &Left, &Right, ESearchCase::IgnoreCase, ESearchDir::FromEnd))
+                    TexPath = FString::Printf(TEXT("%s.%s"), *Pair.Value->AsString(), *Right);
+            }
+            if (UTexture* Texture = LoadObject<UTexture>(nullptr, *TexPath))
+                Inst->SetTextureParameterValueEditorOnly(FMaterialParameterInfo(FName(*Pair.Key)), Texture);
+        }
+    }
+}
+
+// Serialize the current scalar/vector/texture overrides of an MIC into the result JSON.
+static void BuildMaterialInstanceResponse(UMaterialInstanceConstant* Inst, TSharedPtr<FJsonObject> ResultJson)
+{
+    ResultJson->SetStringField(TEXT("name"), Inst->GetName());
+    ResultJson->SetStringField(TEXT("path"), Inst->GetPathName());
+    ResultJson->SetStringField(TEXT("parent"), Inst->Parent ? Inst->Parent->GetPathName() : TEXT(""));
+
+    TArray<TSharedPtr<FJsonValue>> ScalarArray;
+    for (const FScalarParameterValue& Param : Inst->ScalarParameterValues)
+    {
+        TSharedPtr<FJsonObject> P = MakeShareable(new FJsonObject);
+        P->SetStringField(TEXT("name"), Param.ParameterInfo.Name.ToString());
+        P->SetNumberField(TEXT("value"), Param.ParameterValue);
+        ScalarArray.Add(MakeShareable(new FJsonValueObject(P)));
+    }
+    ResultJson->SetArrayField(TEXT("scalar_parameters"), ScalarArray);
+
+    TArray<TSharedPtr<FJsonValue>> VectorArray;
+    for (const FVectorParameterValue& Param : Inst->VectorParameterValues)
+    {
+        TSharedPtr<FJsonObject> P = MakeShareable(new FJsonObject);
+        P->SetStringField(TEXT("name"), Param.ParameterInfo.Name.ToString());
+        TSharedPtr<FJsonObject> C = MakeShareable(new FJsonObject);
+        C->SetNumberField(TEXT("r"), Param.ParameterValue.R);
+        C->SetNumberField(TEXT("g"), Param.ParameterValue.G);
+        C->SetNumberField(TEXT("b"), Param.ParameterValue.B);
+        C->SetNumberField(TEXT("a"), Param.ParameterValue.A);
+        P->SetObjectField(TEXT("value"), C);
+        VectorArray.Add(MakeShareable(new FJsonValueObject(P)));
+    }
+    ResultJson->SetArrayField(TEXT("vector_parameters"), VectorArray);
+
+    TArray<TSharedPtr<FJsonValue>> TextureArray;
+    for (const FTextureParameterValue& Param : Inst->TextureParameterValues)
+    {
+        TSharedPtr<FJsonObject> P = MakeShareable(new FJsonObject);
+        P->SetStringField(TEXT("name"), Param.ParameterInfo.Name.ToString());
+        P->SetStringField(TEXT("texture"), Param.ParameterValue ? Param.ParameterValue->GetPathName() : TEXT(""));
+        TextureArray.Add(MakeShareable(new FJsonValueObject(P)));
+    }
+    ResultJson->SetArrayField(TEXT("texture_parameters"), TextureArray);
+}
+
 TSharedPtr<FJsonObject> FUnrealMCPMaterialCommands::HandleCreateMaterialInstance(const TSharedPtr<FJsonObject>& Params)
 {
     if (!Params->HasField(TEXT("asset_path")) || !Params->HasField(TEXT("parent_material_path")))
@@ -1602,37 +1694,8 @@ TSharedPtr<FJsonObject> FUnrealMCPMaterialCommands::HandleCreateMaterialInstance
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create material instance"));
     }
 
-    // Set scalar parameter overrides
-    if (Params->HasField(TEXT("scalar_params")))
-    {
-        TSharedPtr<FJsonObject> ScalarObj = Params->GetObjectField(TEXT("scalar_params"));
-        for (const auto& Pair : ScalarObj->Values)
-        {
-            FName ParamName = FName(*Pair.Key);
-            float Value = (float)Pair.Value->AsNumber();
-            NewInst->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(ParamName), Value);
-        }
-    }
-
-    // Set vector parameter overrides
-    if (Params->HasField(TEXT("vector_params")))
-    {
-        TSharedPtr<FJsonObject> VectorObj = Params->GetObjectField(TEXT("vector_params"));
-        for (const auto& Pair : VectorObj->Values)
-        {
-            FName ParamName = FName(*Pair.Key);
-            TSharedPtr<FJsonObject> ColorObj = Pair.Value->AsObject();
-            if (ColorObj)
-            {
-                FLinearColor Color;
-                Color.R = (float)ColorObj->GetNumberField(TEXT("r"));
-                Color.G = (float)ColorObj->GetNumberField(TEXT("g"));
-                Color.B = (float)ColorObj->GetNumberField(TEXT("b"));
-                Color.A = ColorObj->HasField(TEXT("a")) ? (float)ColorObj->GetNumberField(TEXT("a")) : 1.0f;
-                NewInst->SetVectorParameterValueEditorOnly(FMaterialParameterInfo(ParamName), Color);
-            }
-        }
-    }
+    // Apply scalar / vector / texture parameter overrides.
+    ApplyMaterialInstanceParams(NewInst, Params);
 
     FAssetRegistryModule::AssetCreated(NewInst);
     NewInst->MarkPackageDirty();
@@ -1645,36 +1708,42 @@ TSharedPtr<FJsonObject> FUnrealMCPMaterialCommands::HandleCreateMaterialInstance
 
     // Build response
     TSharedPtr<FJsonObject> ResultJson = MakeShareable(new FJsonObject);
-    ResultJson->SetStringField(TEXT("name"), NewInst->GetName());
-    ResultJson->SetStringField(TEXT("path"), NewInst->GetPathName());
-    ResultJson->SetStringField(TEXT("parent"), ParentMaterial->GetPathName());
+    BuildMaterialInstanceResponse(NewInst, ResultJson);
+    return ResultJson;
+}
 
-    // Return set parameters
-    TArray<TSharedPtr<FJsonValue>> ScalarArray;
-    for (const FScalarParameterValue& Param : NewInst->ScalarParameterValues)
+// ============================================================================
+// set_material_instance_parameters
+// ============================================================================
+TSharedPtr<FJsonObject> FUnrealMCPMaterialCommands::HandleSetMaterialInstanceParameters(const TSharedPtr<FJsonObject>& Params)
+{
+    if (!Params->HasField(TEXT("asset_path")))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing required parameter: 'asset_path'"));
+
+    const FString AssetPath = Params->GetStringField(TEXT("asset_path"));
+    UObject* Obj = UEditorAssetLibrary::LoadAsset(AssetPath);
+    UMaterialInstanceConstant* Inst = Cast<UMaterialInstanceConstant>(Obj);
+    if (!Inst)
     {
-        TSharedPtr<FJsonObject> P = MakeShareable(new FJsonObject);
-        P->SetStringField(TEXT("name"), Param.ParameterInfo.Name.ToString());
-        P->SetNumberField(TEXT("value"), Param.ParameterValue);
-        ScalarArray.Add(MakeShareable(new FJsonValueObject(P)));
+        if (Cast<UMaterial>(Obj))
+            return FUnrealMCPCommonUtils::CreateErrorResponse(
+                FString::Printf(TEXT("'%s' is a Material, not a MaterialInstance. Use set_material_expression_property / connect tools instead."), *AssetPath));
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Material instance not found at path: %s"), *AssetPath));
     }
-    ResultJson->SetArrayField(TEXT("scalar_parameters"), ScalarArray);
 
-    TArray<TSharedPtr<FJsonValue>> VectorArray;
-    for (const FVectorParameterValue& Param : NewInst->VectorParameterValues)
-    {
-        TSharedPtr<FJsonObject> P = MakeShareable(new FJsonObject);
-        P->SetStringField(TEXT("name"), Param.ParameterInfo.Name.ToString());
-        TSharedPtr<FJsonObject> C = MakeShareable(new FJsonObject);
-        C->SetNumberField(TEXT("r"), Param.ParameterValue.R);
-        C->SetNumberField(TEXT("g"), Param.ParameterValue.G);
-        C->SetNumberField(TEXT("b"), Param.ParameterValue.B);
-        C->SetNumberField(TEXT("a"), Param.ParameterValue.A);
-        P->SetObjectField(TEXT("value"), C);
-        VectorArray.Add(MakeShareable(new FJsonValueObject(P)));
-    }
-    ResultJson->SetArrayField(TEXT("vector_parameters"), VectorArray);
+    ApplyMaterialInstanceParams(Inst, Params);
 
+    Inst->MarkPackageDirty();
+    Inst->PostEditChange();
+
+    TArray<UPackage*> PackagesToSave;
+    PackagesToSave.Add(Inst->GetPackage());
+    FEditorFileUtils::PromptForCheckoutAndSave(PackagesToSave, false, false);
+
+    TSharedPtr<FJsonObject> ResultJson = MakeShareable(new FJsonObject);
+    ResultJson->SetStringField(TEXT("status"), TEXT("success"));
+    BuildMaterialInstanceResponse(Inst, ResultJson);
     return ResultJson;
 }
 
