@@ -1,10 +1,12 @@
-# Copy UnrealMCP Plugin to Another Project
+# Onboard an Unreal Project to UnrealMCP
 
 This guide is for **Copilot / AI agents** to follow when a user says something like:
 > "帮我 copy 到 D:\UnrealProjects\MyProject"
 > "Deploy the plugin to D:\SomeFolder\SomeProject"
 
-Follow the steps below **in order**. Do not skip steps.
+Follow the steps below **in order**. Do not stop after copying: onboarding is complete only after the plugin builds, the editor starts, the MCP client is configured, and a read-only smoke test succeeds.
+
+For the full agent workflow (VS Code + Claude Code, read-only/full profiles, update handling, and validation), load `.github/skills/unreal-mcp-project-onboarding/SKILL.md`.
 
 ---
 
@@ -60,14 +62,14 @@ if (!(Test-Path "<PROJECT_ROOT>\Plugins")) {
 
 ## Step 4: Copy the Plugin
 
-**Source:** `d:\githubcode\unreal-mcp-bo\MCPGameProject\Plugins\UnrealMCP`
+**Source:** `<MCP_REPO>\MCPGameProject\Plugins\UnrealMCP`
 
 **Destination:** `<PROJECT_ROOT>\Plugins\UnrealMCP`
 
 **Action:** If the destination already exists, warn the user and ask for confirmation before overwriting.
 
 ```powershell
-$src = "d:\githubcode\unreal-mcp-bo\MCPGameProject\Plugins\UnrealMCP"
+$src = "<MCP_REPO>\MCPGameProject\Plugins\UnrealMCP"
 $dst = "<PROJECT_ROOT>\Plugins\UnrealMCP"
 
 # Check if already exists
@@ -133,33 +135,68 @@ else { Write-Host "ERROR: Some files are missing!" }
 
 ---
 
-## Step 7: Post-Copy Instructions
+## Step 7: Build the Target Editor
 
-After successful copy, tell the user:
+Close the target Unreal Editor gracefully (save dirty assets first), then build the editor target:
 
-1. **Open the project** in Unreal Engine (double-click the `.uproject` file).
-2. UE will detect the new plugin and **prompt to rebuild** — click **Yes**.
-3. Alternatively, if using Visual Studio:
-   - Right-click the `.uproject` file → **Generate Visual Studio project files**
-   - Open the `.sln` in Visual Studio
-   - Build the project (Ctrl+B)
-4. After rebuild, the MCP TCP server will start automatically when the editor opens.
-5. Make sure the **MCP Python server** is configured in your `mcp.json`:
+```powershell
+& "<ENGINE_ROOT>\Engine\Build\BatchFiles\Build.bat" `
+    "<PROJECT_NAME>Editor" Win64 Development `
+    -Project="<PROJECT_ROOT>\<PROJECT_NAME>.uproject" `
+    -WaitMutex -FromMsBuild
+```
+
+Content-only projects are supported; UnrealBuildTool may generate temporary target files. If Live Coding blocks the build, close the relevant editor(s) and retry.
+
+## Step 8: Configure the MCP Client
+
+Use the Python server from the UnrealMCP repository; do not copy the Python directory into the target UE project. Resolve an absolute `uv` path with `Get-Command uv`.
+
+For VS Code/Copilot, create or merge `.vscode/mcp.json`:
+
    ```jsonc
    {
-       "servers": {
-           "unrealMCP": {
-               "command": "uv",
-               "args": [
-                   "--directory",
-                   "d:\\githubcode\\unreal-mcp-bo\\Python",
-                   "run",
-                   "unreal_mcp_server.py"
-               ]
-           }
-       }
+         "servers": {
+             "unrealMCP": {
+                 "type": "stdio",
+                 "command": "<ABSOLUTE_UV_PATH>",
+                 "args": ["--directory", "<MCP_REPO>\\Python", "run", "unreal_mcp_server.py"],
+                 "env": { "UNREAL_MCP_READ_ONLY": "1" }
+             }
+         }
    }
    ```
+
+For Claude Code, create or merge strict JSON at the project root in `.mcp.json`:
+
+```json
+{
+    "mcpServers": {
+        "unrealMCP": {
+            "command": "<ABSOLUTE_UV_PATH>",
+            "args": ["--directory", "<MCP_REPO>\\Python", "run", "unreal_mcp_server.py"],
+            "env": { "UNREAL_MCP_READ_ONLY": "1" }
+        }
+    }
+}
+```
+
+Claude project servers require one-time approval: launch `claude` in the project root and approve `unrealMCP`. `claude mcp list` reports `Pending approval` until this is done.
+
+Use `UNREAL_MCP_READ_ONLY=1` for project inspection. Set it to `0` only when authoring is requested.
+
+## Step 9: Launch and Verify
+
+1. Launch the target `.uproject` with the matching `UnrealEditor.exe`.
+2. Verify that UnrealMCP listens on `127.0.0.1:13090`:
+
+```powershell
+Get-NetTCPConnection -LocalPort 13090 -State Listen -ErrorAction SilentlyContinue
+```
+
+3. Restart or approve the MCP client.
+4. Smoke-test with a narrow `list_blueprints` query, then `read_blueprint` on one asset.
+5. Do not report success while the build fails, the listener is absent, or the client cannot discover `unrealMCP`.
 
 ---
 
@@ -168,7 +205,7 @@ After successful copy, tell the user:
 For a known-good project root, the entire copy can be done in one command:
 
 ```powershell
-$src = "d:\githubcode\unreal-mcp-bo\MCPGameProject\Plugins\UnrealMCP"
+$src = "<MCP_REPO>\MCPGameProject\Plugins\UnrealMCP"
 $dst = "<PROJECT_ROOT>\Plugins\UnrealMCP"
 if (Test-Path $dst) { Remove-Item $dst -Recurse -Force }
 if (!(Test-Path (Split-Path $dst))) { New-Item -ItemType Directory -Path (Split-Path $dst) -Force }
@@ -187,5 +224,7 @@ Write-Host "UnrealMCP plugin deployed to $dst"
 | Build error: `ANY_PACKAGE` | You're on UE 5.7+. Make sure you have the latest plugin source. |
 | Build error: `BufferSize` hides global | You're on UE 5.7+. Make sure you have the latest plugin source. |
 | Build error: `VisualStudioTools` module rules | Remove the `VisualStudioTools` entry from the `.uproject` Plugins section. |
-| Plugin not loading | Check the Output Log for "UnrealMCP" messages. Ensure port 55557 is available. |
+| Plugin not loading | Check the Output Log for "UnrealMCP" messages. Ensure port 13090 is available. |
 | MCP server can't connect | Make sure UE editor is running and the plugin is loaded before starting the Python server. |
+| Claude shows `Pending approval` | Launch `claude` in the project root and approve the project-scoped server once. |
+| `uv` works in a terminal but not the client | Use the absolute `uv.exe` path in the MCP config. |

@@ -387,6 +387,8 @@ if _read_only:
         "list_blueprints",
         # Node: inspect existing graph nodes
         "find_blueprint_nodes",
+        # Project: inspect class metadata and current asset property values
+        "get_class_properties",
         # Editor logs: read output log
         "get_editor_logs",
         # Editor state: check unsaved changes
