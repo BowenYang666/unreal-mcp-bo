@@ -266,6 +266,8 @@ Read the full structure of a Blueprint asset, including its parent class, compon
 - `include_nodes` (bool, optional) - Whether to include detailed event graph node info. Defaults to true.
 - `include_properties` (bool, optional) - Whether to include component property details. Defaults to true.
 - `include_anim_graph` (bool, optional) - Whether to include structured AnimGraph data (states, transitions, connections). Only applies to Animation Blueprints. Defaults to false.
+- `include_subgraphs` (bool, optional) - Recursively include collapsed `UK2Node_Composite` graphs in a top-level `subgraphs` array. Defaults to false.
+- `max_subgraph_depth` (int, optional) - Maximum collapsed-graph recursion depth, clamped to 0..32. Defaults to 8.
 
 **Returns:**
 
@@ -280,6 +282,7 @@ Top-level fields:
 | `components` | List of components with class, transform, parent, and properties |
 | `variables` | List of variables with types, defaults, and metadata |
 | `event_graphs` | Event graph nodes with pins and connections |
+| `subgraphs` | (opt-in) Collapsed graphs with IDs, parent/owner metadata, nodes, links, and pin defaults |
 | `anim_graphs` | (AnimBP only) Animation graph with structured nodes and connections |
 | `functions` | List of Blueprint functions with nodes |
 | `interfaces` | List of implemented interfaces |
@@ -289,7 +292,7 @@ Top-level fields:
 
 #### Event Graph Format
 
-Event graphs are fully expanded with nodes, pins, and connections:
+Event graphs are fully expanded with nodes, pins, and connections. Pins also report non-empty `default_value`, `default_text_value`, and `default_object` fields. When `include_subgraphs=true`, composite nodes include `subgraph_id` and the corresponding graph is returned in `subgraphs`.
 
 ```json
 {

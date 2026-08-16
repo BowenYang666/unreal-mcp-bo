@@ -6,6 +6,7 @@
 #include "EdGraphSchema_K2.h"
 #include "K2Node_Event.h"
 #include "K2Node_CallFunction.h"
+#include "K2Node_Composite.h"
 #include "K2Node_VariableGet.h"
 #include "K2Node_VariableSet.h"
 #include "Components/StaticMeshComponent.h"
@@ -1215,6 +1216,164 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetPawnProperties(con
     return ResponseObj;
 }
 
+static FString GetBlueprintGraphId(const UEdGraph* Graph)
+{
+    if (!Graph)
+    {
+        return FString();
+    }
+    return Graph->GraphGuid.IsValid() ? Graph->GraphGuid.ToString() : Graph->GetPathName();
+}
+
+static TSharedPtr<FJsonObject> SerializeBlueprintNode(UEdGraphNode* Node, bool bIncludeSubgraphLinks)
+{
+    TSharedPtr<FJsonObject> NodeObj = MakeShared<FJsonObject>();
+    NodeObj->SetStringField(TEXT("node_id"), Node->NodeGuid.ToString());
+    NodeObj->SetStringField(TEXT("node_class"), Node->GetClass()->GetName());
+    NodeObj->SetStringField(TEXT("node_title"), Node->GetNodeTitle(ENodeTitleType::FullTitle).ToString());
+    NodeObj->SetNumberField(TEXT("pos_x"), Node->NodePosX);
+    NodeObj->SetNumberField(TEXT("pos_y"), Node->NodePosY);
+
+    if (!Node->NodeComment.IsEmpty())
+    {
+        NodeObj->SetStringField(TEXT("comment"), Node->NodeComment);
+    }
+
+    if (UK2Node_Event* EventNode = Cast<UK2Node_Event>(Node))
+    {
+        NodeObj->SetStringField(TEXT("event_name"), EventNode->EventReference.GetMemberName().ToString());
+    }
+
+    if (UK2Node_CallFunction* FuncNode = Cast<UK2Node_CallFunction>(Node))
+    {
+        NodeObj->SetStringField(TEXT("function_name"), FuncNode->FunctionReference.GetMemberName().ToString());
+        if (FuncNode->FunctionReference.GetMemberParentClass())
+        {
+            NodeObj->SetStringField(TEXT("function_class"), FuncNode->FunctionReference.GetMemberParentClass()->GetName());
+        }
+    }
+
+    if (bIncludeSubgraphLinks)
+    {
+        if (UK2Node_Composite* CompositeNode = Cast<UK2Node_Composite>(Node))
+        {
+            if (CompositeNode->BoundGraph)
+            {
+                NodeObj->SetStringField(TEXT("subgraph_id"), GetBlueprintGraphId(CompositeNode->BoundGraph));
+            }
+        }
+    }
+
+    TArray<TSharedPtr<FJsonValue>> PinsArray;
+    for (UEdGraphPin* Pin : Node->Pins)
+    {
+        if (!Pin) continue;
+
+        TSharedPtr<FJsonObject> PinObj = MakeShared<FJsonObject>();
+        PinObj->SetStringField(TEXT("name"), Pin->PinName.ToString());
+        PinObj->SetStringField(TEXT("type"), Pin->PinType.PinCategory.ToString());
+        PinObj->SetStringField(TEXT("direction"), Pin->Direction == EGPD_Input ? TEXT("Input") : TEXT("Output"));
+        PinObj->SetBoolField(TEXT("is_connected"), Pin->LinkedTo.Num() > 0);
+
+        if (!Pin->DefaultValue.IsEmpty())
+        {
+            PinObj->SetStringField(TEXT("default_value"), Pin->DefaultValue);
+        }
+        if (!Pin->DefaultTextValue.IsEmpty())
+        {
+            PinObj->SetStringField(TEXT("default_text_value"), Pin->DefaultTextValue.ToString());
+        }
+        if (Pin->DefaultObject)
+        {
+            PinObj->SetStringField(TEXT("default_object"), Pin->DefaultObject->GetPathName());
+        }
+
+        if (Pin->LinkedTo.Num() > 0)
+        {
+            TArray<TSharedPtr<FJsonValue>> LinkedArray;
+            for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
+            {
+                if (LinkedPin && LinkedPin->GetOwningNode())
+                {
+                    TSharedPtr<FJsonObject> LinkObj = MakeShared<FJsonObject>();
+                    LinkObj->SetStringField(TEXT("node_id"), LinkedPin->GetOwningNode()->NodeGuid.ToString());
+                    LinkObj->SetStringField(TEXT("pin_name"), LinkedPin->PinName.ToString());
+                    LinkedArray.Add(MakeShared<FJsonValueObject>(LinkObj));
+                }
+            }
+            PinObj->SetArrayField(TEXT("linked_to"), LinkedArray);
+        }
+
+        PinsArray.Add(MakeShared<FJsonValueObject>(PinObj));
+    }
+    NodeObj->SetArrayField(TEXT("pins"), PinsArray);
+    return NodeObj;
+}
+
+static TSharedPtr<FJsonObject> SerializeBlueprintGraph(
+    UEdGraph* Graph,
+    bool bIncludeNodes,
+    bool bIncludeGraphMetadata,
+    bool bIncludeSubgraphLinks)
+{
+    TSharedPtr<FJsonObject> GraphObj = MakeShared<FJsonObject>();
+    GraphObj->SetStringField(TEXT("name"), Graph->GetName());
+    GraphObj->SetNumberField(TEXT("node_count"), Graph->Nodes.Num());
+    if (bIncludeGraphMetadata)
+    {
+        GraphObj->SetStringField(TEXT("graph_id"), GetBlueprintGraphId(Graph));
+    }
+
+    if (bIncludeNodes)
+    {
+        TArray<TSharedPtr<FJsonValue>> NodesArray;
+        for (UEdGraphNode* Node : Graph->Nodes)
+        {
+            if (Node)
+            {
+                NodesArray.Add(MakeShared<FJsonValueObject>(SerializeBlueprintNode(Node, bIncludeSubgraphLinks)));
+            }
+        }
+        GraphObj->SetArrayField(TEXT("nodes"), NodesArray);
+    }
+    return GraphObj;
+}
+
+static void CollectBlueprintCompositeSubgraphs(
+    UEdGraph* ParentGraph,
+    bool bIncludeNodes,
+    int32 Depth,
+    int32 MaxDepth,
+    TSet<const UEdGraph*>& VisitedGraphs,
+    TArray<TSharedPtr<FJsonValue>>& SubgraphsArray)
+{
+    if (!ParentGraph || Depth > MaxDepth)
+    {
+        return;
+    }
+
+    for (UEdGraphNode* Node : ParentGraph->Nodes)
+    {
+        UK2Node_Composite* CompositeNode = Cast<UK2Node_Composite>(Node);
+        UEdGraph* ChildGraph = CompositeNode ? CompositeNode->BoundGraph.Get() : nullptr;
+        if (!ChildGraph || VisitedGraphs.Contains(ChildGraph))
+        {
+            continue;
+        }
+
+        VisitedGraphs.Add(ChildGraph);
+        TSharedPtr<FJsonObject> SubgraphObj = SerializeBlueprintGraph(ChildGraph, bIncludeNodes, true, true);
+        SubgraphObj->SetStringField(TEXT("graph_type"), TEXT("collapsed"));
+        SubgraphObj->SetStringField(TEXT("parent_graph_id"), GetBlueprintGraphId(ParentGraph));
+        SubgraphObj->SetStringField(TEXT("owner_node_id"), CompositeNode->NodeGuid.ToString());
+        SubgraphObj->SetStringField(TEXT("owner_node_title"), CompositeNode->GetNodeTitle(ENodeTitleType::FullTitle).ToString());
+        SubgraphObj->SetNumberField(TEXT("depth"), Depth);
+        SubgraphsArray.Add(MakeShared<FJsonValueObject>(SubgraphObj));
+
+        CollectBlueprintCompositeSubgraphs(ChildGraph, bIncludeNodes, Depth + 1, MaxDepth, VisitedGraphs, SubgraphsArray);
+    }
+}
+
 TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleReadBlueprint(const TSharedPtr<FJsonObject>& Params)
 {
     // Get required parameters
@@ -1288,6 +1447,13 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleReadBlueprint(const T
     Params->TryGetBoolField(TEXT("include_nodes"), bIncludeNodes);
     bool bIncludeProperties = true;
     Params->TryGetBoolField(TEXT("include_properties"), bIncludeProperties);
+    bool bIncludeSubgraphs = false;
+    Params->TryGetBoolField(TEXT("include_subgraphs"), bIncludeSubgraphs);
+    int32 MaxSubgraphDepth = 8;
+    if (Params->HasField(TEXT("max_subgraph_depth")))
+    {
+        MaxSubgraphDepth = FMath::Clamp(static_cast<int32>(Params->GetNumberField(TEXT("max_subgraph_depth"))), 0, 32);
+    }
 
     // Parent class info
     if (Blueprint->ParentClass)
@@ -1568,91 +1734,26 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleReadBlueprint(const T
     // When include_nodes=false, still emit each graph's name and node_count so callers
     // know what's there, but skip the per-node/pin walk that dominates response size.
     TArray<TSharedPtr<FJsonValue>> GraphsArray;
+    TArray<TSharedPtr<FJsonValue>> SubgraphsArray;
+    TSet<const UEdGraph*> VisitedGraphs;
     for (UEdGraph* Graph : Blueprint->UbergraphPages)
     {
         if (!Graph) continue;
 
-        TSharedPtr<FJsonObject> GraphObj = MakeShared<FJsonObject>();
-        GraphObj->SetStringField(TEXT("name"), Graph->GetName());
-        GraphObj->SetNumberField(TEXT("node_count"), Graph->Nodes.Num());
-
-        if (bIncludeNodes)
+        VisitedGraphs.Add(Graph);
+        TSharedPtr<FJsonObject> GraphObj = SerializeBlueprintGraph(Graph, bIncludeNodes, bIncludeSubgraphs, bIncludeSubgraphs);
+        if (bIncludeSubgraphs)
         {
-            TArray<TSharedPtr<FJsonValue>> NodesArray;
-            for (UEdGraphNode* Node : Graph->Nodes)
-            {
-                if (!Node) continue;
-
-                TSharedPtr<FJsonObject> NodeObj = MakeShared<FJsonObject>();
-                NodeObj->SetStringField(TEXT("node_id"), Node->NodeGuid.ToString());
-                NodeObj->SetStringField(TEXT("node_class"), Node->GetClass()->GetName());
-                NodeObj->SetStringField(TEXT("node_title"), Node->GetNodeTitle(ENodeTitleType::FullTitle).ToString());
-                NodeObj->SetNumberField(TEXT("pos_x"), Node->NodePosX);
-                NodeObj->SetNumberField(TEXT("pos_y"), Node->NodePosY);
-
-                if (!Node->NodeComment.IsEmpty())
-                {
-                    NodeObj->SetStringField(TEXT("comment"), Node->NodeComment);
-                }
-
-                // Event node specifics
-                UK2Node_Event* EventNode = Cast<UK2Node_Event>(Node);
-                if (EventNode)
-                {
-                    NodeObj->SetStringField(TEXT("event_name"), EventNode->EventReference.GetMemberName().ToString());
-                }
-
-                // Function call node specifics
-                UK2Node_CallFunction* FuncNode = Cast<UK2Node_CallFunction>(Node);
-                if (FuncNode)
-                {
-                    NodeObj->SetStringField(TEXT("function_name"), FuncNode->FunctionReference.GetMemberName().ToString());
-                    if (FuncNode->FunctionReference.GetMemberParentClass())
-                    {
-                        NodeObj->SetStringField(TEXT("function_class"), FuncNode->FunctionReference.GetMemberParentClass()->GetName());
-                    }
-                }
-
-                // Pins info
-                TArray<TSharedPtr<FJsonValue>> PinsArray;
-                for (UEdGraphPin* Pin : Node->Pins)
-                {
-                    if (!Pin) continue;
-                    TSharedPtr<FJsonObject> PinObj = MakeShared<FJsonObject>();
-                    PinObj->SetStringField(TEXT("name"), Pin->PinName.ToString());
-                    PinObj->SetStringField(TEXT("type"), Pin->PinType.PinCategory.ToString());
-                    PinObj->SetStringField(TEXT("direction"), Pin->Direction == EGPD_Input ? TEXT("Input") : TEXT("Output"));
-                    PinObj->SetBoolField(TEXT("is_connected"), Pin->LinkedTo.Num() > 0);
-
-                    // Add linked node IDs
-                    if (Pin->LinkedTo.Num() > 0)
-                    {
-                        TArray<TSharedPtr<FJsonValue>> LinkedArray;
-                        for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
-                        {
-                            if (LinkedPin && LinkedPin->GetOwningNode())
-                            {
-                                TSharedPtr<FJsonObject> LinkObj = MakeShared<FJsonObject>();
-                                LinkObj->SetStringField(TEXT("node_id"), LinkedPin->GetOwningNode()->NodeGuid.ToString());
-                                LinkObj->SetStringField(TEXT("pin_name"), LinkedPin->PinName.ToString());
-                                LinkedArray.Add(MakeShared<FJsonValueObject>(LinkObj));
-                            }
-                        }
-                        PinObj->SetArrayField(TEXT("linked_to"), LinkedArray);
-                    }
-
-                    PinsArray.Add(MakeShared<FJsonValueObject>(PinObj));
-                }
-                NodeObj->SetArrayField(TEXT("pins"), PinsArray);
-
-                NodesArray.Add(MakeShared<FJsonValueObject>(NodeObj));
-            }
-            GraphObj->SetArrayField(TEXT("nodes"), NodesArray);
+            GraphObj->SetStringField(TEXT("graph_type"), TEXT("event"));
+            CollectBlueprintCompositeSubgraphs(Graph, bIncludeNodes, 1, MaxSubgraphDepth, VisitedGraphs, SubgraphsArray);
         }
-
         GraphsArray.Add(MakeShared<FJsonValueObject>(GraphObj));
     }
     ResultObj->SetArrayField(TEXT("event_graphs"), GraphsArray);
+    if (bIncludeSubgraphs)
+    {
+        ResultObj->SetArrayField(TEXT("subgraphs"), SubgraphsArray);
+    }
 
     // ===== Functions =====
     TArray<TSharedPtr<FJsonValue>> FunctionsArray;

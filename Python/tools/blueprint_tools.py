@@ -441,8 +441,10 @@ def register_blueprint_tools(mcp: FastMCP):
         blueprint_path: str,
         include_nodes: bool = True,
         include_properties: bool = True,
-        include_anim_graph: bool = False
-    ) -> Dict[str, str]:
+        include_anim_graph: bool = False,
+        include_subgraphs: bool = False,
+        max_subgraph_depth: int = 8
+    ) -> Dict[str, Any]:
         """Read a Blueprint's structure: parent class, components, variables, event graphs, functions.
 
         Args:
@@ -451,6 +453,9 @@ def register_blueprint_tools(mcp: FastMCP):
                 Set False for large BPs to shrink the response.
             include_properties: Include component UPROPERTY dumps (default True).
             include_anim_graph: Include Animation Graph data for AnimBPs (default False).
+            include_subgraphs: Recursively include collapsed UK2Node_Composite graphs (default False).
+                Returned in a top-level subgraphs array with parent/owner graph metadata.
+            max_subgraph_depth: Maximum collapsed-graph recursion depth, clamped to 0..32 (default 8).
 
         Returns dict with name/path/parent_class/components/variables/event_graphs/functions/interfaces.
         components entries have source: "blueprint" | "cpp_inherited".
@@ -468,6 +473,8 @@ def register_blueprint_tools(mcp: FastMCP):
                 "blueprint_path": blueprint_path,
                 "include_nodes": include_nodes,
                 "include_properties": include_properties,
+                "include_subgraphs": include_subgraphs,
+                "max_subgraph_depth": max(0, min(32, int(max_subgraph_depth))),
             }
             if include_anim_graph:
                 params["include_anim_graph"] = True
@@ -488,8 +495,8 @@ def register_blueprint_tools(mcp: FastMCP):
                 tool_name="read_blueprint",
                 identifier=blueprint_path,
                 preview_keys=("name", "path", "parent_class"),
-                count_keys=("components", "variables", "functions", "event_graphs"),
-                hint="Consider include_nodes=False or include_properties=False for a smaller inline response.",
+                count_keys=("components", "variables", "functions", "event_graphs", "subgraphs"),
+                hint="Consider include_nodes=False, include_properties=False, or a lower max_subgraph_depth for a smaller inline response.",
             )
 
         except Exception as e:

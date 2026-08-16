@@ -59,7 +59,7 @@ Once you know which Blueprint you're interested in, use `read_blueprint` to get 
 "Read the BP_Player blueprint and explain its structure"
 ```
 
-The AI assistant will call `read_blueprint(blueprint_name="BP_Player")` and get a detailed response.
+The AI assistant will call `read_blueprint(blueprint_path="/Game/Blueprints/BP_Player")` and get a detailed response.
 
 ---
 
@@ -147,19 +147,14 @@ Read the complete structure of a Blueprint asset.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `blueprint_name` | string | *(required)* | Name or full path of the Blueprint |
+| `blueprint_path` | string | *(required)* | Full asset path of the Blueprint |
 | `include_nodes` | bool | `true` | Include event graph node details |
 | `include_properties` | bool | `true` | Include component property details |
+| `include_anim_graph` | bool | `false` | Include Animation Graph details for Animation Blueprints |
+| `include_subgraphs` | bool | `false` | Recursively include collapsed `UK2Node_Composite` graphs in a top-level `subgraphs` array |
+| `max_subgraph_depth` | int | `8` | Maximum collapsed-graph recursion depth; clamped to `0..32` |
 
-**Blueprint Name Resolution:**
-
-The tool is flexible in how you specify the Blueprint:
-
-| Input | Resolution |
-|-------|-----------|
-| `"BP_Player"` | Searches `/Game/Blueprints/BP_Player` first, then scans the entire `/Game` tree |
-| `"/Game/Characters/BP_Player"` | Loads directly from the specified path |
-| `"/Game/UI/WBP_HUD"` | Loads directly from the specified path |
+Use the full content path, for example `/Game/Characters/BP_Player` or `/Game/UI/WBP_HUD`.
 
 **Example Request:**
 
@@ -167,7 +162,9 @@ The tool is flexible in how you specify the Blueprint:
 {
   "command": "read_blueprint",
   "params": {
-    "blueprint_name": "BP_Player"
+    "blueprint_path": "/Game/Blueprints/BP_Player",
+    "include_subgraphs": true,
+    "max_subgraph_depth": 8
   }
 }
 ```
@@ -326,6 +323,20 @@ The response contains several sections. Here is a complete example with all sect
     }
   ],
 
+  "subgraphs": [
+    {
+      "graph_id": "8B8A...",
+      "name": "Movement sequence",
+      "graph_type": "collapsed",
+      "parent_graph_id": "41C2...",
+      "owner_node_id": "D051...",
+      "owner_node_title": "Movement sequence\nCollapsed Graph",
+      "depth": 1,
+      "node_count": 42,
+      "nodes": []
+    }
+  ],
+
   "functions": [
     {
       "name": "CalculateDamage",
@@ -357,6 +368,7 @@ The response contains several sections. Here is a complete example with all sect
 | `parent_class` | string | Parent class name (e.g., `"Actor"`, `"Pawn"`, `"Character"`) |
 | `parent_class_path` | string | Full parent class path (e.g., `"/Script/Engine.Pawn"`) |
 | `blueprint_type` | string | One of: `"Normal"`, `"MacroLibrary"`, `"Interface"`, `"FunctionLibrary"`, `"Other"` |
+| `subgraphs` | array | Collapsed graph index and node data; present only when `include_subgraphs=true` |
 
 ### Component Fields
 
@@ -400,6 +412,8 @@ Each entry in the `event_graphs` array contains:
 | `name` | string | Graph name (usually `"EventGraph"`) |
 | `node_count` | number | Total number of nodes in the graph |
 | `nodes` | array | List of node objects |
+| `graph_id` | string | Stable graph GUID/path; present when `include_subgraphs=true` |
+| `graph_type` | string | `"event"`; present when `include_subgraphs=true` |
 
 Each **node** contains:
 
@@ -413,6 +427,7 @@ Each **node** contains:
 | `event_name` | string | Event name (only for event nodes) |
 | `function_name` | string | Function name (only for function call nodes) |
 | `function_class` | string | Function's owning class (only for function call nodes) |
+| `subgraph_id` | string | Bound collapsed graph ID (only for composite nodes when `include_subgraphs=true`) |
 | `pins` | array | List of pin objects |
 
 Each **pin** contains:
@@ -424,6 +439,9 @@ Each **pin** contains:
 | `direction` | string | `"Input"` or `"Output"` |
 | `is_connected` | bool | Whether this pin has any connections |
 | `linked_to` | array | List of linked pins (only if connected) |
+| `default_value` | string | Serialized unconnected/default pin value, when non-empty |
+| `default_text_value` | string | Localized text default, when non-empty |
+| `default_object` | string | Referenced UObject path, when set |
 
 Each **linked_to** entry contains:
 
@@ -431,6 +449,22 @@ Each **linked_to** entry contains:
 |-------|------|-------------|
 | `node_id` | string | GUID of the connected node |
 | `pin_name` | string | Name of the connected pin |
+
+### Collapsed Subgraph Fields
+
+Each entry in the optional `subgraphs` array contains:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `graph_id` | string | Stable graph GUID/path |
+| `name` | string | Collapsed graph name |
+| `graph_type` | string | `"collapsed"` |
+| `parent_graph_id` | string | ID of the graph containing the owning composite node |
+| `owner_node_id` | string | GUID of the owning `K2Node_Composite` |
+| `owner_node_title` | string | Composite node title from the parent graph |
+| `depth` | number | Recursion depth, starting at `1` |
+| `node_count` | number | Number of nodes in this graph |
+| `nodes` | array | Full node/pin/link/default-value data when `include_nodes=true` |
 
 ### Function Fields
 
@@ -506,7 +540,7 @@ Step 3: "Connect the BeginPlay event to the new PrintString node"
 | **"Blueprint not found"** | Check the name is correct. Try using `list_blueprints` first to find the exact name. If the Blueprint is not in `/Game/Blueprints/`, provide the full path. |
 | **Empty components list** | The Blueprint may not have any custom components added via the Simple Construction Script. Native C++ components won't appear here. |
 | **Missing properties on components** | Properties inherited from `UObject` and `UActorComponent` base classes are filtered out to reduce noise. Only class-specific properties are shown. |
-| **Large response size** | For Blueprints with complex event graphs, the response can be large. Use `include_nodes=false` to skip graph node details, or `include_properties=false` to skip component properties. |
+| **Large response size** | For Blueprints with complex event/collapsed graphs, use `include_nodes=false`, `include_properties=false`, or lower `max_subgraph_depth`. Oversized responses spill to a JSON file instead of truncating. |
 | **"Failed to connect to Unreal Engine"** | Make sure the Unreal Editor is running with the UnrealMCP plugin enabled. The TCP server runs on port 55557 by default. |
 
 ## Related Tools
