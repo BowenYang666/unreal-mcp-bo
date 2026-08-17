@@ -2,7 +2,7 @@
 name: ue-state-tree
 description: "Use this skill when working with StateTree assets, reading/analyzing state tree structures, or debugging StateTree AI behavior. Covers task execution semantics, state transitions, completion modes, and key UE5 source references."
 metadata:
-  version: 1.0.0
+  version: 1.0.1
 ---
 
 # UE5 StateTree Reference (for AI Agents)
@@ -68,7 +68,7 @@ Read these files for authoritative behavior when the summary above isn't enough:
 | Consideration base | `Engine/Plugins/Runtime/StateTree/Source/StateTreeModule/Public/StateTreeConsiderationBase.h` | FStateTreeConsiderationCommonBase — GetScore() (raw float), GetNormalizedScore(), Operand, DeltaIndent |
 | Task execution | `Engine/Plugins/Runtime/StateTree/Source/StateTreeModule/Private/StateTreeExecutionContext.cpp` | `TickTasks()` at ~line 4672 — proves concurrent tick, failure propagation |
 | Task completion | `Engine/Plugins/Runtime/StateTree/Source/StateTreeModule/Public/StateTreeTasksStatus.h` | `EStateTreeTaskCompletionType` (Any/All), `GetCompletionStatus()` bitwise logic |
-| Schema (AI) | `Engine/Plugins/Runtime/GameplayStateTree/Source/GameplayStateTreeModule/Public/StateTreeAIComponentSchema.h` | StateTreeAIComponentSchema: ContextActorClass, AIController |
+| Schema (AI) | `Engine/Plugins/Runtime/GameplayStateTree/Source/GameplayStateTreeModule/Public/Components/StateTreeAIComponentSchema.h` | StateTreeAIComponentSchema: ContextActorClass, AIController |
 | Transition logic | `Engine/Plugins/Runtime/StateTree/Source/StateTreeModule/Private/StateTreeExecutionContext.cpp` | `TriggerTransitions()` — transition priority & evaluation order |
 
 ## read_state_tree Return Format

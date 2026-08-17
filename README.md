@@ -1,215 +1,137 @@
 # Unreal MCP (Fork)
 
-Fork of [chongdashu/unreal-mcp](https://github.com/chongdashu/unreal-mcp) with additional read/query tools for AI-assisted Unreal Engine development. 
+Fork of [chongdashu/unreal-mcp](https://github.com/chongdashu/unreal-mcp) for AI-assisted Unreal Engine 5.5+ inspection and authoring. This fork is developed and tested on UE 5.7.
 
-> **What's different from the original?** Add more tools to cover more cases, make it support 5.7.
+## Tool Surface
 
-## Supported Tools (76 total)
+The Python MCP server currently registers **99 tools** before read-only/category filtering.
 
-### Actor Tools (Original)
+| Category | Count | Reference |
+|---|---:|---|
+| Actor + Editor | 16 | [Actor tools](Docs/Tools/actor_tools.md), [Editor tools](Docs/Tools/editor_tools.md) |
+| Blueprint assets | 9 | [Blueprint tools](Docs/Tools/blueprint_tools.md), [reading guide](Docs/Tools/reading_blueprints.md) |
+| Blueprint nodes | 8 | [Node tools](Docs/Tools/node_tools.md) |
+| Materials | 15 | [Material tools](Docs/Tools/material_tools.md) |
+| UMG / Widgets | 20 | [UMG tools](Docs/Tools/umg_tools.md) |
+| Niagara | 25 | [Niagara tools](Docs/Tools/niagara_tools.md) |
+| Project / AI assets | 6 | [Project tools](Docs/Tools/project_tools.md) |
 
-| Tool | Description |
-|------|-------------|
-| `get_actors_in_level` | List all actors in the current level |
-| `find_actors_by_name` | Find actors by name pattern |
-| `get_actor_properties` | Get all properties of an actor |
-| `spawn_actor` | Create a new actor (cube, sphere, light, camera, etc.) |
-| `delete_actor` | Delete an actor by name |
-| `set_actor_transform` | Set position, rotation, scale of an actor |
-| `set_actor_property` | Set a specific property on an actor |
-| `spawn_blueprint_actor` | Spawn an instance of a Blueprint class |
+Notable read support includes Blueprint collapsed subgraphs and pin defaults, Material compile results, Niagara dynamic inputs/curves/renderers, arbitrary reflected UObject properties, Behavior Trees, Blackboards, and StateTrees.
 
-### Blueprint Tools (Original + Added)
+`focus_viewport` and `take_screenshot` remain legacy C++ commands but do not have registered Python MCP tools, so they are not part of the supported tool surface.
 
-| Tool | Description | Status |
-|------|-------------|--------|
-| `create_blueprint` | Create a new Blueprint class | Original |
-| `add_component_to_blueprint` | Add a component to a Blueprint | Original |
-| `set_component_property` | Set a property on a Blueprint component | Original |
-| `set_physics_properties` | Configure physics on a Blueprint component | Original |
-| `set_blueprint_property` | Set a Blueprint-level property | Original |
-| `set_static_mesh_properties` | Set static mesh and material on a component | Original |
-| `compile_blueprint` | Compile a Blueprint | Original |
-| **`read_blueprint`** | **Read Blueprint structure (components, variables, graphs, interfaces)** | **Added** |
-| **`list_blueprints`** | **List all Blueprint assets with filtering** | **Added** |
+## Architecture
 
-### Blueprint Node Graph Tools (Original)
+```text
+MCP client (VS Code/Copilot or Claude Code)
+  -> stdio: Python/unreal_mcp_server.py
+  -> TCP: 127.0.0.1:13090
+  -> Unreal Editor plugin: Plugins/UnrealMCP
+```
 
-| Tool | Description |
-|------|-------------|
-| `add_blueprint_event_node` | Add an event node (BeginPlay, Tick, etc.) |
-| `add_blueprint_function_node` | Add a function call node |
-| `connect_blueprint_nodes` | Connect two nodes in the graph |
-| `add_blueprint_variable` | Add a variable to a Blueprint |
-| `add_blueprint_get_self_component_reference` | Add a component reference node |
-| `add_blueprint_self_reference` | Add a self-reference node |
-| `add_blueprint_input_action_node` | Add an input action node |
-| `find_blueprint_nodes` | Find nodes in a Blueprint graph |
+The editor plugin must be built and loaded in the target project. The shared Python server stays in this repository; do not copy `Python/` into every Unreal project.
 
-### Editor Tools (Original + Added)
+## Onboard a Project
 
-| Tool | Description | Status |
-|------|-------------|--------|
-| `focus_viewport` | Focus viewport on an actor or location | Original |
-| `take_screenshot` | Capture a viewport screenshot | Original |
-| **`get_editor_logs`** | **Read UE output log from file (filter by verbosity, category, keyword). Set `UNREAL_PROJECT_LOG` env var or pass `log_path`.** | **Added** |
-| **`get_unsaved_changes`** | **List all unsaved (dirty) content packages and maps in the editor** | **Added** |
-| **`close_editor`** | **Gracefully close the Unreal Editor (optionally saving all unsaved work first)** | **Added** |
+Use the complete onboarding workflow in:
 
-### Material Tools (Added)
+- [UnrealMCP project onboarding skill](.github/skills/unreal-mcp-project-onboarding/SKILL.md)
+- [Deployment guide](Docs/copy_plugin_to_project.md)
 
-| Tool | Description |
-|------|-------------|
-| **`list_materials`** | List all Material and MaterialInstance assets |
-| **`read_material`** | Read a Material's node graph, expressions, connections, and input pins |
-| **`get_material_instance_parameters`** | Read a MaterialInstance's scalar, vector, and texture parameter overrides |
-| **`create_material`** | **Create a new Material asset with blend mode, shading model, domain options** |
-| **`add_material_expression`** | **Add a material expression node (Constant, Multiply, Noise, Parameter, etc.)** |
-| **`set_material_expression_property`** | **Set properties on a material node (float, color, vector, enum, string)** |
-| **`connect_material_expressions`** | **Connect two material expression nodes (output → input)** |
-| **`connect_material_to_property`** | **Connect a node to a material property (BaseColor, Normal, Roughness, etc.)** |
-| **`add_custom_hlsl_expression`** | **Add a Custom HLSL node with code, output type, and named inputs** |
-| **`create_material_instance`** | **Create a MaterialInstanceConstant with scalar/vector parameter overrides** |
-| **`add_material_comment`** | **Add a comment box (group) to the material editor graph** |
-| **`set_expression_position`** | **Move a material expression node to a specific (x, y) position** |
-| **`reset_material_node_layout`** | **Auto-layout material nodes in horizontal rows per property chain** |
+The workflow discovers the `.uproject`, checks UE version, deploys and builds the plugin, configures the selected MCP client, launches the editor, verifies port `13090`, and performs a read-only smoke test.
 
-### UMG / Widget Tools (Original + Added)
+## MCP Client Configuration
 
-| Tool | Description | Status |
-|------|-------------|--------|
-| `create_umg_widget_blueprint` | Create a UMG Widget Blueprint | Original |
-| `add_text_block_to_widget` | Add a text block to a widget (supports anchor, alignment) | Original (enhanced) |
-| `add_button_to_widget` | Add a button to a widget (supports anchor, alignment) | Original (enhanced) |
-| `bind_widget_event` | Bind an event to a widget element | Original |
-| `set_text_block_binding` | Set text binding on a text block | Original |
-| `add_widget_to_viewport` | Add a widget to the viewport | Original |
-| **`add_progress_bar_to_widget`** | **Add a ProgressBar to a widget (percent, fill color, fill type). For health bars, loading bars, etc.** | **Added** |
-| **`add_image_to_widget`** | **Add an Image widget (texture/brush, tint color, size). For backgrounds, icons, etc.** | **Added** |
-| **`add_vertical_box_to_widget`** | **Add a VerticalBox layout container. Children stack top-to-bottom.** | **Added** |
-| **`add_horizontal_box_to_widget`** | **Add a HorizontalBox layout container. Children stack left-to-right.** | **Added** |
-| **`add_overlay_to_widget`** | **Add an Overlay container. Children stack on top of each other (z-order).** | **Added** |
-| **`add_size_box_to_widget`** | **Add a SizeBox to constrain child width/height (e.g., fixed-size health bar wrapper).** | **Added** |
-| **`add_border_to_widget`** | **Add a Border widget (background color/brush with one child slot).** | **Added** |
-| **`add_spacer_to_widget`** | **Add a Spacer for padding/spacing between elements in layout containers.** | **Added** |
-| **`set_widget_anchor`** | **Set anchor, alignment, offset, and size on any existing widget in a CanvasPanel.** | **Added** |
-| **`set_widget_slot_property`** | **Set slot properties (size_rule, padding, h/v alignment) on any widget in any slot type (Canvas, HBox, VBox, Overlay).** | **Added** |
-| **`read_widget_layout`** | **Read the full widget tree layout (recursive: name, type, slot, properties, children). Read-only.** | **Added** |
+Resolve an absolute `uv` executable with `Get-Command uv`; GUI clients may not inherit your shell `PATH`.
 
-### Niagara / VFX Tools (Added)
+### VS Code / Copilot
 
-| Tool | Description |
-|------|-------------|
-| **`create_niagara_system`** | **Create an empty Niagara particle system asset** |
-| **`list_niagara_systems`** | **List all Niagara systems in the project** |
-| **`read_niagara_system`** | **Read full system structure: emitters, modules, rapid iteration params** |
-| **`add_emitter_to_system`** | **Add emitter from template, duplicate, or cross-system copy** |
-| **`remove_emitter_from_system`** | **Remove an emitter from a system** |
-| **`list_niagara_emitter_templates`** | **List available engine emitter templates** |
-| **`add_module_to_emitter`** | **Add a module script to an emitter's stack** |
-| **`remove_module_from_emitter`** | **Remove a module with automatic pin chain bridging** |
-| **`set_niagara_rapid_parameter`** | **Set rapid iteration parameter (spawn/update script)** |
-| **`set_niagara_parameter`** | **Set system/emitter-level parameter** |
-| **`get_niagara_parameters`** | **Get all parameters for a Niagara component** |
-| **`modify_emitter_properties`** | **Modify emitter sim target, determinism, local space** |
+Create `.vscode/mcp.json` in the workspace:
 
-### Project Tools (Original + Added)
+```jsonc
+{
+  "servers": {
+    "unrealMCP": {
+      "type": "stdio",
+      "command": "<ABSOLUTE_UV_PATH>",
+      "args": [
+        "--directory",
+        "<MCP_REPO>\\Python",
+        "run",
+        "unreal_mcp_server.py"
+      ],
+      "env": {
+        "UNREAL_MCP_READ_ONLY": "1"
+      }
+    }
+  }
+}
+```
 
-| Tool | Description | Status |
-|------|-------------|--------|
-| `create_input_mapping` | Create an input action mapping | Original |
-| **`read_data_asset`** | **Read any DataAsset's properties via reflection (generic, works on all UDataAsset subclasses)** | **Added** |
-| **`get_class_properties`** | **Discover all editable properties of any UClass or asset (name, type, category, current value). Supports filtering by category.** | **Added** |
+### Claude Code
+
+Create `.mcp.json` at the Claude project root:
+
+```json
+{
+  "mcpServers": {
+    "unrealMCP": {
+      "command": "<ABSOLUTE_UV_PATH>",
+      "args": [
+        "--directory",
+        "<MCP_REPO>\\Python",
+        "run",
+        "unreal_mcp_server.py"
+      ],
+      "env": {
+        "UNREAL_MCP_READ_ONLY": "1"
+      }
+    }
+  }
+}
+```
+
+Project-scoped Claude servers require one-time approval. Run `claude` in the project root and approve `unrealMCP`; `claude mcp list` shows `Pending approval` until then.
+
+The repository's `mcp.json` is a Claude-format example template. Claude auto-discovers `.mcp.json`, not `mcp.json`.
 
 ## Read-Only Mode
 
-Set the `UNREAL_MCP_READ_ONLY` environment variable to restrict the AI to query-only tools — no creation, deletion, or modification.
+Set `UNREAL_MCP_READ_ONLY=1` for project learning, review, or reverse engineering. The server retains exactly these 20 query tools:
 
-```jsonc
-// mcp.json
-{
-    "servers": {
-        "unrealMCP": {
-            "command": "uv",
-            "args": ["--directory", "<path-to>/Python", "run", "unreal_mcp_server.py"],
-            "env": {
-                "UNREAL_MCP_READ_ONLY": "1",
-                "UNREAL_PROJECT_LOG": "D:/UnrealProjects/MyProject/Saved/Logs/MyProject.log"
-            }
-        }
-    }
-}
-```
+- Actor/editor: `get_actors_in_level`, `find_actors_by_name`, `get_actor_properties`, `get_editor_logs`, `get_unsaved_changes`
+- Blueprint/node: `list_blueprints`, `read_blueprint`, `find_blueprint_nodes`
+- Project reflection: `get_class_properties`
+- Material: `list_materials`, `read_material`, `get_material_instance_parameters`
+- UMG: `read_widget_layout`
+- Niagara: `list_niagara_systems`, `read_niagara_system`, `get_niagara_parameters`, `list_module_inputs`, `list_module_static_switches`, `read_ns_curve`, `list_renderer_types`
 
-**Read-only tools (12):**
+Set `UNREAL_MCP_READ_ONLY=0` (or omit it) for authoring.
 
-| Tool | Category |
-|------|----------|
-| `get_actors_in_level` | Actor |
-| `find_actors_by_name` | Actor |
-| `get_actor_properties` | Actor |
-| `list_blueprints` | Blueprint |
-| `read_blueprint` | Blueprint |
-| `find_blueprint_nodes` | Blueprint Node |
-| `get_editor_logs` | Editor |
-| `get_unsaved_changes` | Editor |
-| `close_editor` | Editor |
-| `list_materials` | Material |
-| `read_material` | Material |
-| `get_material_instance_parameters` | Material |
-| `read_widget_layout` | UMG / Widget |
-| `list_niagara_systems` | Niagara |
-| `read_niagara_system` | Niagara |
-| `list_niagara_emitter_templates` | Niagara |
-| `get_niagara_parameters` | Niagara |\n| `get_class_properties` | Project |
+## Category Filtering
 
-Set `UNREAL_MCP_READ_ONLY=0` or remove the `env` block to enable all 76 tools.
+Category filters can be combined with read-only mode. A value of `0`, `false`, `no`, or `off` disables the category; unset/other values enable it.
 
-## Disabling Tool Categories
+| Environment variable | Category |
+|---|---|
+| `MCP_EDITOR_ENABLED` | Actors, editor state, assets, levels, logs |
+| `MCP_BLUEPRINT_ENABLED` | Blueprint asset creation/properties/reading |
+| `MCP_NODE_ENABLED` | Blueprint graph node operations/search |
+| `MCP_PROJECT_ENABLED` | Input mappings, reflection, BT/BB/StateTree reads |
+| `MCP_UMG_ENABLED` | Widget creation/layout/reading |
+| `MCP_MATERIAL_ENABLED` | Material and MaterialInstance tools |
+| `MCP_NIAGARA_ENABLED` | Niagara system/emitter/module/renderer tools |
 
-If some tool categories aren't needed for your workflow, you can disable them so the
-model has a smaller, more relevant tool set (which improves tool selection). Set the
-matching environment variable to `0` / `false` / `no` / `off` to disable a category.
-Any other value (or leaving it unset) keeps the category enabled.
+## Development Updates
 
-```jsonc
-// mcp.json
-{
-    "servers": {
-        "unrealMCP": {
-            "command": "uv",
-            "args": ["--directory", "<path-to>/Python", "run", "unreal_mcp_server.py"],
-            "env": {
-                "MCP_UMG_ENABLED": "0",       // disable all UMG / widget tools
-                "MCP_NIAGARA_ENABLED": "0"    // disable all Niagara / VFX tools
-            }
-        }
-    }
-}
-```
+- Python-only changes: restart the MCP client/server; no Unreal build is required.
+- C++ plugin or `Build.cs` changes: save/close the target editor, replace the deployed plugin from this repository, clean stale plugin build outputs if needed, rebuild `<ProjectName>Editor`, relaunch, and verify `127.0.0.1:13090`.
+- After schema changes, restart the MCP client so it discovers the new tool parameters.
 
-| Env var | Category | Tools removed when disabled |
-|---------|----------|-----------------------------|
-| `MCP_EDITOR_ENABLED` | Editor | actors, levels, screenshots, logs |
-| `MCP_BLUEPRINT_ENABLED` | Blueprint | create/compile/properties |
-| `MCP_NODE_ENABLED` | Blueprint Node | event/function/variable graph nodes |
-| `MCP_PROJECT_ENABLED` | Project | input mappings, read DataAsset/BT/BB/StateTree |
-| `MCP_UMG_ENABLED` | UMG / Widget | all widget construction + layout |
-| `MCP_MATERIAL_ENABLED` | Material | create/edit material graphs |
-| `MCP_NIAGARA_ENABLED` | Niagara | create/edit Niagara systems & emitters |
+## Documentation
 
-This is independent of read-only mode; the two can be combined (read-only is applied first).
-
-## Setup
-
-See the [original repo](https://github.com/chongdashu/unreal-mcp) for full setup instructions, or:
-
-1. Copy `MCPGameProject/Plugins/UnrealMCP` to your project's `Plugins/` folder
-2. Build the project (requires UE 5.5+, tested on UE 5.7)
-3. Configure your MCP client to point to the Python server
-
-Detailed deployment guide: [Docs/copy_plugin_to_project.md](Docs/copy_plugin_to_project.md)
+See [Docs/README.md](Docs/README.md) and [Docs/Tools/README.md](Docs/Tools/README.md) for the complete reference.
 
 ## License
 
-MIT — same as the original project.
+MIT, matching the upstream project.

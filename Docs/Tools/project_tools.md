@@ -11,10 +11,9 @@ Project tools provide cross-cutting functionality that isn't tied to a specific 
 Create an input action or axis mapping.
 
 **Parameters:**
-- `mapping_name` (string) - Name of the mapping (e.g. "Jump", "MoveForward")
+- `action_name` (string) - Name of the mapping (e.g. "Jump", "MoveForward")
 - `key` (string) - Key or axis to bind (e.g. "SpaceBar", "Gamepad_FaceButton_Bottom")
-- `mapping_type` (string, optional) - "Action" or "Axis" (default: "Action")
-- `scale` (float, optional) - Scale value for axis mappings (default: 1.0)
+- `input_type` (string, optional) - `"Action"` or `"Axis"` (default: `"Action"`)
 
 ### read_data_asset
 
@@ -38,10 +37,10 @@ Read all properties from a DataAsset (or any UObject asset) via Unreal reflectio
 
 ### get_class_properties
 
-Discover all editable properties of any UClass or loaded asset. Essential for understanding what properties are available before setting them.
+Discover reflected properties of any resolved UClass or loaded UObject asset. Transient/deprecated fields are skipped.
 
 Provide either `class_name` or `asset_path`:
-- `class_name` returns property metadata only (name, type, category, tooltip)
+- `class_name` returns property metadata plus class-default-object (CDO) values
 - `asset_path` loads the asset and also returns current values
 
 **Parameters:**
@@ -80,7 +79,7 @@ Inspect a specific asset with current values:
 {
   "command": "get_class_properties",
   "params": {
-    "asset_path": "/Game/Player/Aimations/BS_MyLocomotion1d"
+    "asset_path": "/Game/Player/Animations/BS_MyLocomotion1d"
   }
 }
 ```
@@ -90,7 +89,7 @@ Filter by category:
 {
   "command": "get_class_properties",
   "params": {
-    "asset_path": "/Game/Player/Aimations/BS_MyLocomotion1d",
+    "asset_path": "/Game/Player/Animations/BS_MyLocomotion1d",
     "category": "InputInterpolation"
   }
 }

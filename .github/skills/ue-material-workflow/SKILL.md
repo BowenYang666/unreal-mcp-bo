@@ -2,7 +2,7 @@
 name: ue-material-workflow
 description: "Use this skill when creating, editing, or organizing Material graphs via MCP tools. Covers the complete workflow: creating materials, adding expression nodes, wiring connections, positioning/layouting nodes, grouping with comment boxes, creating material instances, and HLSL custom expressions. Read this BEFORE calling any material MCP tool."
 metadata:
-  version: 1.0.0
+        version: 1.1.0
 ---
 
 # UE Material Workflow (MCP Tools)
@@ -19,12 +19,15 @@ You are controlling Unreal Engine's Material Editor through MCP tools. Follow th
 | `connect_material_expressions` | Wire one node's output to another's input |
 | `connect_material_to_property` | Wire a node to a material output (BaseColor, Roughness, etc.) |
 | `add_custom_hlsl_expression` | Add a Custom HLSL node with code and typed inputs/outputs |
+| `set_material_property` | Set blend mode, shading model, domain, two-sided, or opacity mask clip |
 | `set_expression_position` | Move a single node to an exact (x, y) coordinate |
 | `reset_material_node_layout` | Auto-layout all nodes (row-based per material property chain) |
 | `add_material_comment` | Add a comment box (group) to visually contain nodes |
-| `create_material_instance` | Create a material instance with scalar/vector overrides |
+| `create_material_instance` | Create a material instance with scalar/vector/texture overrides |
+| `set_material_instance_parameters` | Update scalar/vector/texture overrides on an existing instance |
+| `get_material_instance_parameters` | Read an instance's parent and parameter overrides |
 | `list_materials` | List all materials in the project |
-| `read_material` | Read full material graph (nodes, connections, positions) |
+| `read_material` | Read graph structure and synchronously report `compile_result` |
 
 ---
 
@@ -43,9 +46,9 @@ create_material(asset_path="/Game/Materials/M_MyMat")
 Add every node you need. Each call returns the node's `index` — **record it**.
 
 ```
-add_material_expression(asset_path=..., expression_class="Noise", ...)        → index 0
-add_material_expression(asset_path=..., expression_class="ScalarParameter")   → index 1
-add_material_expression(asset_path=..., expression_class="Multiply")          → index 2
+add_material_expression(asset_path=..., expression_type="Noise", ...)        → index 0
+add_material_expression(asset_path=..., expression_type="ScalarParameter")   → index 1
+add_material_expression(asset_path=..., expression_type="Multiply")          → index 2
 ```
 
 ### Step 3 — Configure node properties
@@ -62,8 +65,8 @@ set_material_expression_property(asset_path=..., node_index=1, property_name="De
 Connect nodes to each other, then to material outputs.
 
 ```
-connect_material_expressions(asset_path=..., from_index=0, to_index=2, to_input_name="A")
-connect_material_expressions(asset_path=..., from_index=1, to_index=2, to_input_name="B")
+connect_material_expressions(asset_path=..., from_node_index=0, to_node_index=2, to_input_name="A")
+connect_material_expressions(asset_path=..., from_node_index=1, to_node_index=2, to_input_name="B")
 connect_material_to_property(asset_path=..., node_index=2, material_property="Opacity")
 ```
 
@@ -119,7 +122,17 @@ add_material_comment(asset_path=..., text="Frost Pattern", pos_x=-1280, pos_y=-1
 add_material_comment(asset_path=..., text="Base Color",    pos_x=-680,  pos_y=250,  size_x=900,  size_y=300)
 ```
 
-### Step 7 — Save the material
+### Step 7 — Compile-check the finished graph
+
+Call `read_material` after the graph is complete. It recompiles the material and returns:
+
+```json
+"compile_result": { "ok": true, "error_count": 0, "errors": [] }
+```
+
+Do not call the material finished while `compile_result.ok` is false. Fix every reported error, then read again.
+
+### Step 8 — Save the material
 
 Always save after finishing all edits:
 
@@ -127,16 +140,19 @@ Always save after finishing all edits:
 save_asset(asset_path="/Game/Materials/M_MyMat")
 ```
 
-### Step 8 — Create material instances (optional)
+### Step 9 — Create material instances (optional)
 
 ```
 create_material_instance(
     asset_path="/Game/Materials/MI_FrostLight",
-    parent_path="/Game/Materials/M_MyMat",
-    scalar_parameters={"FrostAmount": 0.3},
-    vector_parameters={"IceColor": {"r":0.7,"g":0.9,"b":1.0,"a":1.0}}
+        parent_material_path="/Game/Materials/M_MyMat",
+        scalar_params={"FrostAmount": 0.3},
+        vector_params={"IceColor": {"r":0.7,"g":0.9,"b":1.0,"a":1.0}},
+        texture_params={"MainTex": "/Game/Textures/T_Frost"}
 )
 ```
+
+Use `set_material_instance_parameters` for later iteration instead of recreating the instance.
 
 ---
 
@@ -144,15 +160,17 @@ create_material_instance(
 
 1. **Always read first**: Before modifying an existing material, call `read_material` to see current nodes, indices, positions, and connections.
 
-2. **Horizontal rows, not vertical columns**: Material graphs flow left-to-right. Each material property chain (BaseColor chain, Roughness chain, etc.) should be its own horizontal row. **Never** stack unrelated chains vertically in a single column.
+2. **Always compile-check last**: After editing, call `read_material` again and require `compile_result.ok=true` before saving/reporting completion.
 
-3. **Position before grouping**: Always set node positions (Step 5) BEFORE adding comment boxes (Step 6). Comment coordinates depend on where nodes are.
+3. **Horizontal rows, not vertical columns**: Material graphs flow left-to-right. Each material property chain (BaseColor chain, Roughness chain, etc.) should be its own horizontal row. **Never** stack unrelated chains vertically in a single column.
 
-4. **Comment boxes are wide, not tall**: A typical comment box is ~800-1200px wide and ~250-350px tall — it wraps a horizontal chain. If you see a comment that's taller than it is wide, something is wrong.
+4. **Position before grouping**: Always set node positions (Step 5) BEFORE adding comment boxes (Step 6). Comment coordinates depend on where nodes are.
 
-5. **Node index is stable per session**: The index returned by `add_material_expression` or shown by `read_material` stays valid until nodes are added/removed.
+5. **Comment boxes are wide, not tall**: A typical comment box is ~800-1200px wide and ~250-350px tall — it wraps a horizontal chain. If you see a comment that's taller than it is wide, something is wrong.
 
-6. **Shared nodes**: If a node (e.g. a Noise texture) feeds into multiple chains, place it between those rows at an intermediate Y position. It belongs to whichever chain you assign visually, but keep connections clear.
+6. **Node index is stable per session**: The index returned by `add_material_expression` or shown by `read_material` stays valid until nodes are added/removed.
+
+7. **Shared nodes**: If a node (e.g. a Noise texture) feeds into multiple chains, place it between those rows at an intermediate Y position. It belongs to whichever chain you assign visually, but keep connections clear.
 
 ---
 

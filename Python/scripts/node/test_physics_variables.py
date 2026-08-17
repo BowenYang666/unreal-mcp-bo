@@ -66,7 +66,7 @@ def main():
     try:
         # Step 1: Create blueprint for a physics-based obstacle
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect(("127.0.0.1", 55557))
+        sock.connect(("127.0.0.1", 13090))
         
         bp_params = {
             "name": "PhysicsObstacleBP",
@@ -88,7 +88,7 @@ def main():
         # Close and reopen connection for each command
         sock.close()
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect(("127.0.0.1", 55557))
+        sock.connect(("127.0.0.1", 13090))
         
         # Step 2: Add variables to control physics behavior
         var_params_list = [
@@ -134,7 +134,7 @@ def main():
             # Close and reopen connection
             sock.close()
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.connect(("127.0.0.1", 55557))
+            sock.connect(("127.0.0.1", 13090))
         
         # Step 3: Add a static mesh component for the obstacle
         component_params = {
@@ -157,7 +157,7 @@ def main():
         # Close and reopen connection
         sock.close()
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect(("127.0.0.1", 55557))
+        sock.connect(("127.0.0.1", 13090))
         
         # Step 4: Set physics properties using the variables
         physics_params = {
@@ -178,7 +178,7 @@ def main():
         # Close and reopen connection
         sock.close()
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect(("127.0.0.1", 55557))
+        sock.connect(("127.0.0.1", 13090))
         
         # Step 5: Add BeginPlay event node
         begin_play_params = {
@@ -201,7 +201,7 @@ def main():
         # Close and reopen connection
         sock.close()
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect(("127.0.0.1", 55557))
+        sock.connect(("127.0.0.1", 13090))
         
         # Step 6: Add Tick event node
         tick_params = {
@@ -224,7 +224,7 @@ def main():
         # Close and reopen connection
         sock.close()
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect(("127.0.0.1", 55557))
+        sock.connect(("127.0.0.1", 13090))
         
         # Step 7: Add function node to set mesh physics settings from variables
         function_params = {
@@ -252,7 +252,7 @@ def main():
         # Close and reopen connection
         sock.close()
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect(("127.0.0.1", 55557))
+        sock.connect(("127.0.0.1", 13090))
         
         # Step 8: Add function node to rotate the obstacle
         function_params = {
@@ -281,7 +281,7 @@ def main():
         # Close and reopen connection
         sock.close()
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect(("127.0.0.1", 55557))
+        sock.connect(("127.0.0.1", 13090))
         
         # Step 9: Connect BeginPlay to SetMassScale
         connect_params = {
@@ -303,7 +303,7 @@ def main():
         # Close and reopen connection
         sock.close()
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect(("127.0.0.1", 55557))
+        sock.connect(("127.0.0.1", 13090))
         
         # Step 10: Connect Tick to AddTorqueInRadians
         connect_params = {
@@ -325,7 +325,7 @@ def main():
         # Close and reopen connection
         sock.close()
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect(("127.0.0.1", 55557))
+        sock.connect(("127.0.0.1", 13090))
         
         # Step 11: Compile the blueprint
         compile_params = {
@@ -343,7 +343,7 @@ def main():
         # Close and reopen connection
         sock.close()
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect(("127.0.0.1", 55557))
+        sock.connect(("127.0.0.1", 13090))
         
         # Step 12: Spawn multiple instances of the obstacle at different positions
         positions = [
@@ -374,7 +374,7 @@ def main():
             if i < len(positions) - 1:  # Don't reopen if this is the last one
                 sock.close()
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.connect(("127.0.0.1", 55557))
+                sock.connect(("127.0.0.1", 13090))
         
         logger.info("Physics obstacles created successfully!")
         logger.info("The obstacles should start rotating due to the Tick event connection")

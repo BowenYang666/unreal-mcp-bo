@@ -1,40 +1,47 @@
-# Unreal MCP
+# Unreal MCP Python Server
 
-Python bridge for interacting with Unreal Engine 5.5 using the Model Context Protocol (MCP).
+Python MCP server for Unreal Engine 5.5+ (tested on UE 5.7).
 
-## Setup
+```text
+MCP client -> stdio -> unreal_mcp_server.py -> TCP 127.0.0.1:13090 -> UE plugin
+```
 
-1. Make sure Python 3.10+ is installed
-2. Install `uv` if you haven't already:
-   ```bash
-   curl -LsSf https://astral.sh/uv/install.sh | sh
-   ```
-3. Create and activate a virtual environment:
-   ```bash
-   uv venv
-   source .venv/bin/activate  # On Unix/macOS
-   # or
-   .venv\Scripts\activate     # On Windows
-   ```
-4. Install dependencies:
-   ```bash
-   uv pip install -e .
-   ```
+## Run with uv
 
-At this point, you can configure your MCP Client (Claude Desktop, Cursor, Windsurf) to use the Unreal MCP Server as per the [Configuring your MCP Client](README.md#configuring-your-mcp-client).
+Install [uv](https://docs.astral.sh/uv/), then run from the repository root:
 
-## Testing Scripts
+```powershell
+uv --directory ./Python run unreal_mcp_server.py
+```
 
-There are several scripts in the [scripts](./scripts) folder. They are useful for testing the tools and the Unreal Bridge via a direct connection. This means that you do not need to have an MCP Server running.
+`uv run` resolves the project environment from `pyproject.toml`/`uv.lock`; manually activating a virtual environment is not required.
 
-You should make sure you have installed dependencies and/or are running in the `uv` virtual environment in order for the scripts to work.
+For VS Code and Claude Code configuration, see the repository [README](../README.md#mcp-client-configuration) and [onboarding workflow](../.github/skills/unreal-mcp-project-onboarding/SKILL.md).
 
+## Direct Test Scripts
 
-## Troubleshooting
+Scripts under [scripts](./scripts) connect directly to the editor plugin on `127.0.0.1:13090`; the Python MCP stdio server is not required for them. The target Unreal Editor must be running with the current UnrealMCP plugin loaded.
 
-- Make sure Unreal Engine editor is loaded loaded and running before running the server.
-- Check logs in `unreal_mcp.log` for detailed error information
+```powershell
+uv --directory ./Python run python scripts/actors/test_cube.py
+```
+
+## Environment Controls
+
+- `UNREAL_MCP_READ_ONLY=1`: expose only the current read-only whitelist.
+- `MCP_EDITOR_ENABLED`, `MCP_BLUEPRINT_ENABLED`, `MCP_NODE_ENABLED`, `MCP_PROJECT_ENABLED`, `MCP_UMG_ENABLED`, `MCP_MATERIAL_ENABLED`, `MCP_NIAGARA_ENABLED`: set to `0`/`false`/`no`/`off` to disable a category.
+- `UNREAL_PROJECT_LOG`: default log file used by `get_editor_logs`.
 
 ## Development
 
-To add new tools, modify the `UnrealMCPBridge.py` file to add new command handlers, and update the `unreal_mcp_server.py` file to expose them through the HTTP API. 
+- Register Python MCP tools in `tools/*.py` with `@mcp.tool()` and call `register_*_tools(mcp)` from `unreal_mcp_server.py`.
+- Add or update C++ command handlers under `MCPGameProject/Plugins/UnrealMCP/Source/UnrealMCP/Private/Commands/`, then route new command names through `UnrealMCPBridge.cpp`.
+- Python-only/schema changes require an MCP client/server restart, not an Unreal build.
+- C++ or `Build.cs` changes require redeploying the plugin to the target project, rebuilding its Editor target, and relaunching the editor.
+
+## Troubleshooting
+
+- Confirm the intended Unreal Editor project is running.
+- Verify `Get-NetTCPConnection -LocalPort 13090 -State Listen` returns the editor process.
+- Restart the MCP client after Python tool signature changes.
+- Check `unreal_mcp.log` and the target project's `Saved/Logs/` directory for errors.

@@ -23,13 +23,13 @@ Commands used:
 
 Blueprint Graph Layout:
 ```
-[BeginPlay] ──────┐
-                 │
-[InputAction] ───┼─── [BirdMesh] ─── [AddImpulse]
-                 │
-[GetActorOfClass] ─── [SetViewTargetWithBlend]
-     │
-     └── [GetPlayerController]
+[BeginPlay] â”€â”€â”€â”€â”€â”€â”
+                 â”‚
+[InputAction] â”€â”€â”€â”¼â”€â”€â”€ [BirdMesh] â”€â”€â”€ [AddImpulse]
+                 â”‚
+[GetActorOfClass] â”€â”€â”€ [SetViewTargetWithBlend]
+     â”‚
+     â””â”€â”€ [GetPlayerController]
 ```
 
 Node Positions:
@@ -113,7 +113,7 @@ def send_mcp_command(command: str, params: Dict[str, Any]) -> Optional[Dict[str,
     try:
         # Create a new socket for each command
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect(("127.0.0.1", 55557))
+        sock.connect(("127.0.0.1", 13090))
         
         # Send the command and get the response
         return send_command(sock, command, params)

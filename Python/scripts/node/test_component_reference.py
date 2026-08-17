@@ -66,7 +66,7 @@ def main():
     try:
         # Connect to the server
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect(("127.0.0.1", 55557))
+        sock.connect(("127.0.0.1", 13090))
         
         # Step 1: Create a blueprint
         bp_params = {
@@ -93,7 +93,7 @@ def main():
         
         sock.close()
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect(("127.0.0.1", 55557))
+        sock.connect(("127.0.0.1", 13090))
         
         response = send_command(sock, "add_component_to_blueprint", component_params)
         if not response or response.get("status") != "success":
@@ -105,7 +105,7 @@ def main():
         # Step 3: Add an event (BeginPlay)
         sock.close()
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect(("127.0.0.1", 55557))
+        sock.connect(("127.0.0.1", 13090))
         
         begin_play_params = {
             "blueprint_name": "TestCompRefBP",
@@ -124,7 +124,7 @@ def main():
         # Step 4: Create component reference node
         sock.close()
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect(("127.0.0.1", 55557))
+        sock.connect(("127.0.0.1", 13090))
         
         get_component_params = {
             "blueprint_name": "TestCompRefBP",
@@ -143,7 +143,7 @@ def main():
         # Step 5: Add AddForce function node
         sock.close()
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect(("127.0.0.1", 55557))
+        sock.connect(("127.0.0.1", 13090))
         
         function_params = {
             "blueprint_name": "TestCompRefBP",
@@ -165,7 +165,7 @@ def main():
         # Step 6: Connect BeginPlay to AddForce (execution)
         sock.close()
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect(("127.0.0.1", 55557))
+        sock.connect(("127.0.0.1", 13090))
         
         connect_exec_params = {
             "blueprint_name": "TestCompRefBP",
@@ -185,7 +185,7 @@ def main():
         # Step 7: Connect component reference to AddForce target
         sock.close()
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect(("127.0.0.1", 55557))
+        sock.connect(("127.0.0.1", 13090))
         
         # In UE5.5, the output pin of a component reference is named after the component itself
         component_name = "TestMesh"  # Use the same name as defined in the component
@@ -209,7 +209,7 @@ def main():
                 
                 sock.close()
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.connect(("127.0.0.1", 55557))
+                sock.connect(("127.0.0.1", 13090))
                 
                 response = send_command(sock, "connect_blueprint_nodes", connect_target_params)
                 if response and response.get("status") == "success" and response.get("result", {}).get("success", False):
@@ -224,7 +224,7 @@ def main():
         # Step 8: Compile Blueprint
         sock.close()
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect(("127.0.0.1", 55557))
+        sock.connect(("127.0.0.1", 13090))
         
         compile_params = {
             "blueprint_name": "TestCompRefBP"
@@ -240,7 +240,7 @@ def main():
         # Step 9: Spawn the actor
         sock.close()
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect(("127.0.0.1", 55557))
+        sock.connect(("127.0.0.1", 13090))
         
         spawn_params = {
             "blueprint_name": "TestCompRefBP",

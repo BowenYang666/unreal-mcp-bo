@@ -110,10 +110,27 @@ def register_editor_tools(mcp: FastMCP):
                 logger.error("Failed to connect to Unreal Engine")
                 return {"success": False, "message": "Failed to connect to Unreal Engine"}
             
+            actor_type_aliases = {
+                "staticmeshactor": "StaticMeshActor",
+                "pointlight": "PointLight",
+                "spotlight": "SpotLight",
+                "directionallight": "DirectionalLight",
+                "cameraactor": "CameraActor",
+            }
+            canonical_type = actor_type_aliases.get(type.replace("_", "").replace(" ", "").lower())
+            if not canonical_type:
+                return {
+                    "success": False,
+                    "message": (
+                        f"Unsupported actor type '{type}'. Supported: "
+                        "StaticMeshActor, PointLight, SpotLight, DirectionalLight, CameraActor"
+                    ),
+                }
+
             # Ensure all parameters are properly formatted
             params = {
                 "name": name,
-                "type": type.upper(),  # Make sure type is uppercase
+                "type": canonical_type,
                 "location": location,
                 "rotation": rotation
             }

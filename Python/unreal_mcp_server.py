@@ -439,7 +439,7 @@ _CATEGORY_TOOLS = {
         "add_horizontal_box_to_widget", "add_overlay_to_widget", "add_size_box_to_widget",
         "add_border_to_widget", "add_spacer_to_widget", "add_combobox_to_widget",
         "add_slider_to_widget", "read_widget_layout", "set_widget_property",
-        "set_widget_slot_property", "set_widget_anchor", "set_actor_property",
+        "set_widget_slot_property", "set_widget_anchor",
     },
     "material": {
         "list_materials", "read_material", "get_material_instance_parameters",
@@ -447,7 +447,7 @@ _CATEGORY_TOOLS = {
         "connect_material_expressions", "connect_material_to_property", "create_material_instance",
         "set_material_instance_parameters",
         "add_material_comment", "reset_material_node_layout", "set_material_property",
-        "add_custom_hlsl_expression", "set_material_expression_position",
+        "add_custom_hlsl_expression", "set_expression_position",
     },
     "niagara": {
         "list_niagara_systems", "read_niagara_system", "set_niagara_parameter",
@@ -463,13 +463,13 @@ _CATEGORY_TOOLS = {
     "blueprint": {
         "create_blueprint", "add_component_to_blueprint", "set_component_property",
         "set_physics_properties", "compile_blueprint", "set_blueprint_property",
-        "set_static_mesh_properties", "set_pawn_properties", "read_blueprint", "list_blueprints",
+        "set_static_mesh_properties", "read_blueprint", "list_blueprints",
     },
     "node": {
         "connect_blueprint_nodes", "add_blueprint_get_self_component_reference",
         "add_blueprint_self_reference", "find_blueprint_nodes", "add_blueprint_event_node",
         "add_blueprint_input_action_node", "add_blueprint_function_node",
-        "add_blueprint_get_component_node", "add_blueprint_variable",
+        "add_blueprint_variable",
     },
     "project": {
         "create_input_mapping", "read_data_asset", "get_class_properties",
@@ -477,8 +477,8 @@ _CATEGORY_TOOLS = {
     },
     "editor": {
         "get_actors_in_level", "find_actors_by_name", "spawn_actor", "delete_actor",
-        "set_actor_transform", "get_actor_properties", "spawn_blueprint_actor",
-        "focus_viewport", "take_screenshot", "get_unsaved_changes", "save_asset",
+        "set_actor_transform", "get_actor_properties", "set_actor_property", "spawn_blueprint_actor",
+        "get_unsaved_changes", "save_asset",
         "close_editor", "open_asset", "open_level", "save_level", "create_level",
         "get_editor_logs",
     },
@@ -507,94 +507,29 @@ if _disabled_categories:
 def info():
     """Information about available Unreal MCP tools and best practices."""
     return """
-    # Unreal MCP Server Tools and Best Practices
-    
-    ## UMG (Widget Blueprint) Tools
-    - `create_umg_widget_blueprint(widget_name, parent_class="UserWidget", path="/Game/UI")` 
-      Create a new UMG Widget Blueprint
-    - `add_text_block_to_widget(widget_name, text_block_name, text="", position=[0,0], size=[200,50], font_size=12, color=[1,1,1,1])`
-      Add a Text Block widget with customizable properties
-    - `add_button_to_widget(widget_name, button_name, text="", position=[0,0], size=[200,50], font_size=12, color=[1,1,1,1], background_color=[0.1,0.1,0.1,1])`
-      Add a Button widget with text and styling
-    - `bind_widget_event(widget_name, widget_component_name, event_name, function_name="")`
-      Bind events like OnClicked to functions
-    - `add_widget_to_viewport(widget_name, z_order=0)`
-      Add widget instance to game viewport
-    - `set_text_block_binding(widget_name, text_block_name, binding_property, binding_type="Text")`
-      Set up dynamic property binding for text blocks
+        # Unreal MCP Server Guidance
 
-    ## Editor Tools
-    ### Viewport and Screenshots
-    - `focus_viewport(target, location, distance, orientation)` - Focus viewport
-    - `take_screenshot(filename, show_ui, resolution)` - Capture screenshots
+        The server registers 99 tools before read-only/category filtering. Use the
+        MCP tool schemas as the authoritative source for exact parameters.
 
-    ### Actor Management
-    - `get_actors_in_level()` - List all actors in current level
-    - `find_actors_by_name(pattern)` - Find actors by name pattern
-    - `spawn_actor(name, type, location=[0,0,0], rotation=[0,0,0], scale=[1,1,1])` - Create actors
-    - `delete_actor(name)` - Remove actors
-    - `set_actor_transform(name, location, rotation, scale)` - Modify actor transform
-    - `get_actor_properties(name)` - Get actor properties
-    
-    ## Blueprint Management
-    - `create_blueprint(name, parent_class)` - Create new Blueprint classes
-    - `add_component_to_blueprint(blueprint_name, component_type, component_name)` - Add components
-    - `set_static_mesh_properties(blueprint_name, component_name, static_mesh)` - Configure meshes
-    - `set_physics_properties(blueprint_name, component_name)` - Configure physics
-    - `compile_blueprint(blueprint_name)` - Compile Blueprint changes
-    - `set_blueprint_property(blueprint_name, property_name, property_value)` - Set properties
-    - `set_pawn_properties(blueprint_name)` - Configure Pawn settings
-    - `spawn_blueprint_actor(blueprint_name, actor_name)` - Spawn Blueprint actors
-    - `read_blueprint(blueprint_name)` - Read full Blueprint structure (components, variables, graphs, etc.)
-    - `list_blueprints(path, recursive, name_filter)` - List all Blueprints in the project
-    
-    ## Blueprint Node Management
-    - `add_blueprint_event_node(blueprint_name, event_type)` - Add event nodes
-    - `add_blueprint_input_action_node(blueprint_name, action_name)` - Add input nodes
-    - `add_blueprint_function_node(blueprint_name, target, function_name)` - Add function nodes
-    - `connect_blueprint_nodes(blueprint_name, source_node_id, source_pin, target_node_id, target_pin)` - Connect nodes
-    - `add_blueprint_variable(blueprint_name, variable_name, variable_type)` - Add variables
-    - `add_blueprint_get_self_component_reference(blueprint_name, component_name)` - Add component refs
-    - `add_blueprint_self_reference(blueprint_name)` - Add self references
-    - `find_blueprint_nodes(blueprint_name, node_type, event_type)` - Find nodes
-    
-    ## Project Tools
-    - `create_input_mapping(action_name, key, input_type)` - Create input mappings
-    
-    ## Best Practices
-    
-    ### UMG Widget Development
-    - Create widgets with descriptive names that reflect their purpose
-    - Use consistent naming conventions for widget components
-    - Organize widget hierarchy logically
-    - Set appropriate anchors and alignment for responsive layouts
-    - Use property bindings for dynamic updates instead of direct setting
-    - Handle widget events appropriately with meaningful function names
-    - Clean up widgets when no longer needed
-    - Test widget layouts at different resolutions
-    
-    ### Editor and Actor Management
-    - Use unique names for actors to avoid conflicts
-    - Clean up temporary actors
-    - Validate transforms before applying
-    - Check actor existence before modifications
-    - Take regular viewport screenshots during development
-    - Keep the viewport focused on relevant actors during operations
-    
-    ### Blueprint Development
-    - Compile Blueprints after changes
-    - Use meaningful names for variables and functions
-    - Organize nodes logically
-    - Test functionality in isolation
-    - Consider performance implications
-    - Document complex setups
-    
-    ### Error Handling
-    - Check command responses for success
-    - Handle errors gracefully
-    - Log important operations
-    - Validate parameters
-    - Clean up resources on errors
+        Core categories: Actor/Editor, Blueprint, Blueprint Node, Project/AI,
+        UMG, Material, and Niagara.
+
+        Canonical conventions:
+        - Blueprint asset/node tools use `blueprint_path` with a full `/Game/...` path.
+        - `spawn_blueprint_actor` is the exception: it uses `blueprint_name` plus `actor_name`.
+        - `create_blueprint.name` must be a full content path.
+        - `spawn_actor.type` supports StaticMeshActor, PointLight, SpotLight,
+            DirectionalLight, and CameraActor.
+        - Material edits should end with `read_material` and a successful
+            `compile_result`, then `save_asset`.
+        - `read_blueprint(include_subgraphs=True)` exposes collapsed graphs and pin defaults.
+        - Use `get_class_properties(asset_path=...)` for reflected asset values and
+            specialized readers for Blueprint/Material/Niagara/StateTree structure.
+        - Use `UNREAL_MCP_READ_ONLY=1` for inspection-only sessions.
+
+        `focus_viewport`, `take_screenshot`, and `set_pawn_properties` are not
+        registered Python MCP tools.
     """
 
 # Run the server

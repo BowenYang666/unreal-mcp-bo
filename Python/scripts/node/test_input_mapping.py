@@ -87,7 +87,7 @@ def main():
     try:
         # Step 1: Create a controller blueprint
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect(("127.0.0.1", 55557))
+        sock.connect(("127.0.0.1", 13090))
         
         bp_params = {
             "name": "InputControllerBP",
@@ -109,7 +109,7 @@ def main():
         # Close and reopen connection for each command
         sock.close()
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect(("127.0.0.1", 55557))
+        sock.connect(("127.0.0.1", 13090))
         
         # Step 2: Add variables to track state
         var_params_list = [
@@ -148,7 +148,7 @@ def main():
             # Close and reopen connection
             sock.close()
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.connect(("127.0.0.1", 55557))
+            sock.connect(("127.0.0.1", 13090))
         
         # Step 3: Set up input mappings for a simple game controller
         input_mappings = [
@@ -167,7 +167,7 @@ def main():
             # Close and reopen connection
             sock.close()
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.connect(("127.0.0.1", 55557))
+            sock.connect(("127.0.0.1", 13090))
         
         # Step 4: Add event nodes for BeginPlay and input actions
         event_node_ids = {}
@@ -191,7 +191,7 @@ def main():
         # Close and reopen connection
         sock.close()
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect(("127.0.0.1", 55557))
+        sock.connect(("127.0.0.1", 13090))
         
         # Step 5: Add function nodes for different actions
         function_node_ids = {}
@@ -239,7 +239,7 @@ def main():
             # Close and reopen connection
             sock.close()
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.connect(("127.0.0.1", 55557))
+            sock.connect(("127.0.0.1", 13090))
             
             # Create placeholder event node
             event_params = {
@@ -260,7 +260,7 @@ def main():
             # Close and reopen connection
             sock.close()
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.connect(("127.0.0.1", 55557))
+            sock.connect(("127.0.0.1", 13090))
             
             # Create function node to print what action was performed
             function_params = {
@@ -288,7 +288,7 @@ def main():
             # Close and reopen connection
             sock.close()
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.connect(("127.0.0.1", 55557))
+            sock.connect(("127.0.0.1", 13090))
             
             # Connect appropriate function based on event type
             if action_name == "BeginPlay":
@@ -315,7 +315,7 @@ def main():
         # Step 7: Compile the blueprint
         sock.close()
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect(("127.0.0.1", 55557))
+        sock.connect(("127.0.0.1", 13090))
         
         compile_params = {
             "blueprint_name": "InputControllerBP"
@@ -332,7 +332,7 @@ def main():
         # Step 8: Spawn the controller in the level
         sock.close()
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect(("127.0.0.1", 55557))
+        sock.connect(("127.0.0.1", 13090))
         
         spawn_params = {
             "blueprint_name": "InputControllerBP",

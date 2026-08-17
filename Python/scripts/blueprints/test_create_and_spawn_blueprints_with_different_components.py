@@ -8,7 +8,7 @@ The script runs three main test scenarios:
    - Creates three different Blueprints with StaticMeshComponents:
      * BP_CubeMesh: A basic cube at [0, 0, 100]
      * BP_SphereMesh: A sphere at [100, 0, 100]
-     * BP_CylinderMesh: A cylinder at [0, 100, 100], rotated 90° and stretched (scale: [0.75, 0.75, 2.0])
+     * BP_CylinderMesh: A cylinder at [0, 100, 100], rotated 90Â° and stretched (scale: [0.75, 0.75, 2.0])
 
 2. Collision Components Test:
    - Tests creation of physics collision shapes:
@@ -52,7 +52,7 @@ def send_command(command: str, params: Dict[str, Any]) -> Optional[Dict[str, Any
     try:
         # Connect to Unreal MCP server (fresh connection for each command)
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect(("127.0.0.1", 55557))
+        sock.connect(("127.0.0.1", 13090))
         
         try:
             # Create command object

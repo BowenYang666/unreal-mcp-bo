@@ -12,7 +12,7 @@ When this rule is applied, please remember to explicitly mention it.
 
 # Reading Asset Properties and Values
 
-To read properties and current values from ANY `.uasset` file (AnimSequence, AnimMontage, BlendSpace, SkeletalMesh, Material, etc.), use `get_class_properties` with `asset_path`:
+To read reflected properties and current values from a loadable UObject asset (AnimSequence, AnimMontage, BlendSpace, SkeletalMesh, Material, etc.), first use `get_class_properties` with `asset_path`:
 
 ```
 get_class_properties(asset_path="/Game/Path/To/Asset")
@@ -21,12 +21,12 @@ get_class_properties(asset_path="/Game/Path/To/Asset")
 Convert Windows file paths to asset paths: replace everything up to and including `Content` with `/Game`, remove `.uasset`.
 Example: `D:\Projects\MyGame\Content\Player\Anims\MM_Fire.uasset` → `/Game/Player/Anims/MM_Fire`
 
-NEVER say "MCP can't read this asset's values" — `get_class_properties(asset_path=...)` reads any UObject asset.
+Before claiming an asset cannot be inspected, try `get_class_properties(asset_path=...)`. It skips transient/deprecated fields and cannot expose data stored only in custom binary serialization; use specialized readers such as `read_blueprint`, `read_material`, `read_niagara_system`, or `read_state_tree` when graph/hierarchy semantics matter.
 
 
 # Deploying the UnrealMCP Plugin to Another Project
 
-When a user asks to "copy the plugin to" or "deploy to" a project path, follow the step-by-step guide at `Docs/copy_plugin_to_project.md`. The key steps are:
+When a user asks to install, copy, deploy, configure, build, update, or set up UnrealMCP for a project, load `.github/skills/unreal-mcp-project-onboarding/SKILL.md` and follow `Docs/copy_plugin_to_project.md`. Do not stop after copying. The key steps are:
 
 1. Find the `.uproject` file (may be at the given path, one level up, or one level down).
 2. Verify the engine version is 5.5+.
@@ -34,4 +34,6 @@ When a user asks to "copy the plugin to" or "deploy to" a project path, follow t
 4. Copy `MCPGameProject/Plugins/UnrealMCP` to `<ProjectRoot>/Plugins/UnrealMCP`.
 5. Clean any stale `Intermediate` and `Binaries` folders at the destination.
 6. Verify key files exist after copy.
-7. Tell the user to rebuild the project.
+7. Close the relevant editor safely, build `<ProjectName>Editor`, and fix build failures.
+8. Configure the requested VS Code (`.vscode/mcp.json`) and/or Claude Code (`.mcp.json`) client.
+9. Launch the target editor, verify `127.0.0.1:13090`, restart/approve the client, and run a read-only smoke test.

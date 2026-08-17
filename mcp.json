@@ -4,10 +4,13 @@
       "command": "uv",
       "args": [
         "--directory",
-        "absolute/path/to/this/repository/Python",
+        "./Python",
         "run",
         "unreal_mcp_server.py"
-      ]
+      ],
+      "env": {
+        "UNREAL_MCP_READ_ONLY": "1"
+      }
     }
   }
 }

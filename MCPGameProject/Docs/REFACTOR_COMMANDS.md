@@ -1,5 +1,7 @@
 # Refactoring Plan for UnrealMCPBridge
 
+> **Archived historical plan.** The command-handler refactor described here has already been completed. Command names, ownership, and code snippets below capture an earlier design and are not the current supported Python MCP tool surface. Use `Docs/Tools/README.md`, `Python/tools/*.py`, and `Python/unreal_mcp_server.py` as the authoritative references.
+
 ## Overview
 The UnrealMCPBridge class has grown too large (4000+ lines) and needs to be refactored into smaller, more manageable components. This document outlines the plan to split it into separate command handlers and a utility class.
 

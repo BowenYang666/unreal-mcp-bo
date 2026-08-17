@@ -1,4 +1,4 @@
-# Unreal MCP Editor Tools
+# Unreal MCP Actor Tools
 
 This document provides detailed information about the actor tools available in the Unreal MCP integration.
 
@@ -52,7 +52,7 @@ Create a new primitive/light/camera actor in the current level.
 
 **Parameters:**
 - `name` (string) - The name for the new actor (must be unique)
-- `type` (string) - The type of actor to create (uppercase, see Actor Types below)
+- `type` (string) - `StaticMeshActor`, `PointLight`, `SpotLight`, `DirectionalLight`, or `CameraActor` (case/underscores/spaces are normalized)
 - `location` (array, optional) - [X, Y, Z] coordinates, defaults to [0, 0, 0]
 - `rotation` (array, optional) - [Pitch, Yaw, Roll] values, defaults to [0, 0, 0]
 
@@ -65,7 +65,7 @@ Create a new primitive/light/camera actor in the current level.
   "command": "spawn_actor",
   "params": {
     "name": "MyCube",
-    "type": "CUBE",
+    "type": "StaticMeshActor",
     "location": [0, 0, 100],
     "rotation": [0, 45, 0]
   }
@@ -194,7 +194,7 @@ All command responses include a "success" field indicating whether the operation
 ## Implementation Notes
 
 - All numeric parameters for transforms (location, rotation, scale) must be provided as lists of 3 float values
-- Actor types should be provided in uppercase
+- Actor identifiers accept either internal object names or World Outliner labels where documented.
 - The server maintains logging of all operations with detailed information and error messages
 - All commands are executed through a connection to the Unreal Engine editor
 
@@ -202,24 +202,12 @@ All command responses include a "success" field indicating whether the operation
 
 ### Actor Types
 
-Supported actor types for the `create_actor` command:
+Supported actor types for `spawn_actor`:
 
-- `CUBE` - Static mesh cube
-- `SPHERE` - Static mesh sphere
-- `CYLINDER` - Static mesh cylinder
-- `PLANE` - Static mesh plane
-- `POINT_LIGHT` - Point light source
-- `SPOT_LIGHT` - Spot light source
-- `DIRECTIONAL_LIGHT` - Directional light source
-- `CAMERA` - Camera actor
-- `EMPTY` - Empty actor (container)
+- `StaticMeshActor`
+- `PointLight`
+- `SpotLight`
+- `DirectionalLight`
+- `CameraActor`
 
-## Future Extensions
-
-The following tool categories are planned for future releases:
-
-- **Level Tools**: Managing Unreal Engine levels
-- **Material Tools**: Creating and editing materials
-- **Blueprint Tools**: Manipulating Blueprints
-- **Asset Tools**: Managing project assets
-- **Editor Tools**: Controlling the Unreal Editor
+`spawn_actor` creates the actor class; use `set_actor_property` or component-specific tools to assign meshes, light settings, and other properties afterward.

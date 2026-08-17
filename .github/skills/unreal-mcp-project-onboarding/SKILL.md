@@ -193,7 +193,7 @@ Project-scoped servers initially show `Pending approval`. This is expected: laun
 
 1. Launch the target `.uproject` with the resolved `UnrealEditor.exe`.
 2. Wait for the process and MCP listener to start.
-3. Verify the actual plugin TCP endpoint at `127.0.0.1:13090`. Ignore old documentation that mentions port `55557`.
+3. Verify the plugin TCP endpoint at `127.0.0.1:13090`.
 4. Restart/approve the configured MCP client.
 5. Run a read-only smoke test:
    - `list_blueprints` for a narrow `/Game/...` folder

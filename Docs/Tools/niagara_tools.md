@@ -6,13 +6,14 @@ Tools for creating and editing Niagara particle systems programmatically.
 
 ### `create_niagara_system`
 Create an empty Niagara system asset.
-- `asset_path` — Content path (e.g. `/Game/Effects/NS_MyFire`)
+- `asset_full_path` — Content path (e.g. `/Game/Effects/NS_MyFire`)
+- `template_system_path` — optional source Niagara system to duplicate
 
 ### `list_niagara_systems`
-List all Niagara systems in the project. Supports optional path filter.
+List Niagara systems with optional `path`, `include_engine_content`, and `name_filter` filters.
 
 ### `read_niagara_system`
-Read the full structure of a Niagara system: emitters, modules, rapid iteration parameters. Use `name` or `path` to identify the system.
+Read a Niagara system's emitters, module stacks, rapid iteration parameters, and renderer properties. Identify it with `asset_full_path`.
 
 ## Emitter Management
 
@@ -20,7 +21,7 @@ Read the full structure of a Niagara system: emitters, modules, rapid iteration 
 Add an emitter to a system. Three modes:
 - **Template**: specify `template_name` (e.g. `Fountain`, `Smoke`). Use `list_niagara_emitter_templates` to see available templates.
 - **Duplicate**: specify `source_emitter_name` within the same system.
-- **Cross-system copy**: specify `source_emitter_name` + `source_system_name`/`source_system_path`.
+- **Cross-system copy**: specify `source_emitter_name` + `source_asset_full_path`.
 
 Optional `new_emitter_name` to rename the emitter after adding.
 
@@ -42,18 +43,17 @@ Remove a module from an emitter's stack. Automatically bridges pin connections t
 
 ### `set_niagara_rapid_parameter`
 Set a rapid iteration parameter on an emitter. Key parameters:
-- `system_name` / `system_path` — identify the system
+- `asset_full_path` — identify the Niagara system
 - `emitter_name` — which emitter
-- `module_name` — module containing the parameter (e.g. `InitializeParticle`)
-- `parameter_name` — parameter to set (e.g. `Lifetime Min`)
+- `parameter_name` — full or partial rapid parameter name (e.g. `InitializeParticle.Lifetime Min`)
 - `value` — new value (scalar, vector, color)
-- `script_type` — `"spawn"` (default) or `"update"`. **Important**: modules in Particle Update (Gravity Force, Drag, Scale Color, Solve Forces) require `script_type: "update"`.
+- `script_type` — required: `"spawn"`, `"update"`, `"emitter_spawn"`, or `"emitter_update"`. It must match the module's stack stage.
 
 ### `set_niagara_parameter`
-Set a system/emitter-level parameter (non-rapid-iteration).
+Set a runtime Niagara component parameter on a placed actor. Parameters: `actor_name`, `parameter_name`, `parameter_type`, `value`.
 
 ### `get_niagara_parameters`
-Get all parameters for a Niagara component on an actor.
+Get all exposed parameter values from a Niagara component on a placed actor (`actor_name`).
 
 ### `modify_emitter_properties`
 Modify emitter-level properties (sim target, determinism, local space, etc.).

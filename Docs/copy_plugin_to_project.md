@@ -154,18 +154,18 @@ Use the Python server from the UnrealMCP repository; do not copy the Python dire
 
 For VS Code/Copilot, create or merge `.vscode/mcp.json`:
 
-   ```jsonc
-   {
-         "servers": {
-             "unrealMCP": {
-                 "type": "stdio",
-                 "command": "<ABSOLUTE_UV_PATH>",
-                 "args": ["--directory", "<MCP_REPO>\\Python", "run", "unreal_mcp_server.py"],
-                 "env": { "UNREAL_MCP_READ_ONLY": "1" }
-             }
-         }
-   }
-   ```
+```jsonc
+{
+    "servers": {
+        "unrealMCP": {
+            "type": "stdio",
+            "command": "<ABSOLUTE_UV_PATH>",
+            "args": ["--directory", "<MCP_REPO>\\Python", "run", "unreal_mcp_server.py"],
+            "env": { "UNREAL_MCP_READ_ONLY": "1" }
+        }
+    }
+}
+```
 
 For Claude Code, create or merge strict JSON at the project root in `.mcp.json`:
 

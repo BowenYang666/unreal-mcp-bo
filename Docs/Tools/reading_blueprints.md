@@ -115,6 +115,8 @@ List all Blueprint assets in the project, optionally filtered by path and name.
 
 **Response Structure:**
 
+Examples below show the command's `result` payload. Raw bridge responses may wrap it as `{ "status": "success", "result": { ... } }`; oversized MCP responses return an overflow/file pointer instead.
+
 ```json
 {
   "count": 2,
@@ -382,6 +384,7 @@ Each entry in the `components` array contains:
 | `rotation` | [pitch, yaw, roll] | Relative rotation |
 | `scale` | [x, y, z] | Relative scale |
 | `parent` | string | Parent component name (if any) |
+| `source` | string | `"blueprint"` for SCS components or `"cpp_inherited"` for native inherited components |
 | `properties` | object | Key-value pairs of component-specific properties |
 
 ### Variable Fields
@@ -538,13 +541,13 @@ Step 3: "Connect the BeginPlay event to the new PrintString node"
 | Problem | Solution |
 |---------|----------|
 | **"Blueprint not found"** | Check the name is correct. Try using `list_blueprints` first to find the exact name. If the Blueprint is not in `/Game/Blueprints/`, provide the full path. |
-| **Empty components list** | The Blueprint may not have any custom components added via the Simple Construction Script. Native C++ components won't appear here. |
+| **Empty components list** | The Blueprint class/default object may expose no discoverable SCS or native inherited components. Entries normally identify their `source` as `blueprint` or `cpp_inherited`. |
 | **Missing properties on components** | Properties inherited from `UObject` and `UActorComponent` base classes are filtered out to reduce noise. Only class-specific properties are shown. |
 | **Large response size** | For Blueprints with complex event/collapsed graphs, use `include_nodes=false`, `include_properties=false`, or lower `max_subgraph_depth`. Oversized responses spill to a JSON file instead of truncating. |
-| **"Failed to connect to Unreal Engine"** | Make sure the Unreal Editor is running with the UnrealMCP plugin enabled. The TCP server runs on port 55557 by default. |
+| **"Failed to connect to Unreal Engine"** | Make sure the Unreal Editor is running with the UnrealMCP plugin enabled and listening on `127.0.0.1:13090`. |
 
 ## Related Tools
 
 - [Blueprint Tools](blueprint_tools.md) — Create and modify Blueprints (create, add components, set properties, compile)
 - [Node Tools](node_tools.md) — Manipulate Blueprint graph nodes (add events, functions, connect nodes)
-- [Editor Tools](editor_tools.md) — Control the Unreal Editor viewport and take screenshots
+- [Editor Tools](editor_tools.md) — Inspect editor state/logs and save/open assets or levels

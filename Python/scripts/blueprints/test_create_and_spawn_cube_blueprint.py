@@ -76,7 +76,7 @@ def main():
     try:
         # Connect to Unreal MCP server
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect(("127.0.0.1", 55557))
+        sock.connect(("127.0.0.1", 13090))
         
         try:
             # Step 1: Create a blueprint
@@ -111,7 +111,7 @@ def main():
             # Close and reopen connection for each command
             sock.close()
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.connect(("127.0.0.1", 55557))
+            sock.connect(("127.0.0.1", 13090))
             
             response = send_command(sock, "add_component_to_blueprint", component_params)
             
@@ -125,7 +125,7 @@ def main():
             # Step 3: Set the static mesh properties
             sock.close()
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.connect(("127.0.0.1", 55557))
+            sock.connect(("127.0.0.1", 13090))
             
             mesh_params = {
                 "blueprint_name": "TestBP",
@@ -145,7 +145,7 @@ def main():
             # Step 4: Compile the blueprint
             sock.close()
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.connect(("127.0.0.1", 55557))
+            sock.connect(("127.0.0.1", 13090))
             
             compile_params = {
                 "blueprint_name": "TestBP"
@@ -163,7 +163,7 @@ def main():
             # Step 5: Spawn an instance of the blueprint
             sock.close()
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.connect(("127.0.0.1", 55557))
+            sock.connect(("127.0.0.1", 13090))
             
             spawn_params = {
                 "blueprint_name": "TestBP",

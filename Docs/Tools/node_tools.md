@@ -13,8 +13,8 @@ Node tools allow you to manipulate Blueprint graph nodes and connections program
 Add an event node to a Blueprint's event graph.
 
 **Parameters:**
-- `blueprint_name` (string) - Name of the target Blueprint
-- `event_type` (string) - Type of event (BeginPlay, Tick, etc.)
+- `blueprint_path` (string) - Full asset path of the target Blueprint
+- `event_name` (string) - Event member name (e.g. `ReceiveBeginPlay`, `ReceiveTick`)
 - `node_position` (array, optional) - [X, Y] position in the graph (default: [0, 0])
 
 **Returns:**
@@ -25,8 +25,8 @@ Add an event node to a Blueprint's event graph.
 {
   "command": "add_blueprint_event_node",
   "params": {
-    "blueprint_name": "MyActor",
-    "event_type": "BeginPlay",
+    "blueprint_path": "/Game/Blueprints/BP_MyActor",
+    "event_name": "ReceiveBeginPlay",
     "node_position": [100, 100]
   }
 }
@@ -37,7 +37,7 @@ Add an event node to a Blueprint's event graph.
 Add an input action event node to a Blueprint's event graph.
 
 **Parameters:**
-- `blueprint_name` (string) - Name of the target Blueprint
+- `blueprint_path` (string) - Full asset path of the target Blueprint
 - `action_name` (string) - Name of the input action to respond to
 - `node_position` (array, optional) - [X, Y] position in the graph (default: [0, 0])
 
@@ -49,7 +49,7 @@ Add an input action event node to a Blueprint's event graph.
 {
   "command": "add_blueprint_input_action_node",
   "params": {
-    "blueprint_name": "MyActor",
+    "blueprint_path": "/Game/Blueprints/BP_MyActor",
     "action_name": "Jump",
     "node_position": [200, 200]
   }
@@ -61,7 +61,7 @@ Add an input action event node to a Blueprint's event graph.
 Add a function call node to a Blueprint's event graph.
 
 **Parameters:**
-- `blueprint_name` (string) - Name of the target Blueprint
+- `blueprint_path` (string) - Full asset path of the target Blueprint
 - `target` (string) - Target object for the function (component name or self)
 - `function_name` (string) - Name of the function to call
 - `params` (object, optional) - Parameters to set on the function node
@@ -75,7 +75,7 @@ Add a function call node to a Blueprint's event graph.
 {
   "command": "add_blueprint_function_node",
   "params": {
-    "blueprint_name": "MyActor",
+    "blueprint_path": "/Game/Blueprints/BP_MyActor",
     "target": "Mesh",
     "function_name": "SetRelativeLocation",
     "params": {
@@ -91,7 +91,7 @@ Add a function call node to a Blueprint's event graph.
 Connect two nodes in a Blueprint's event graph.
 
 **Parameters:**
-- `blueprint_name` (string) - Name of the target Blueprint
+- `blueprint_path` (string) - Full asset path of the target Blueprint
 - `source_node_id` (string) - ID of the source node
 - `source_pin` (string) - Name of the output pin on the source node
 - `target_node_id` (string) - ID of the target node
@@ -105,7 +105,7 @@ Connect two nodes in a Blueprint's event graph.
 {
   "command": "connect_blueprint_nodes",
   "params": {
-    "blueprint_name": "MyActor",
+    "blueprint_path": "/Game/Blueprints/BP_MyActor",
     "source_node_id": "node_1",
     "source_pin": "exec",
     "target_node_id": "node_2",
@@ -119,10 +119,9 @@ Connect two nodes in a Blueprint's event graph.
 Add a variable to a Blueprint.
 
 **Parameters:**
-- `blueprint_name` (string) - Name of the target Blueprint
+- `blueprint_path` (string) - Full asset path of the target Blueprint
 - `variable_name` (string) - Name of the variable
 - `variable_type` (string) - Type of the variable (Boolean, Integer, Float, Vector, etc.)
-- `default_value` (any, optional) - Default value for the variable
 - `is_exposed` (boolean, optional) - Whether to expose the variable to the editor (default: false)
 
 **Returns:**
@@ -133,35 +132,10 @@ Add a variable to a Blueprint.
 {
   "command": "add_blueprint_variable",
   "params": {
-    "blueprint_name": "MyActor",
+    "blueprint_path": "/Game/Blueprints/BP_MyActor",
     "variable_name": "Health",
     "variable_type": "Float",
-    "default_value": 100.0,
     "is_exposed": true
-  }
-}
-```
-
-### create_input_mapping
-
-Create an input mapping for the project.
-
-**Parameters:**
-- `action_name` (string) - Name of the input action
-- `key` (string) - Key to bind (SpaceBar, LeftMouseButton, etc.)
-- `input_type` (string, optional) - Type of input mapping (Action or Axis, default: "Action")
-
-**Returns:**
-- Response indicating success or failure
-
-**Example:**
-```json
-{
-  "command": "create_input_mapping",
-  "params": {
-    "action_name": "Jump",
-    "key": "SpaceBar",
-    "input_type": "Action"
   }
 }
 ```
@@ -171,7 +145,7 @@ Create an input mapping for the project.
 Add a node that gets a reference to a component owned by the current Blueprint.
 
 **Parameters:**
-- `blueprint_name` (string) - Name of the target Blueprint
+- `blueprint_path` (string) - Full asset path of the target Blueprint
 - `component_name` (string) - Name of the component to get a reference to
 - `node_position` (array, optional) - [X, Y] position in the graph (default: [0, 0])
 
@@ -183,7 +157,7 @@ Add a node that gets a reference to a component owned by the current Blueprint.
 {
   "command": "add_blueprint_get_self_component_reference",
   "params": {
-    "blueprint_name": "MyActor",
+    "blueprint_path": "/Game/Blueprints/BP_MyActor",
     "component_name": "Mesh",
     "node_position": [400, 400]
   }
@@ -195,7 +169,7 @@ Add a node that gets a reference to a component owned by the current Blueprint.
 Add a 'Get Self' node to a Blueprint's event graph.
 
 **Parameters:**
-- `blueprint_name` (string) - Name of the target Blueprint
+- `blueprint_path` (string) - Full asset path of the target Blueprint
 - `node_position` (array, optional) - [X, Y] position in the graph (default: [0, 0])
 
 **Returns:**
@@ -206,7 +180,7 @@ Add a 'Get Self' node to a Blueprint's event graph.
 {
   "command": "add_blueprint_self_reference",
   "params": {
-    "blueprint_name": "MyActor",
+    "blueprint_path": "/Game/Blueprints/BP_MyActor",
     "node_position": [500, 500]
   }
 }
@@ -217,7 +191,7 @@ Add a 'Get Self' node to a Blueprint's event graph.
 Find nodes in a Blueprint's event graph.
 
 **Parameters:**
-- `blueprint_name` (string) - Name of the target Blueprint
+- `blueprint_path` (string) - Full asset path of the target Blueprint
 - `node_type` (string, optional) - Type of node to find (Event, Function, Variable, etc.)
 - `event_type` (string, optional) - Specific event type to find (BeginPlay, Tick, etc.)
 
@@ -229,7 +203,7 @@ Find nodes in a Blueprint's event graph.
 {
   "command": "find_blueprint_nodes",
   "params": {
-    "blueprint_name": "MyActor",
+    "blueprint_path": "/Game/Blueprints/BP_MyActor",
     "node_type": "Event",
     "event_type": "BeginPlay"
   }

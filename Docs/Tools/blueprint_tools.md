@@ -13,7 +13,7 @@ Blueprint tools allow you to create and manipulate Blueprint assets in Unreal En
 Create a new Blueprint class.
 
 **Parameters:**
-- `name` (string) - The name for the new Blueprint class
+- `name` (string) - Required full content path for the new Blueprint, e.g. `/Game/Blueprints/BP_MyActor`
 - `parent_class` (string) - The parent class for the Blueprint
 
 **Returns:**
@@ -24,7 +24,7 @@ Create a new Blueprint class.
 {
   "command": "create_blueprint",
   "params": {
-    "name": "MyActor",
+    "name": "/Game/Blueprints/BP_MyActor",
     "parent_class": "Actor"
   }
 }
@@ -35,7 +35,7 @@ Create a new Blueprint class.
 Add a component to a Blueprint.
 
 **Parameters:**
-- `blueprint_name` (string) - The name of the Blueprint
+- `blueprint_path` (string) - Full asset path of the Blueprint
 - `component_type` (string) - The type of component to add (use component class name without U prefix)
 - `component_name` (string) - The name for the new component
 - `location` (array, optional) - [X, Y, Z] coordinates for component's position, defaults to [0, 0, 0]
@@ -51,7 +51,7 @@ Add a component to a Blueprint.
 {
   "command": "add_component_to_blueprint",
   "params": {
-    "blueprint_name": "MyActor",
+    "blueprint_path": "/Game/Blueprints/BP_MyActor",
     "component_type": "StaticMeshComponent",
     "component_name": "Mesh",
     "location": [0, 0, 0],
@@ -69,7 +69,7 @@ Add a component to a Blueprint.
 Set the mesh for a StaticMeshComponent.
 
 **Parameters:**
-- `blueprint_name` (string) - The name of the Blueprint
+- `blueprint_path` (string) - Full asset path of the Blueprint
 - `component_name` (string) - The name of the StaticMeshComponent
 - `static_mesh` (string, default: "/Engine/BasicShapes/Cube.Cube") - Path to the static mesh asset
 
@@ -81,7 +81,7 @@ Set the mesh for a StaticMeshComponent.
 {
   "command": "set_static_mesh_properties",
   "params": {
-    "blueprint_name": "MyActor",
+    "blueprint_path": "/Game/Blueprints/BP_MyActor",
     "component_name": "Mesh",
     "static_mesh": "/Engine/BasicShapes/Sphere.Sphere"
   }
@@ -93,7 +93,7 @@ Set the mesh for a StaticMeshComponent.
 Set a property on a component in a Blueprint.
 
 **Parameters:**
-- `blueprint_name` (string) - The name of the Blueprint
+- `blueprint_path` (string) - Full asset path of the Blueprint
 - `component_name` (string) - The name of the component
 - `property_name` (string) - The name of the property to set
 - `property_value` (any) - The value to set for the property
@@ -106,7 +106,7 @@ Set a property on a component in a Blueprint.
 {
   "command": "set_component_property",
   "params": {
-    "blueprint_name": "MyActor",
+    "blueprint_path": "/Game/Blueprints/BP_MyActor",
     "component_name": "Mesh",
     "property_name": "StaticMesh",
     "property_value": "/Game/StarterContent/Shapes/Shape_Cube.Shape_Cube"
@@ -119,7 +119,7 @@ Set a property on a component in a Blueprint.
 Set physics properties on a component.
 
 **Parameters:**
-- `blueprint_name` (string) - The name of the Blueprint
+- `blueprint_path` (string) - Full asset path of the Blueprint
 - `component_name` (string) - The name of the component
 - `simulate_physics` (boolean, optional) - Whether to simulate physics, defaults to true
 - `gravity_enabled` (boolean, optional) - Whether gravity is enabled, defaults to true
@@ -135,7 +135,7 @@ Set physics properties on a component.
 {
   "command": "set_physics_properties",
   "params": {
-    "blueprint_name": "MyActor",
+    "blueprint_path": "/Game/Blueprints/BP_MyActor",
     "component_name": "Mesh",
     "simulate_physics": true,
     "gravity_enabled": true,
@@ -151,7 +151,7 @@ Set physics properties on a component.
 Compile a Blueprint.
 
 **Parameters:**
-- `blueprint_name` (string) - The name of the Blueprint to compile
+- `blueprint_path` (string) - Full asset path of the Blueprint to compile
 
 **Returns:**
 - Result of the compilation operation including success status and message
@@ -161,7 +161,7 @@ Compile a Blueprint.
 {
   "command": "compile_blueprint",
   "params": {
-    "blueprint_name": "MyActor"
+    "blueprint_path": "/Game/Blueprints/BP_MyActor"
   }
 }
 ```
@@ -171,7 +171,7 @@ Compile a Blueprint.
 Set a property on a Blueprint class default object.
 
 **Parameters:**
-- `blueprint_name` (string) - The name of the Blueprint
+- `blueprint_path` (string) - Full asset path of the Blueprint
 - `property_name` (string) - The name of the property to set
 - `property_value` (any) - The value to set for the property
 
@@ -183,37 +183,9 @@ Set a property on a Blueprint class default object.
 {
   "command": "set_blueprint_property",
   "params": {
-    "blueprint_name": "MyActor",
+    "blueprint_path": "/Game/Blueprints/BP_MyActor",
     "property_name": "bCanBeDamaged",
     "property_value": true
-  }
-}
-```
-
-### set_pawn_properties
-
-Set common Pawn properties on a Blueprint.
-
-**Parameters:**
-- `blueprint_name` (string) - Name of the target Blueprint (must be a Pawn or Character)
-- `auto_possess_player` (string, optional) - Auto possess player setting (None, "Disabled", "Player0", "Player1", etc.), defaults to empty string
-- `use_controller_rotation_yaw` (boolean, optional) - Whether the pawn should use the controller's yaw rotation, defaults to false
-- `use_controller_rotation_pitch` (boolean, optional) - Whether the pawn should use the controller's pitch rotation, defaults to false
-- `use_controller_rotation_roll` (boolean, optional) - Whether the pawn should use the controller's roll rotation, defaults to false
-- `can_be_damaged` (boolean, optional) - Whether the pawn can be damaged, defaults to true
-
-**Returns:**
-- Response indicating success or failure with detailed results for each property
-
-**Example:**
-```json
-{
-  "command": "set_pawn_properties",
-  "params": {
-    "blueprint_name": "MyPawn",
-    "auto_possess_player": "Player0",
-    "use_controller_rotation_yaw": true,
-    "can_be_damaged": true
   }
 }
 ```
@@ -227,7 +199,6 @@ Spawn an actor from a Blueprint.
 - `actor_name` (string) - The name for the spawned actor
 - `location` (array, optional) - [X, Y, Z] coordinates for the actor's position, defaults to [0, 0, 0]
 - `rotation` (array, optional) - [Pitch, Yaw, Roll] values for the actor's rotation, defaults to [0, 0, 0]
-- `scale` (array, optional) - [X, Y, Z] values for the actor's scale, defaults to [1, 1, 1]
 
 **Returns:**
 - Information about the spawned actor including success status and message
@@ -240,8 +211,7 @@ Spawn an actor from a Blueprint.
     "blueprint_name": "MyActor",
     "actor_name": "MyActorInstance",
     "location": [0, 0, 100],
-    "rotation": [0, 45, 0],
-    "scale": [1, 1, 1]
+    "rotation": [0, 45, 0]
   }
 }
 ```
@@ -475,7 +445,7 @@ Each AnimGraph node uses a simplified `type` field instead of the full class nam
 {
   "command": "read_blueprint",
   "params": {
-    "blueprint_name": "BP_Player"
+    "blueprint_path": "/Game/Blueprints/BP_Player"
   }
 }
 ```

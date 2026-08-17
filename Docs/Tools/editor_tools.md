@@ -1,61 +1,10 @@
 # Unreal MCP Editor Tools
 
-This document provides detailed information about the editor tools available in the Unreal MCP integration.
+Tools for inspecting editor state, reading logs, saving/opening assets, and managing levels. Actor operations are documented separately in [Actor Tools](actor_tools.md).
 
-## Overview
-
-Editor tools allow you to control the Unreal Editor viewport and other editor functionality through MCP commands. These tools are particularly useful for automating tasks like focusing the camera on specific actors or locations.
+`focus_viewport` and `take_screenshot` exist as legacy C++ commands but are not registered as Python MCP tools and are therefore not part of the supported tool surface.
 
 ## Editor Tools
-
-### focus_viewport
-
-Focus the viewport on a specific actor or location.
-
-**Parameters:**
-- `target` (string, optional) - Name of the actor to focus on (if provided, location is ignored)
-- `location` (array, optional) - [X, Y, Z] coordinates to focus on (used if target is None)
-- `distance` (float, optional) - Distance from the target/location (default: 1000.0)
-- `orientation` (array, optional) - [Pitch, Yaw, Roll] for the viewport camera
-
-**Returns:**
-- Response from Unreal Engine containing the result of the focus operation
-
-**Example:**
-```json
-{
-  "command": "focus_viewport",
-  "params": {
-    "target": "PlayerStart",
-    "distance": 500,
-    "orientation": [0, 180, 0]
-  }
-}
-```
-
-### take_screenshot
-
-Capture a screenshot of the viewport.
-
-**Parameters:**
-- `filename` (string, optional) - Name of the file to save the screenshot as (default: "screenshot.png")
-- `show_ui` (boolean, optional) - Whether to include UI elements in the screenshot (default: false)
-- `resolution` (array, optional) - [Width, Height] for the screenshot
-
-**Returns:**
-- Result of the screenshot operation
-
-**Example:**
-```json
-{
-  "command": "take_screenshot",
-  "params": {
-    "filename": "my_scene.png",
-    "show_ui": false,
-    "resolution": [1920, 1080]
-  }
-}
-```
 
 ### get_editor_logs
 
@@ -67,6 +16,9 @@ Read recent Unreal Editor output log entries from the log file.
 - `category` (string, optional) - Filter by log category (e.g. "LogTemp", "LogBlueprintUserMessages")
 - `search` (string, optional) - Filter lines containing this keyword
 - `log_path` (string, optional) - Override the log file path. Otherwise uses `UNREAL_PROJECT_LOG` env var.
+- `start_time` / `end_time` (string, optional) - ISO/local time range filter
+- `relative_seconds_ago` (int, optional) - Only include entries from the recent time window
+- `pie_session_index` (int, optional) - Select a Play-In-Editor session from the log
 
 **Returns:**
 - Dict with `log_entries` array, `total_lines`, and applied filters
@@ -151,37 +103,8 @@ All command responses include a "status" field indicating whether the operation 
 }
 ```
 
-## Usage Examples
-
-### Python Example
-
-```python
-from unreal_mcp_server import get_unreal_connection
-
-# Get connection to Unreal Engine
-unreal = get_unreal_connection()
-
-# Focus on a specific actor
-focus_response = unreal.send_command("focus_viewport", {
-    "target": "PlayerStart",
-    "distance": 500,
-    "orientation": [0, 180, 0]
-})
-print(focus_response)
-
-# Take a screenshot
-screenshot_response = unreal.send_command("take_screenshot", {"filename": "my_scene.png"})
-print(screenshot_response)
-```
-
 ## Troubleshooting
 
-- **Command fails with "Failed to get active viewport"**: Make sure Unreal Editor is running and has an active viewport.
-- **Actor not found**: Verify that the actor name is correct and the actor exists in the current level.
-- **Invalid parameters**: Ensure that location and orientation arrays contain exactly 3 values (X, Y, Z for location; Pitch, Yaw, Roll for orientation).
-
-## Future Enhancements
-
-- Support for setting viewport display mode (wireframe, lit, etc.)
-- Camera animation paths for cinematic viewport control
-- Support for multiple viewports
+- **Logs unavailable**: pass `log_path` or set `UNREAL_PROJECT_LOG` to the target project's current `.log` file.
+- **Build blocked by Live Coding**: save dirty assets, close the relevant editor, then build externally.
+- **Asset/level path fails**: use a full Unreal content path such as `/Game/Maps/MyLevel`.
