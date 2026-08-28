@@ -1,15 +1,37 @@
 {
+  // Claude 风格的 UnrealMCP 配置模板。
+  // 注意：本文件使用 JSONC 注释；若客户端要求严格 JSON，请删除所有 // 注释。
   "mcpServers": {
     "unrealMCP": {
+      // 使用 uv 启动仓库内共享的 Python MCP server。
+      // GUI 客户端找不到 uv 时，请改成 uv.exe 的绝对路径。
       "command": "uv",
       "args": [
         "--directory",
+        // 相对于当前仓库根目录；复制到其他项目时应改成 UnrealMCP 仓库 Python 目录的绝对路径。
         "./Python",
         "run",
         "unreal_mcp_server.py"
       ],
       "env": {
-        "UNREAL_MCP_READ_ONLY": "1"
+        // ── 访问模式 ──
+        // 0：完整 authoring 模式（查询 + 创建/修改工具）。
+        // 1 / true / yes：只读模式（仅保留 20 个查询工具）。
+        "UNREAL_MCP_READ_ONLY": "0",
+
+        // ── 工具分类开关 ──
+        // 0 / false / no / off：禁用该分类；1 或不设置：启用。
+        // 以下全部为 1 时，authoring 模式共暴露 99 个工具。
+        "MCP_EDITOR_ENABLED": "1",     // Actor、编辑器状态、资产、关卡、日志（16）
+        "MCP_BLUEPRINT_ENABLED": "1",  // Blueprint 资产创建、组件、属性、编译、读取（9）
+        "MCP_NODE_ENABLED": "1",       // Blueprint 图节点创建、连接、查找（8）
+        "MCP_PROJECT_ENABLED": "1",    // 反射、输入映射、BT、Blackboard、StateTree（6）
+        "MCP_UMG_ENABLED": "1",        // UMG / Widget 创建、布局、读取（20）
+        "MCP_MATERIAL_ENABLED": "1",   // Material / Material Instance（15）
+        "MCP_NIAGARA_ENABLED": "1"     // Niagara system / emitter / module / renderer（25）
+
+        // 可选：get_editor_logs 未传 log_path 时使用的默认 UE 日志。
+        // "UNREAL_PROJECT_LOG": "E:\\Path\\To\\Project\\Saved\\Logs\\Project.log"
       }
     }
   }
