@@ -2,27 +2,28 @@
 name: ue-state-tree
 description: "Use this skill when working with StateTree assets, reading/analyzing state tree structures, or debugging StateTree AI behavior. Covers task execution semantics, state transitions, completion modes, and key UE5 source references."
 metadata:
-  version: 1.0.1
+  version: 1.0.3
 ---
 
 # UE5 StateTree Reference (for AI Agents)
 
 ## Critical Behavior Notes (Common Misconceptions)
 
-### Tasks Execute Concurrently (All Tick Each Frame), Not Sequentially
-All tasks within a state are ticked **every frame** in order. They are NOT sequential steps
-where one finishes before the next starts.
-- `Pick Next Target` + `Move To Location` in the same state = both tick every frame simultaneously
+### Tasks Have Concurrent Lifetimes, Not Sequential Step Semantics
+Active, enabled, running tasks that request ticking are processed **in editor order during the same frame**.
+They are NOT sequential steps where one must finish before the next starts.
+- `Pick Next Target` + `Move To Location` in the same state can both tick during the same frame
 - This is fundamentally different from Behavior Trees where tasks are sequential leaves
-- However, if an earlier task **fails**, subsequent tasks stop ticking (failure propagates forward)
+- Disabled tasks, completed tasks, tasks that did not enter, and tasks configured not to tick are skipped
+- If an earlier task that participates in completion **fails**, subsequent tasks stop ticking (failure propagates forward)
 - Task tick order matches the order they appear in the editor (top to bottom)
 - Source: `StateTreeExecutionContext.cpp` `TickTasks()` — iterates all tasks in a for-loop, calling `Task.Tick()` on each
 
 ### TasksCompletion Mode (the "Any/All" dropdown)
 Each state has a `TasksCompletion` field (default varies, check `tasks_completion` in `read_state_tree` output):
-- **Any**: State completes when ANY single task reports success/failure. If any task succeeds, state succeeds. If any fails, state fails.
-- **All**: State completes only when ALL tasks have completed. A mix of Succeeded+Stopped counts as Succeeded.
-- **Failure always wins**: Regardless of Any/All, if any task fails, the completion status is Failed.
+- **Any**: State completes when any task considered for completion reports success/failure. If any succeeds, state succeeds. If any fails, state fails.
+- **All**: State completes only when all tasks considered for completion have completed. A mix of Succeeded+Stopped counts as Succeeded.
+- **Failure always wins**: Regardless of Any/All, if any task considered for completion fails, the completion status is Failed.
 - Source: `StateTreeTasksStatus.h` `GetCompletionStatus()` — bitwise check on completion masks
 
 ### State Selection Behavior
@@ -33,8 +34,9 @@ Each state has a `TasksCompletion` field (default varies, check `tasks_completio
 ### Transitions
 - Completion triggers: OnStateCompleted (both), OnStateSucceeded, OnStateFailed
 - Tick/event triggers: OnTick, OnEvent, OnDelegate
-- Multiple transitions can exist; first matching one wins (checked bottom-to-top for completion)
-- Transitions have priority: Normal, High, Critical
+- Completion transitions are checked from the completed active state up through its parents (child to root)
+- Within each state, completion transitions are checked in declaration order; the first accepted transition wins
+- Transition priorities are Low, Normal, Medium, High, and Critical (`None` is hidden). Completion transitions are order-driven and requested at Normal priority; priority arbitration matters for other transition requests.
 - `link_type` values: GotoState, NextState, NextSelectableState, Succeeded, Failed, None
 
 ### Utility AI (Weight & Considerations) — EXPERIMENTAL
@@ -73,6 +75,12 @@ Read these files for authoritative behavior when the summary above isn't enough:
 
 ## read_state_tree Return Format
 
+`weight` is emitted for every state. Optional fields such as `tasks`, `tasks_completion`,
+`considerations`, `transitions`, and `enter_conditions` are emitted only when applicable;
+do not assume an absent field is present as an empty array.
+States of type `LinkedAsset` include `linked_asset`, the `/Game/...` package path of the
+referenced StateTree. Read that asset separately when its internal hierarchy is needed.
+
 ```json
 {
   "name": "ST_Enemy_Dog",
@@ -87,6 +95,8 @@ Read these files for authoritative behavior when the summary above isn't enough:
     "weight": 1.0,
     "children": [{
       "name": "Patrol",
+      "type": "EStateTreeStateType::LinkedAsset",
+      "linked_asset": "/Game/AI/ST_Common_Patrol",
       "weight": 1.0,
       "tasks_completion": "EStateTreeTaskCompletionType::Any",
       "tasks": [

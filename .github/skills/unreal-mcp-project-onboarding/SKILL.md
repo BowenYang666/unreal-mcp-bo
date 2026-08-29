@@ -131,7 +131,7 @@ For read-only inspection:
 }
 ```
 
-`UNREAL_MCP_READ_ONLY=1` removes mutation tools after registration. Keeping categories enabled allows their safe query tools through the read-only whitelist, including `find_blueprint_nodes` and `get_class_properties`. The latter is essential for inspecting editable class metadata and current values on any loaded asset without modifying it.
+`UNREAL_MCP_READ_ONLY=1` removes mutation tools after registration. Keeping categories enabled allows their safe query tools through the read-only whitelist, including `find_blueprint_nodes`, `get_class_properties`, `read_data_asset`, `read_behavior_tree`, `read_blackboard`, and `read_state_tree`. `get_class_properties` is essential for inspecting editable class metadata and current values on any loaded asset without modifying it.
 
 For authoring, set `UNREAL_MCP_READ_ONLY=0`; set category flags to `0` only when that category should not be exposed.
 

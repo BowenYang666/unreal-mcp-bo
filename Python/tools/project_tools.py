@@ -267,6 +267,8 @@ def register_project_tools(mcp: FastMCP):
             Each state has: name, type, selection_behavior, weight (float),
             considerations[], tasks[], transitions[],
             enter_conditions[], children[].
+            LinkedAsset states also have linked_asset, the referenced StateTree's
+            full /Game package path; read that asset separately for its hierarchy.
             Tasks/conditions/considerations have: class (struct name),
             instance_class (for BP nodes), instance_properties.
             Considerations also expose Operand and DeltaIndent in node_properties.

@@ -18,6 +18,7 @@
 #include "StateTreeEditorData.h"
 #include "StateTreeEditorNode.h"
 #include "StateTreeEditorPropertyBindings.h"
+#include "StateTreeConsiderationBase.h"
 #include "StateTreeTypes.h"
 #include "StateTreeSchema.h"
 #include "InstancedStruct.h"
@@ -806,6 +807,8 @@ namespace
 		Obj->SetStringField(TEXT("name"), State->Name.ToString());
 		Obj->SetStringField(TEXT("type"), UEnum::GetValueAsString(State->Type));
 		Obj->SetStringField(TEXT("selection_behavior"), UEnum::GetValueAsString(State->SelectionBehavior));
+		if (State->LinkedAsset)
+			Obj->SetStringField(TEXT("linked_asset"), State->LinkedAsset->GetOutermost()->GetName());
 
 		// Utility AI: Weight & Considerations (relevant for Utility-based selection behaviors)
 		// Note: This feature is EXPERIMENTAL in UE 5.5+ — API may change.
@@ -819,7 +822,22 @@ namespace
 		{
 			TArray<TSharedPtr<FJsonValue>> ConsArr;
 			for (const FStateTreeEditorNode& N : State->Considerations)
-				ConsArr.Add(MakeShared<FJsonValueObject>(EditorNodeToJson(N, Bindings)));
+			{
+				TSharedPtr<FJsonObject> ConsObj = EditorNodeToJson(N, Bindings);
+				if (const FStateTreeConsiderationBase* Consideration = N.Node.GetPtr<FStateTreeConsiderationBase>())
+				{
+					const TSharedPtr<FJsonObject>* ExistingNodeProps = nullptr;
+					TSharedPtr<FJsonObject> NodeProps;
+					if (ConsObj->TryGetObjectField(TEXT("node_properties"), ExistingNodeProps) && ExistingNodeProps)
+						NodeProps = *ExistingNodeProps;
+					if (!NodeProps.IsValid())
+						NodeProps = MakeShared<FJsonObject>();
+					NodeProps->SetStringField(TEXT("Operand"), UEnum::GetValueAsString(Consideration->Operand));
+					NodeProps->SetNumberField(TEXT("DeltaIndent"), Consideration->DeltaIndent);
+					ConsObj->SetObjectField(TEXT("node_properties"), NodeProps);
+				}
+				ConsArr.Add(MakeShared<FJsonValueObject>(ConsObj));
+			}
 			Obj->SetArrayField(TEXT("considerations"), ConsArr);
 		}
 

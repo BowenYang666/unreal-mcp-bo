@@ -97,11 +97,11 @@ The repository's `mcp.json` is a Claude-format example template. Claude auto-dis
 
 ## Read-Only Mode
 
-Set `UNREAL_MCP_READ_ONLY=1` for project learning, review, or reverse engineering. The server retains exactly these 20 query tools:
+Set `UNREAL_MCP_READ_ONLY=1` for project learning, review, or reverse engineering. The server retains exactly these 24 query tools:
 
 - Actor/editor: `get_actors_in_level`, `find_actors_by_name`, `get_actor_properties`, `get_editor_logs`, `get_unsaved_changes`
 - Blueprint/node: `list_blueprints`, `read_blueprint`, `find_blueprint_nodes`
-- Project reflection: `get_class_properties`
+- Project/AI assets: `get_class_properties`, `read_data_asset`, `read_behavior_tree`, `read_blackboard`, `read_state_tree`
 - Material: `list_materials`, `read_material`, `get_material_instance_parameters`
 - UMG: `read_widget_layout`
 - Niagara: `list_niagara_systems`, `read_niagara_system`, `get_niagara_parameters`, `list_module_inputs`, `list_module_static_switches`, `read_ns_curve`, `list_renderer_types`
