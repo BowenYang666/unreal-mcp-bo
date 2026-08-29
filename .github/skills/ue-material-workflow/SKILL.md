@@ -2,7 +2,7 @@
 name: ue-material-workflow
 description: "Use this skill when creating, editing, or organizing Material graphs via MCP tools. Covers the complete workflow: creating materials, adding expression nodes, wiring connections, positioning/layouting nodes, grouping with comment boxes, creating material instances, and HLSL custom expressions. Read this BEFORE calling any material MCP tool."
 metadata:
-        version: 1.1.0
+        version: 1.1.1
 ---
 
 # UE Material Workflow (MCP Tools)
@@ -28,6 +28,7 @@ You are controlling Unreal Engine's Material Editor through MCP tools. Follow th
 | `get_material_instance_parameters` | Read an instance's parent and parameter overrides |
 | `list_materials` | List all materials in the project |
 | `read_material` | Read graph structure and synchronously report `compile_result` |
+| `save_asset` | Persist the finished asset (provided by the Editor tool category) |
 
 ---
 
@@ -162,15 +163,17 @@ Use `set_material_instance_parameters` for later iteration instead of recreating
 
 2. **Always compile-check last**: After editing, call `read_material` again and require `compile_result.ok=true` before saving/reporting completion.
 
-3. **Horizontal rows, not vertical columns**: Material graphs flow left-to-right. Each material property chain (BaseColor chain, Roughness chain, etc.) should be its own horizontal row. **Never** stack unrelated chains vertically in a single column.
+3. **Serialize mutations per asset**: Do not issue parallel material-edit calls against the same asset. Add nodes, set properties, connect pins, lay out, and save in sequence; parallel writes can return indeterminate outcomes or overwrite in-memory graph state.
 
-4. **Position before grouping**: Always set node positions (Step 5) BEFORE adding comment boxes (Step 6). Comment coordinates depend on where nodes are.
+4. **Horizontal rows, not vertical columns**: Material graphs flow left-to-right. Each material property chain (BaseColor chain, Roughness chain, etc.) should be its own horizontal row. **Never** stack unrelated chains vertically in a single column.
 
-5. **Comment boxes are wide, not tall**: A typical comment box is ~800-1200px wide and ~250-350px tall — it wraps a horizontal chain. If you see a comment that's taller than it is wide, something is wrong.
+5. **Position before grouping**: Always set node positions (Step 5) BEFORE adding comment boxes (Step 6). Comment coordinates depend on where nodes are.
 
-6. **Node index is stable per session**: The index returned by `add_material_expression` or shown by `read_material` stays valid until nodes are added/removed.
+6. **Comment boxes are wide, not tall**: A typical comment box is ~800-1200px wide and ~250-350px tall — it wraps a horizontal chain. If you see a comment that's taller than it is wide, something is wrong.
 
-7. **Shared nodes**: If a node (e.g. a Noise texture) feeds into multiple chains, place it between those rows at an intermediate Y position. It belongs to whichever chain you assign visually, but keep connections clear.
+7. **Treat node indices as a graph snapshot**: Appending nodes preserves existing indices, so recording each returned index during creation is valid. After deleting, recreating, or otherwise structurally changing nodes, call `read_material` again before further index-based edits.
+
+8. **Shared nodes**: If a node (e.g. a Noise texture) feeds into multiple chains, place it between those rows at an intermediate Y position. It belongs to whichever chain you assign visually, but keep connections clear.
 
 ---
 
