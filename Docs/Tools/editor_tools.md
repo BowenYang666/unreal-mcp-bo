@@ -61,6 +61,24 @@ Save an asset to disk.
 **Parameters:**
 - `asset_path` (string) - Asset path to save, e.g. `/Game/VFX/NS_Explosion`
 
+### rename_asset
+
+Rename an asset while keeping it in the same Content Browser folder. Unreal updates loaded references; an existing destination is never overwritten.
+
+**Parameters:**
+- `asset_path` (string) - Full source path, e.g. `/Game/ThirdParty/UE5_TPS_Anim/Mannequins/Anims/Rifle/Walk/SK_Walk`
+- `new_name` (string) - Asset name only, without a folder or object suffix, e.g. `SKM_Walk`
+
+### move_asset
+
+Move an asset to another Content Browser folder without changing its name. The destination folder is created when needed; an existing destination asset is never overwritten.
+
+**Parameters:**
+- `asset_path` (string) - Full source asset path, e.g. `/Game/ThirdParty/Animations/A_Walk`
+- `destination_folder` (string) - Full destination folder path, e.g. `/Game/Characters/Animations`
+
+Both operations require `MCP_ASSET_ENABLED=1` (default when unset) and are removed by read-only mode.
+
 ### open_asset
 
 Open an asset in its default editor window.

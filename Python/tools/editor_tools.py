@@ -755,6 +755,92 @@ def register_editor_tools(mcp: FastMCP):
             return {"success": False, "message": str(e)}
 
     @mcp.tool()
+    def rename_asset(
+        ctx: Context,
+        asset_path: str,
+        new_name: str
+    ) -> Dict[str, Any]:
+        """Rename an Unreal asset while keeping it in the same Content Browser folder.
+
+        Uses Unreal's editor asset rename path, so loaded assets and references are updated.
+        The destination is never overwritten.
+
+        Args:
+            asset_path: Full source asset path, e.g.
+                "/Game/ThirdParty/UE5_TPS_Anim/Mannequins/Anims/Rifle/Walk/SK_Walk".
+                An optional object suffix (".SK_Walk") is accepted.
+            new_name: Asset name only, without a folder or object suffix, e.g. "SKM_Walk".
+
+        Returns:
+            Dict with success, operation, source_path, destination_path, and asset_class.
+
+        Example:
+            rename_asset(asset_path="/Game/Characters/SK_Hero", new_name="SKM_Hero")
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            response = unreal.send_command("rename_asset", {
+                "asset_path": asset_path,
+                "new_name": new_name,
+            })
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+            return response.get("result", response)
+        except Exception as e:
+            logger.error(f"Error renaming asset: {e}")
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
+    def move_asset(
+        ctx: Context,
+        asset_path: str,
+        destination_folder: str
+    ) -> Dict[str, Any]:
+        """Move an Unreal asset to another Content Browser folder without changing its name.
+
+        Uses Unreal's editor asset rename path, so loaded assets and references are updated.
+        Creates the destination folder when needed and never overwrites an existing asset.
+
+        Args:
+            asset_path: Full source asset path, e.g. "/Game/ThirdParty/Animations/A_Walk".
+                An optional object suffix (".A_Walk") is accepted.
+            destination_folder: Full destination folder path, e.g. "/Game/Characters/Animations".
+
+        Returns:
+            Dict with success, operation, source_path, destination_path, and asset_class.
+
+        Example:
+            move_asset(asset_path="/Game/ThirdParty/Animations/A_Walk",
+                destination_folder="/Game/Characters/Animations")
+        """
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+
+            response = unreal.send_command("move_asset", {
+                "asset_path": asset_path,
+                "destination_folder": destination_folder,
+            })
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error", "Unknown error")}
+            return response.get("result", response)
+        except Exception as e:
+            logger.error(f"Error moving asset: {e}")
+            return {"success": False, "message": str(e)}
+
+    @mcp.tool()
     def close_editor(
         ctx: Context,
         save_all: bool = True

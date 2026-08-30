@@ -29,6 +29,7 @@ uv --directory ./Python run python scripts/actors/test_cube.py
 ## Environment Controls
 
 - `UNREAL_MCP_READ_ONLY=1`: expose only the current read-only whitelist.
+- `MCP_ASSET_ENABLED`: controls `rename_asset` and `move_asset`.
 - `MCP_EDITOR_ENABLED`, `MCP_BLUEPRINT_ENABLED`, `MCP_NODE_ENABLED`, `MCP_PROJECT_ENABLED`, `MCP_UMG_ENABLED`, `MCP_MATERIAL_ENABLED`, `MCP_NIAGARA_ENABLED`: set to `0`/`false`/`no`/`off` to disable a category.
 - `UNREAL_PROJECT_LOG`: default log file used by `get_editor_logs`.
 

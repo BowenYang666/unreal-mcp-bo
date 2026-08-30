@@ -206,6 +206,14 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleCommand(const FString& C
     {
         return HandleSaveAsset(Params);
     }
+    else if (CommandType == TEXT("rename_asset"))
+    {
+        return HandleRenameAsset(Params);
+    }
+    else if (CommandType == TEXT("move_asset"))
+    {
+        return HandleMoveAsset(Params);
+    }
     else if (CommandType == TEXT("close_editor"))
     {
         return HandleCloseEditor(Params);
@@ -862,6 +870,155 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSaveAsset(const TSharedP
     ResultJson->SetStringField(TEXT("message"), FString::Printf(TEXT("Asset saved successfully: %s"), *AssetPath));
     ResultJson->SetStringField(TEXT("path"), AssetPath);
     return ResultJson;
+}
+
+namespace
+{
+    FString NormalizeContentAssetPath(const FString& InPath)
+    {
+        FString Path = InPath.TrimStartAndEnd();
+        int32 DotIndex = INDEX_NONE;
+        if (Path.FindChar(TEXT('.'), DotIndex))
+        {
+            Path = Path.Left(DotIndex);
+        }
+        while (Path.EndsWith(TEXT("/")))
+        {
+            Path.LeftChopInline(1);
+        }
+        return Path;
+    }
+
+    bool ValidateContentAssetPath(const FString& Path, FString& OutError)
+    {
+        if (!Path.StartsWith(TEXT("/Game/")) || Path.Contains(TEXT("\\")))
+        {
+            OutError = FString::Printf(TEXT("Asset path must be a full /Game/... content path: %s"), *Path);
+            return false;
+        }
+
+        FString PackagePath;
+        FString AssetName;
+        if (!Path.Split(TEXT("/"), &PackagePath, &AssetName, ESearchCase::CaseSensitive, ESearchDir::FromEnd)
+            || PackagePath.IsEmpty() || AssetName.IsEmpty())
+        {
+            OutError = FString::Printf(TEXT("Asset path must include an asset name: %s"), *Path);
+            return false;
+        }
+        return true;
+    }
+
+    TSharedPtr<FJsonObject> RenameOrMoveAsset(const FString& SourcePath, const FString& DestinationPath, const TCHAR* Operation)
+    {
+        FString Error;
+        if (!ValidateContentAssetPath(SourcePath, Error) || !ValidateContentAssetPath(DestinationPath, Error))
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(Error);
+        }
+        if (SourcePath.Equals(DestinationPath, ESearchCase::CaseSensitive))
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Source and destination asset paths are identical"));
+        }
+        if (!UEditorAssetLibrary::DoesAssetExist(SourcePath))
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(
+                FString::Printf(TEXT("Source asset not found: %s"), *SourcePath));
+        }
+        if (UEditorAssetLibrary::DoesAssetExist(DestinationPath))
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(
+                FString::Printf(TEXT("Destination asset already exists: %s"), *DestinationPath));
+        }
+
+        FString DestinationFolder;
+        FString DestinationName;
+        DestinationPath.Split(TEXT("/"), &DestinationFolder, &DestinationName, ESearchCase::CaseSensitive, ESearchDir::FromEnd);
+        if (!UEditorAssetLibrary::DoesDirectoryExist(DestinationFolder)
+            && !UEditorAssetLibrary::MakeDirectory(DestinationFolder))
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(
+                FString::Printf(TEXT("Failed to create destination folder: %s"), *DestinationFolder));
+        }
+
+        UObject* SourceAsset = UEditorAssetLibrary::LoadAsset(SourcePath);
+        const FString AssetClass = SourceAsset ? SourceAsset->GetClass()->GetName() : FString();
+        if (!UEditorAssetLibrary::RenameAsset(SourcePath, DestinationPath))
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(
+                FString::Printf(TEXT("Failed to %s asset from '%s' to '%s'"), Operation, *SourcePath, *DestinationPath));
+        }
+
+        TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
+        ResultJson->SetStringField(TEXT("operation"), Operation);
+        ResultJson->SetStringField(TEXT("source_path"), SourcePath);
+        ResultJson->SetStringField(TEXT("destination_path"), DestinationPath);
+        if (!AssetClass.IsEmpty())
+        {
+            ResultJson->SetStringField(TEXT("asset_class"), AssetClass);
+        }
+        ResultJson->SetBoolField(TEXT("success"), true);
+        return ResultJson;
+    }
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleRenameAsset(const TSharedPtr<FJsonObject>& Params)
+{
+    FString RawAssetPath;
+    FString NewName;
+    if (!Params->TryGetStringField(TEXT("asset_path"), RawAssetPath))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    }
+    if (!Params->TryGetStringField(TEXT("new_name"), NewName))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'new_name' parameter"));
+    }
+
+    NewName = NewName.TrimStartAndEnd();
+    if (NewName.IsEmpty() || NewName.Contains(TEXT("/")) || NewName.Contains(TEXT("\\")) || NewName.Contains(TEXT(".")))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            TEXT("new_name must be an asset name only, without a path, slash, or object suffix"));
+    }
+
+    const FString SourcePath = NormalizeContentAssetPath(RawAssetPath);
+    FString SourceFolder;
+    FString SourceName;
+    if (!SourcePath.Split(TEXT("/"), &SourceFolder, &SourceName, ESearchCase::CaseSensitive, ESearchDir::FromEnd))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("asset_path must include an asset name"));
+    }
+    return RenameOrMoveAsset(SourcePath, SourceFolder + TEXT("/") + NewName, TEXT("rename"));
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleMoveAsset(const TSharedPtr<FJsonObject>& Params)
+{
+    FString RawAssetPath;
+    FString RawDestinationFolder;
+    if (!Params->TryGetStringField(TEXT("asset_path"), RawAssetPath))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
+    }
+    if (!Params->TryGetStringField(TEXT("destination_folder"), RawDestinationFolder))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'destination_folder' parameter"));
+    }
+
+    const FString SourcePath = NormalizeContentAssetPath(RawAssetPath);
+    FString SourceFolder;
+    FString AssetName;
+    if (!SourcePath.Split(TEXT("/"), &SourceFolder, &AssetName, ESearchCase::CaseSensitive, ESearchDir::FromEnd))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("asset_path must include an asset name"));
+    }
+
+    FString DestinationFolder = NormalizeContentAssetPath(RawDestinationFolder);
+    if (!DestinationFolder.StartsWith(TEXT("/Game")) || DestinationFolder.Contains(TEXT("\\")))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("destination_folder must be a full /Game/... folder path: %s"), *DestinationFolder));
+    }
+    return RenameOrMoveAsset(SourcePath, DestinationFolder + TEXT("/") + AssetName, TEXT("move"));
 }
 
 TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleCloseEditor(const TSharedPtr<FJsonObject>& Params)

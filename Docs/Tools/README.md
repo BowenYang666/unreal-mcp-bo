@@ -1,9 +1,9 @@
 # Unreal MCP Tools
 
-Index for the **99 currently registered Python MCP tools** (before read-only/category filtering).
+Index for the **101 currently registered Python MCP tools** (before read-only/category filtering).
 
 - [Actor Tools](actor_tools.md) (8)
-- [Editor Tools](editor_tools.md) (8)
+- [Editor Tools](editor_tools.md) (8 editor + 2 asset operations)
 - [Blueprint Tools](blueprint_tools.md) (9)
 - [Reading Blueprints](reading_blueprints.md) - How to discover and inspect existing Blueprints
 - [Node Tools](node_tools.md) (8)

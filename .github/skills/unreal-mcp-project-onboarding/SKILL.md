@@ -121,6 +121,7 @@ For read-only inspection:
 ```json
 {
   "UNREAL_MCP_READ_ONLY": "1",
+  "MCP_ASSET_ENABLED": "1",
   "MCP_EDITOR_ENABLED": "1",
   "MCP_BLUEPRINT_ENABLED": "1",
   "MCP_NODE_ENABLED": "1",
@@ -133,7 +134,7 @@ For read-only inspection:
 
 `UNREAL_MCP_READ_ONLY=1` removes mutation tools after registration. Keeping categories enabled allows their safe query tools through the read-only whitelist, including `find_blueprint_nodes`, `get_class_properties`, `read_data_asset`, `read_behavior_tree`, `read_blackboard`, and `read_state_tree`. `get_class_properties` is essential for inspecting editable class metadata and current values on any loaded asset without modifying it.
 
-For authoring, set `UNREAL_MCP_READ_ONLY=0`; set category flags to `0` only when that category should not be exposed.
+For authoring, set `UNREAL_MCP_READ_ONLY=0`; set category flags to `0` only when that category should not be exposed. Use `MCP_ASSET_ENABLED=0` when the client must not rename or move assets.
 
 ### VS Code / Copilot
 

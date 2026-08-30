@@ -242,6 +242,8 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("take_screenshot") ||
                      CommandType == TEXT("get_unsaved_changes") ||
                      CommandType == TEXT("save_asset") ||
+                     CommandType == TEXT("rename_asset") ||
+                     CommandType == TEXT("move_asset") ||
                      CommandType == TEXT("close_editor") ||
                      CommandType == TEXT("open_asset") ||
                      CommandType == TEXT("open_level") ||

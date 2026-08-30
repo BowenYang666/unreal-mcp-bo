@@ -21,7 +21,8 @@
 
         // ── 工具分类开关 ──
         // 0 / false / no / off：禁用该分类；1 或不设置：启用。
-        // 以下全部为 1 时，authoring 模式共暴露 99 个工具。
+        // 以下全部为 1 时，authoring 模式共暴露 101 个工具。
+        "MCP_ASSET_ENABLED": "1",      // 资产重命名、移动（2）
         "MCP_EDITOR_ENABLED": "1",     // Actor、编辑器状态、资产、关卡、日志（16）
         "MCP_BLUEPRINT_ENABLED": "1",  // Blueprint 资产创建、组件、属性、编译、读取（9）
         "MCP_NODE_ENABLED": "1",       // Blueprint 图节点创建、连接、查找（8）

@@ -436,6 +436,9 @@ if _read_only:
 # Categories and their tool name prefixes/sets are defined below.
 # ─────────────────────────────────────────────────────────────────────────────
 _CATEGORY_TOOLS = {
+    "asset": {
+        "rename_asset", "move_asset",
+    },
     "umg": {
         "create_umg_widget_blueprint", "add_text_block_to_widget", "add_button_to_widget",
         "bind_widget_event", "set_text_block_binding", "add_widget_to_viewport",
@@ -513,11 +516,11 @@ def info():
     return """
         # Unreal MCP Server Guidance
 
-        The server registers 99 tools before read-only/category filtering. Use the
+        The server registers 101 tools before read-only/category filtering. Use the
         MCP tool schemas as the authoritative source for exact parameters.
 
-        Core categories: Actor/Editor, Blueprint, Blueprint Node, Project/AI,
-        UMG, Material, and Niagara.
+        Core categories: Asset, Actor/Editor, Blueprint, Blueprint Node,
+        Project/AI, UMG, Material, and Niagara.
 
         Canonical conventions:
         - Blueprint asset/node tools use `blueprint_path` with a full `/Game/...` path.

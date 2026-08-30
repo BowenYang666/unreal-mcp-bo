@@ -35,6 +35,8 @@ private:
     // Editor state commands
     TSharedPtr<FJsonObject> HandleGetUnsavedChanges(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleSaveAsset(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleRenameAsset(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleMoveAsset(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleCloseEditor(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleOpenAsset(const TSharedPtr<FJsonObject>& Params);
 
