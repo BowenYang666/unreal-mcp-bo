@@ -83,7 +83,13 @@ def register_material_tools(mcp: FastMCP):
 
         Returns the complete material structure including: material domain, blend mode,
         shading model, all expression nodes with their types/parameters/connections,
-        and which nodes are connected to material input pins (BaseColor, Metallic, etc).
+        which nodes are connected to material input pins (BaseColor, Metallic, etc),
+        and compile_result from the current cached material resource.
+
+        This tool is read-only: it does NOT force RecompileMaterial, call PostEditChange,
+        or mark the package dirty. compile_result.recompiled is always false. Material
+        mutation tools trigger compilation; call read_material afterward to inspect the
+        resulting cached errors without creating an unsaved asset.
 
         Provide either 'name' or 'path' to identify the material.
 
@@ -93,7 +99,7 @@ def register_material_tools(mcp: FastMCP):
             path: Full asset path (e.g. "/Game/Materials/M_Wood")
 
         Returns:
-            Dict with material properties, nodes (expression graph), material_inputs (pin connections), comments
+            Dict with material properties, nodes, material_inputs, comments, and compile_result.
 
         Examples:
             read_material(name="M_Wood")

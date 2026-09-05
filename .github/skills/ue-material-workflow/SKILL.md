@@ -27,7 +27,7 @@ You are controlling Unreal Engine's Material Editor through MCP tools. Follow th
 | `set_material_instance_parameters` | Update scalar/vector/texture overrides on an existing instance |
 | `get_material_instance_parameters` | Read an instance's parent and parameter overrides |
 | `list_materials` | List all materials in the project |
-| `read_material` | Read graph structure and synchronously report `compile_result` |
+| `read_material` | Read graph structure and cached `compile_result` without dirtying the asset |
 | `save_asset` | Persist the finished asset (provided by the Editor tool category) |
 
 ---
@@ -125,13 +125,13 @@ add_material_comment(asset_path=..., text="Base Color",    pos_x=-680,  pos_y=25
 
 ### Step 7 — Compile-check the finished graph
 
-Call `read_material` after the graph is complete. It recompiles the material and returns:
+Call `read_material` after the graph is complete. Mutation tools trigger material compilation; this read reports the resulting cached resource without forcing another compile:
 
 ```json
-"compile_result": { "ok": true, "error_count": 0, "errors": [] }
+"compile_result": { "available": true, "ok": true, "recompiled": false, "error_count": 0, "errors": [] }
 ```
 
-Do not call the material finished while `compile_result.ok` is false. Fix every reported error, then read again.
+Do not call the material finished unless `compile_result.available` and `compile_result.ok` are both true. Fix every reported error, then read again. `read_material` itself must not create unsaved state.
 
 ### Step 8 — Save the material
 

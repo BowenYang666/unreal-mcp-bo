@@ -465,21 +465,24 @@ TSharedPtr<FJsonObject> FUnrealMCPMaterialCommands::HandleReadMaterial(const TSh
         ResultJson->SetArrayField(TEXT("comments"), CommentArray);
     }
 
-    // -- Compile check: recompile the material and surface translation errors --
-    // This lets an AI verify a material actually compiles after editing it, instead of
-    // only seeing the graph structure. Recompile is synchronous in the editor.
+    // -- Cached compile status (read-only) --
+    // Do not call UMaterialEditingLibrary::RecompileMaterial here: that function invokes
+    // PreEditChange/PostEditChange and MarkPackageDirty, so a read would create unsaved state.
+    // Material mutation tools already trigger PostEditChange; read their resulting resource here.
     {
-        UMaterialEditingLibrary::RecompileMaterial(Material);
-
         TArray<FString> CompileErrors;
         const EShaderPlatform ShaderPlatform = GShaderPlatformForFeatureLevel[GMaxRHIFeatureLevel];
-        if (FMaterialResource* Res = Material->GetMaterialResource(ShaderPlatform))
+        FMaterialResource* Resource = Material->GetMaterialResource(ShaderPlatform);
+        if (Resource)
         {
-            CompileErrors = Res->GetCompileErrors();
+            CompileErrors = Resource->GetCompileErrors();
         }
 
         TSharedPtr<FJsonObject> CompileObj = MakeShareable(new FJsonObject);
-        CompileObj->SetBoolField(TEXT("ok"), CompileErrors.Num() == 0);
+        CompileObj->SetBoolField(TEXT("available"), Resource != nullptr);
+        CompileObj->SetBoolField(TEXT("ok"), Resource != nullptr && CompileErrors.Num() == 0);
+        CompileObj->SetBoolField(TEXT("recompiled"), false);
+        CompileObj->SetStringField(TEXT("source"), TEXT("cached_material_resource"));
         CompileObj->SetNumberField(TEXT("error_count"), CompileErrors.Num());
         TArray<TSharedPtr<FJsonValue>> ErrArray;
         for (const FString& Err : CompileErrors)

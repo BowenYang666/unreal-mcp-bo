@@ -10,15 +10,18 @@ List Material assets in the project. Supports an optional path filter.
 ### `read_material`
 Read the full structure of a Material: domain, blend mode, shading model, all expression nodes (with positions, parameters, textures, input connections and inline defaults), the main material input pins (BaseColor, EmissiveColor, etc.), and comment boxes. Identify by `name` or `path`.
 
-Also returns a **`compile_result`** field — the material is recompiled and any translation/compile errors are surfaced:
+Also returns a read-only **`compile_result`** from the material's current cached resource. `read_material` does not force a recompile or dirty the package. Material mutation tools trigger `PostEditChange`; read their resulting resource afterward:
 ```jsonc
 "compile_result": {
+  "available": true,
   "ok": true,          // false if the material failed to compile
+  "recompiled": false,
+  "source": "cached_material_resource",
   "error_count": 0,
   "errors": []         // translation/compile error messages
 }
 ```
-Recommended workflow: after editing a material, call `read_material` and check `compile_result.ok`; if `false`, fix the issues listed in `compile_result.errors`.
+Recommended workflow: after editing a material, call `read_material` and require `compile_result.available=true` and `compile_result.ok=true`; if false, inspect `compile_result.errors`. Reading an untouched material remains side-effect free.
 
 ### `get_material_instance_parameters`
 Read the parameters (scalar/vector/texture, override state) of a Material Instance Constant.
