@@ -357,6 +357,7 @@ from tools.project_tools import register_project_tools
 from tools.umg_tools import register_umg_tools
 from tools.material_tools import register_material_tools
 from tools.niagara_tools import register_niagara_tools
+from tools.navigation_tools import register_navigation_tools
 
 # Register all tools first
 register_editor_tools(mcp)
@@ -366,6 +367,7 @@ register_project_tools(mcp)
 register_umg_tools(mcp)
 register_material_tools(mcp)
 register_niagara_tools(mcp)
+register_navigation_tools(mcp)
 
 # Read-only mode: if UNREAL_MCP_READ_ONLY=1, remove all write/modify tools
 # and keep only read/query tools. This is useful when you want the AI to
@@ -411,6 +413,11 @@ if _read_only:
         "list_module_static_switches",
         "read_ns_curve",
         "list_renderer_types",
+        # Navigation: inspect bounds/build state and run read-only queries
+        "list_nav_mesh_bounds_volumes",
+        "get_navigation_status",
+        "project_point_to_navigation",
+        "find_navigation_path",
     }
 
     all_tool_names = list(mcp._tool_manager._tools.keys())
@@ -467,6 +474,11 @@ _CATEGORY_TOOLS = {
         "add_renderer_to_emitter", "remove_renderer_from_emitter", "list_renderer_types",
         "set_mesh_renderer_mesh",
     },
+    "navigation": {
+        "set_nav_mesh_bounds_volume", "list_nav_mesh_bounds_volumes",
+        "build_navigation", "get_navigation_status",
+        "project_point_to_navigation", "find_navigation_path",
+    },
     "blueprint": {
         "create_blueprint", "add_component_to_blueprint", "set_component_property",
         "set_physics_properties", "compile_blueprint", "set_blueprint_property",
@@ -516,11 +528,11 @@ def info():
     return """
         # Unreal MCP Server Guidance
 
-        The server registers 101 tools before read-only/category filtering. Use the
+        The server registers 107 tools before read-only/category filtering. Use the
         MCP tool schemas as the authoritative source for exact parameters.
 
         Core categories: Asset, Actor/Editor, Blueprint, Blueprint Node,
-        Project/AI, UMG, Material, and Niagara.
+        Project/AI, UMG, Material, Niagara, and Navigation.
 
         Canonical conventions:
         - Blueprint asset/node tools use `blueprint_path` with a full `/Game/...` path.

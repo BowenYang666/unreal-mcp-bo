@@ -16,12 +16,12 @@
       "env": {
         // ── 访问模式 ──
         // 0：完整 authoring 模式（查询 + 创建/修改工具）。
-        // 1 / true / yes：只读模式（仅保留 24 个查询工具）。
+        // 1 / true / yes：只读模式（仅保留 28 个查询工具）。
         "UNREAL_MCP_READ_ONLY": "0",
 
         // ── 工具分类开关 ──
         // 0 / false / no / off：禁用该分类；1 或不设置：启用。
-        // 以下全部为 1 时，authoring 模式共暴露 101 个工具。
+        // 以下全部为 1 时，authoring 模式共暴露 107 个工具。
         "MCP_ASSET_ENABLED": "1",      // 资产重命名、移动（2）
         "MCP_EDITOR_ENABLED": "1",     // Actor、编辑器状态、资产、关卡、日志（16）
         "MCP_BLUEPRINT_ENABLED": "1",  // Blueprint 资产创建、组件、属性、编译、读取（9）
@@ -29,7 +29,8 @@
         "MCP_PROJECT_ENABLED": "1",    // 反射、输入映射、BT、Blackboard、StateTree（6）
         "MCP_UMG_ENABLED": "1",        // UMG / Widget 创建、布局、读取（20）
         "MCP_MATERIAL_ENABLED": "1",   // Material / Material Instance（15）
-        "MCP_NIAGARA_ENABLED": "1"     // Niagara system / emitter / module / renderer（25）
+        "MCP_NIAGARA_ENABLED": "1",    // Niagara system / emitter / module / renderer（25）
+        "MCP_NAVIGATION_ENABLED": "1"  // NavMesh bounds、构建、状态和路径查询（6）
 
         // 可选：get_editor_logs 未传 log_path 时使用的默认 UE 日志。
         // "UNREAL_PROJECT_LOG": "E:\\Path\\To\\Project\\Saved\\Logs\\Project.log"

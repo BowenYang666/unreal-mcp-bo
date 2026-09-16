@@ -12,6 +12,8 @@
 #include "Engine/Selection.h"
 #include "Kismet/GameplayStatics.h"
 #include "Engine/StaticMeshActor.h"
+#include "GameFramework/Pawn.h"
+#include "Components/CapsuleComponent.h"
 #include "Engine/DirectionalLight.h"
 #include "Engine/PointLight.h"
 #include "Engine/SpotLight.h"
@@ -25,6 +27,7 @@
 #include "EditorAssetLibrary.h"
 #include "Subsystems/AssetEditorSubsystem.h"
 #include "UObject/SavePackage.h"
+#include "EngineUtils.h"
 #include "Animation/AnimBlueprint.h"
 #include "Animation/AnimSequence.h"
 #include "Animation/AnimMontage.h"
@@ -36,6 +39,15 @@
 #include "WidgetBlueprint.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetRegistry/IAssetRegistry.h"
+#include "AI/Navigation/NavAgentInterface.h"
+#include "ActorFactories/ActorFactory.h"
+#include "ActorFactories/ActorFactoryBoxVolume.h"
+#include "Builders/CubeBuilder.h"
+#include "NavMesh/NavMeshBoundsVolume.h"
+#include "NavigationData.h"
+#include "NavigationPath.h"
+#include "NavigationSystem.h"
+#include "ScopedTransaction.h"
 
 namespace
 {
@@ -142,6 +154,236 @@ namespace
 
         return nullptr;
     }
+
+    TSharedPtr<FJsonValue> VectorToJson(const FVector& Vector)
+    {
+        TArray<TSharedPtr<FJsonValue>> Values;
+        Values.Add(MakeShared<FJsonValueNumber>(Vector.X));
+        Values.Add(MakeShared<FJsonValueNumber>(Vector.Y));
+        Values.Add(MakeShared<FJsonValueNumber>(Vector.Z));
+        return MakeShared<FJsonValueArray>(Values);
+    }
+
+    TSharedPtr<FJsonValue> RotatorToJson(const FRotator& Rotator)
+    {
+        TArray<TSharedPtr<FJsonValue>> Values;
+        Values.Add(MakeShared<FJsonValueNumber>(Rotator.Pitch));
+        Values.Add(MakeShared<FJsonValueNumber>(Rotator.Yaw));
+        Values.Add(MakeShared<FJsonValueNumber>(Rotator.Roll));
+        return MakeShared<FJsonValueArray>(Values);
+    }
+
+    bool GetValidatedEditorWorld(
+        const TSharedPtr<FJsonObject>& Params,
+        UWorld*& OutWorld,
+        FString& OutLevelPath,
+        FString& OutError)
+    {
+        FString RequestedLevelPath;
+        if (!Params->TryGetStringField(TEXT("level_path"), RequestedLevelPath) || RequestedLevelPath.IsEmpty())
+        {
+            OutError = TEXT("Missing 'level_path' parameter");
+            return false;
+        }
+
+        int32 DotIndex;
+        if (RequestedLevelPath.FindChar('.', DotIndex))
+        {
+            RequestedLevelPath = RequestedLevelPath.Left(DotIndex);
+        }
+
+        UWorld* World = GetMCPEditorWorld();
+        if (!World)
+        {
+            OutError = TEXT("Failed to get editor world");
+            return false;
+        }
+        if (World->WorldType != EWorldType::Editor)
+        {
+            OutError = FString::Printf(
+                TEXT("Navigation command requires the Editor world; current world type is %d"),
+                static_cast<int32>(World->WorldType));
+            return false;
+        }
+
+        const FString CurrentLevelPath = World->GetOutermost()->GetName();
+        if (CurrentLevelPath != RequestedLevelPath)
+        {
+            OutError = FString::Printf(
+                TEXT("Current editor level is '%s', not requested level '%s'. Open the requested level first."),
+                *CurrentLevelPath,
+                *RequestedLevelPath);
+            return false;
+        }
+
+        OutWorld = World;
+        OutLevelPath = CurrentLevelPath;
+        return true;
+    }
+
+    TSharedPtr<FJsonObject> NavMeshBoundsVolumeToJson(ANavMeshBoundsVolume* Volume)
+    {
+        TSharedPtr<FJsonObject> Json = MakeShared<FJsonObject>();
+        Json->SetStringField(TEXT("actor_name"), Volume->GetName());
+        Json->SetStringField(TEXT("actor_label"), Volume->GetActorLabel());
+        Json->SetField(TEXT("location"), VectorToJson(Volume->GetActorLocation()));
+        Json->SetField(TEXT("rotation"), RotatorToJson(Volume->GetActorRotation()));
+        Json->SetField(TEXT("scale"), VectorToJson(Volume->GetActorScale3D()));
+
+        const FBox Bounds = Volume->GetComponentsBoundingBox(true);
+        Json->SetBoolField(TEXT("bounds_valid"), Bounds.IsValid != 0);
+        if (Bounds.IsValid)
+        {
+            Json->SetField(TEXT("bounds_min"), VectorToJson(Bounds.Min));
+            Json->SetField(TEXT("bounds_max"), VectorToJson(Bounds.Max));
+            Json->SetField(TEXT("bounds_center"), VectorToJson(Bounds.GetCenter()));
+            Json->SetField(TEXT("full_size"), VectorToJson(Bounds.GetSize()));
+        }
+        return Json;
+    }
+
+    bool ResolveNavAgent(
+        const FString& AgentClassPath,
+        UObject*& OutAgentObject,
+        FNavAgentProperties& OutAgentProperties,
+        FString& OutPropertiesSource,
+        FString& OutResolvedClassPath,
+        FString& OutError)
+    {
+        UClass* AgentClass = LoadObject<UClass>(nullptr, *AgentClassPath);
+        if (!AgentClass)
+        {
+            TArray<FString> Tried;
+            if (UBlueprint* Blueprint = ResolveBlueprint(AgentClassPath, Tried))
+            {
+                AgentClass = Blueprint->GeneratedClass;
+            }
+        }
+        if (!AgentClass)
+        {
+            OutError = FString::Printf(TEXT("Failed to resolve agent class: %s"), *AgentClassPath);
+            return false;
+        }
+
+        UObject* AgentCDO = AgentClass->GetDefaultObject();
+        const INavAgentInterface* NavAgent = Cast<INavAgentInterface>(AgentCDO);
+        if (!NavAgent)
+        {
+            OutError = FString::Printf(
+                TEXT("Agent class does not implement INavAgentInterface: %s"),
+                *AgentClass->GetPathName());
+            return false;
+        }
+
+        OutAgentObject = AgentCDO;
+        OutAgentProperties = NavAgent->GetNavAgentPropertiesRef();
+        OutPropertiesSource = TEXT("cdo_nav_agent_interface");
+        if (!OutAgentProperties.IsValid())
+        {
+            const APawn* PawnCDO = Cast<APawn>(AgentCDO);
+            const UCapsuleComponent* CollisionCapsule = PawnCDO
+                ? PawnCDO->FindComponentByClass<UCapsuleComponent>()
+                : nullptr;
+            if (CollisionCapsule)
+            {
+                OutAgentProperties.AgentRadius = CollisionCapsule->GetScaledCapsuleRadius();
+                OutAgentProperties.AgentHeight = CollisionCapsule->GetScaledCapsuleHalfHeight() * 2.0f;
+                OutPropertiesSource = TEXT("cdo_nav_agent_interface_with_capsule");
+            }
+        }
+        OutResolvedClassPath = AgentClass->GetPathName();
+        return true;
+    }
+
+    TSharedPtr<FJsonObject> NavAgentToJson(
+        const FString& RequestedClassPath,
+        const FString& ResolvedClassPath,
+        const FString& PropertiesSource,
+        const FNavAgentProperties& Properties,
+        const ANavigationData* NavData)
+    {
+        TSharedPtr<FJsonObject> Json = MakeShared<FJsonObject>();
+        Json->SetStringField(TEXT("requested_class_path"), RequestedClassPath);
+        Json->SetStringField(TEXT("resolved_class_path"), ResolvedClassPath);
+        Json->SetStringField(TEXT("properties_source"), PropertiesSource);
+        Json->SetNumberField(TEXT("radius"), Properties.AgentRadius);
+        Json->SetNumberField(TEXT("height"), Properties.AgentHeight);
+        Json->SetNumberField(TEXT("step_height"), Properties.AgentStepHeight);
+        Json->SetBoolField(TEXT("can_crouch"), Properties.bCanCrouch);
+        Json->SetBoolField(TEXT("can_jump"), Properties.bCanJump);
+        Json->SetBoolField(TEXT("can_walk"), Properties.bCanWalk);
+        Json->SetBoolField(TEXT("can_swim"), Properties.bCanSwim);
+        Json->SetBoolField(TEXT("can_fly"), Properties.bCanFly);
+        if (NavData)
+        {
+            Json->SetStringField(TEXT("nav_data_name"), NavData->GetName());
+            Json->SetStringField(TEXT("nav_data_class"), NavData->GetClass()->GetPathName());
+            Json->SetStringField(TEXT("nav_data_path"), NavData->GetPathName());
+        }
+        return Json;
+    }
+
+    TMap<FString, FString> NavigationBuildRequestIds;
+
+    TSharedPtr<FJsonObject> NavigationStatusToJson(UWorld* World, const FString& LevelPath)
+    {
+        TSharedPtr<FJsonObject> Json = MakeShared<FJsonObject>();
+        Json->SetBoolField(TEXT("success"), true);
+        Json->SetStringField(TEXT("level_path"), LevelPath);
+
+        UNavigationSystemV1* NavSystem = FNavigationSystem::GetCurrent<UNavigationSystemV1>(World);
+        const bool bInProgress = NavSystem && NavSystem->IsNavigationBuildInProgress();
+        ANavigationData* DefaultNavData = NavSystem
+            ? NavSystem->GetDefaultNavDataInstance(FNavigationSystem::DontCreate)
+            : nullptr;
+        const bool bRequested = NavigationBuildRequestIds.Contains(LevelPath);
+
+        Json->SetBoolField(TEXT("navigation_system_available"), NavSystem != nullptr);
+        Json->SetBoolField(TEXT("build_requested"), bRequested);
+        Json->SetBoolField(TEXT("build_in_progress"), bInProgress);
+        Json->SetBoolField(TEXT("nav_data_available"), DefaultNavData != nullptr);
+        Json->SetStringField(
+            TEXT("state"),
+            !NavSystem ? TEXT("failed")
+                : bInProgress ? TEXT("in_progress")
+                : DefaultNavData ? TEXT("completed")
+                : bRequested ? TEXT("failed")
+                : TEXT("not_built"));
+
+        if (bRequested)
+        {
+            Json->SetStringField(TEXT("request_id"), NavigationBuildRequestIds[LevelPath]);
+        }
+        if (NavSystem)
+        {
+            Json->SetBoolField(TEXT("dirty_areas_queued"), NavSystem->HasDirtyAreasQueued());
+            Json->SetNumberField(TEXT("dirty_area_count"), NavSystem->GetNumDirtyAreas());
+            Json->SetNumberField(TEXT("remaining_build_tasks"), NavSystem->GetNumRemainingBuildTasks());
+            Json->SetNumberField(TEXT("running_build_tasks"), NavSystem->GetNumRunningBuildTasks());
+        }
+        if (DefaultNavData)
+        {
+            Json->SetStringField(TEXT("nav_data_name"), DefaultNavData->GetName());
+            Json->SetStringField(TEXT("nav_data_class"), DefaultNavData->GetClass()->GetPathName());
+            Json->SetStringField(TEXT("nav_data_path"), DefaultNavData->GetPathName());
+        }
+        return Json;
+    }
+
+    FString NavigationQueryResultToString(ENavigationQueryResult::Type Result)
+    {
+        switch (Result)
+        {
+        case ENavigationQueryResult::Success:
+            return TEXT("success");
+        case ENavigationQueryResult::Fail:
+            return TEXT("fail");
+        case ENavigationQueryResult::Error:
+            return TEXT("error");
+        default:
+            return TEXT("invalid");
+        }
+    }
 }
 
 FUnrealMCPEditorCommands::FUnrealMCPEditorCommands()
@@ -221,6 +463,31 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleCommand(const FString& C
     else if (CommandType == TEXT("open_asset"))
     {
         return HandleOpenAsset(Params);
+    }
+    // Navigation editor/query commands
+    else if (CommandType == TEXT("set_nav_mesh_bounds_volume"))
+    {
+        return HandleSetNavMeshBoundsVolume(Params);
+    }
+    else if (CommandType == TEXT("list_nav_mesh_bounds_volumes"))
+    {
+        return HandleListNavMeshBoundsVolumes(Params);
+    }
+    else if (CommandType == TEXT("build_navigation"))
+    {
+        return HandleBuildNavigation(Params);
+    }
+    else if (CommandType == TEXT("get_navigation_status"))
+    {
+        return HandleGetNavigationStatus(Params);
+    }
+    else if (CommandType == TEXT("project_point_to_navigation"))
+    {
+        return HandleProjectPointToNavigation(Params);
+    }
+    else if (CommandType == TEXT("find_navigation_path"))
+    {
+        return HandleFindNavigationPath(Params);
     }
     // Level management commands
     else if (CommandType == TEXT("open_level"))
@@ -1151,6 +1418,351 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleOpenAsset(const TSharedP
     ResultJson->SetBoolField(TEXT("success"), true);
     ResultJson->SetStringField(TEXT("asset_path"), AssetPath);
     ResultJson->SetStringField(TEXT("asset_class"), Asset->GetClass()->GetName());
+    return ResultJson;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleSetNavMeshBoundsVolume(const TSharedPtr<FJsonObject>& Params)
+{
+    UWorld* World = nullptr;
+    FString LevelPath;
+    FString Error;
+    if (!GetValidatedEditorWorld(Params, World, LevelPath, Error))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(Error);
+    }
+
+    const TArray<TSharedPtr<FJsonValue>>* LocationValues = nullptr;
+    const TArray<TSharedPtr<FJsonValue>>* SizeValues = nullptr;
+    if (!Params->TryGetArrayField(TEXT("location"), LocationValues) || LocationValues->Num() < 3)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("'location' must contain three numbers"));
+    }
+    if (!Params->TryGetArrayField(TEXT("full_size"), SizeValues) || SizeValues->Num() < 3)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("'full_size' must contain three numbers"));
+    }
+
+    const FVector Location = FUnrealMCPCommonUtils::GetVectorFromJson(Params, TEXT("location"));
+    const FVector FullSize = FUnrealMCPCommonUtils::GetVectorFromJson(Params, TEXT("full_size"));
+    if (!FMath::IsFinite(FullSize.X) || !FMath::IsFinite(FullSize.Y) || !FMath::IsFinite(FullSize.Z)
+        || FullSize.X <= 0.0 || FullSize.Y <= 0.0 || FullSize.Z <= 0.0)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("'full_size' values must be finite and greater than zero"));
+    }
+
+    FString ActorIdentifier = TEXT("NavMeshBoundsVolume");
+    Params->TryGetStringField(TEXT("actor_name"), ActorIdentifier);
+    TArray<ANavMeshBoundsVolume*> Matches;
+    for (TActorIterator<ANavMeshBoundsVolume> It(World); It; ++It)
+    {
+        if (ActorMatchesIdentifier(*It, ActorIdentifier))
+        {
+            Matches.Add(*It);
+        }
+    }
+    if (Matches.Num() > 1)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(
+            FString::Printf(TEXT("Multiple NavMeshBoundsVolume actors match '%s'; use a unique actor_name"), *ActorIdentifier));
+    }
+
+    const FScopedTransaction Transaction(NSLOCTEXT("UnrealMCP", "SetNavMeshBoundsVolume", "Set Nav Mesh Bounds Volume"));
+    ANavMeshBoundsVolume* Volume = Matches.Num() == 1 ? Matches[0] : nullptr;
+    const bool bCreated = Volume == nullptr;
+    if (!Volume)
+    {
+        FActorSpawnParameters SpawnParameters;
+        SpawnParameters.Name = MakeUniqueObjectName(World->PersistentLevel, ANavMeshBoundsVolume::StaticClass(), FName(*ActorIdentifier));
+        SpawnParameters.OverrideLevel = World->PersistentLevel;
+        SpawnParameters.ObjectFlags |= RF_Transactional;
+        Volume = World->SpawnActor<ANavMeshBoundsVolume>(
+            ANavMeshBoundsVolume::StaticClass(),
+            Location,
+            FRotator::ZeroRotator,
+            SpawnParameters);
+        if (!Volume)
+        {
+            return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Failed to create NavMeshBoundsVolume"));
+        }
+        Volume->SetActorLabel(ActorIdentifier);
+    }
+
+    Volume->Modify();
+    Volume->SetActorLocation(Location);
+    Volume->SetActorRotation(FRotator::ZeroRotator);
+    Volume->SetActorScale3D(FVector::OneVector);
+
+    UCubeBuilder* CubeBuilder = NewObject<UCubeBuilder>(GetTransientPackage());
+    CubeBuilder->X = FullSize.X;
+    CubeBuilder->Y = FullSize.Y;
+    CubeBuilder->Z = FullSize.Z;
+    UActorFactory::CreateBrushForVolumeActor(Volume, CubeBuilder);
+    Volume->PostEditMove(true);
+
+    if (UNavigationSystemV1* NavSystem = FNavigationSystem::GetCurrent<UNavigationSystemV1>(World))
+    {
+        NavSystem->OnNavigationBoundsUpdated(Volume);
+    }
+    World->GetOutermost()->MarkPackageDirty();
+
+    TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
+    ResultJson->SetBoolField(TEXT("success"), true);
+    ResultJson->SetStringField(TEXT("level_path"), LevelPath);
+    ResultJson->SetStringField(TEXT("operation"), bCreated ? TEXT("created") : TEXT("updated"));
+    ResultJson->SetObjectField(TEXT("volume"), NavMeshBoundsVolumeToJson(Volume));
+    return ResultJson;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleListNavMeshBoundsVolumes(const TSharedPtr<FJsonObject>& Params)
+{
+    UWorld* World = nullptr;
+    FString LevelPath;
+    FString Error;
+    if (!GetValidatedEditorWorld(Params, World, LevelPath, Error))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(Error);
+    }
+
+    TArray<TSharedPtr<FJsonValue>> Volumes;
+    for (TActorIterator<ANavMeshBoundsVolume> It(World); It; ++It)
+    {
+        Volumes.Add(MakeShared<FJsonValueObject>(NavMeshBoundsVolumeToJson(*It)));
+    }
+
+    TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
+    ResultJson->SetBoolField(TEXT("success"), true);
+    ResultJson->SetStringField(TEXT("level_path"), LevelPath);
+    ResultJson->SetNumberField(TEXT("count"), Volumes.Num());
+    ResultJson->SetArrayField(TEXT("volumes"), Volumes);
+    return ResultJson;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleBuildNavigation(const TSharedPtr<FJsonObject>& Params)
+{
+    UWorld* World = nullptr;
+    FString LevelPath;
+    FString Error;
+    if (!GetValidatedEditorWorld(Params, World, LevelPath, Error))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(Error);
+    }
+
+    UNavigationSystemV1* NavSystem = FNavigationSystem::GetCurrent<UNavigationSystemV1>(World);
+    if (!NavSystem)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("NavigationSystemV1 is not available in the current editor world"));
+    }
+    if (NavSystem->IsNavigationBuildInProgress())
+    {
+        TSharedPtr<FJsonObject> ResultJson = NavigationStatusToJson(World, LevelPath);
+        ResultJson->SetBoolField(TEXT("accepted"), false);
+        ResultJson->SetStringField(TEXT("message"), TEXT("A navigation build is already in progress"));
+        return ResultJson;
+    }
+
+    const FString RequestId = FGuid::NewGuid().ToString(EGuidFormats::DigitsWithHyphensLower);
+    NavigationBuildRequestIds.Add(LevelPath, RequestId);
+    NavSystem->Build();
+
+    TSharedPtr<FJsonObject> ResultJson = NavigationStatusToJson(World, LevelPath);
+    ResultJson->SetBoolField(TEXT("accepted"), true);
+    ResultJson->SetStringField(TEXT("request_id"), RequestId);
+    return ResultJson;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleGetNavigationStatus(const TSharedPtr<FJsonObject>& Params)
+{
+    UWorld* World = nullptr;
+    FString LevelPath;
+    FString Error;
+    if (!GetValidatedEditorWorld(Params, World, LevelPath, Error))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(Error);
+    }
+    return NavigationStatusToJson(World, LevelPath);
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleProjectPointToNavigation(const TSharedPtr<FJsonObject>& Params)
+{
+    UWorld* World = nullptr;
+    FString LevelPath;
+    FString Error;
+    if (!GetValidatedEditorWorld(Params, World, LevelPath, Error))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(Error);
+    }
+
+    FString AgentClassPath;
+    if (!Params->TryGetStringField(TEXT("agent_class_path"), AgentClassPath) || AgentClassPath.IsEmpty())
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'agent_class_path' parameter"));
+    }
+    const TArray<TSharedPtr<FJsonValue>>* PointValues = nullptr;
+    if (!Params->TryGetArrayField(TEXT("point"), PointValues) || PointValues->Num() < 3)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("'point' must contain three numbers"));
+    }
+
+    UObject* AgentObject = nullptr;
+    FNavAgentProperties AgentProperties;
+    FString PropertiesSource;
+    FString ResolvedClassPath;
+    if (!ResolveNavAgent(AgentClassPath, AgentObject, AgentProperties, PropertiesSource, ResolvedClassPath, Error))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(Error);
+    }
+
+    UNavigationSystemV1* NavSystem = FNavigationSystem::GetCurrent<UNavigationSystemV1>(World);
+    if (!NavSystem)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("NavigationSystemV1 is not available in the current editor world"));
+    }
+    const FVector Point = FUnrealMCPCommonUtils::GetVectorFromJson(Params, TEXT("point"));
+    const FVector Extent = Params->HasField(TEXT("extent"))
+        ? FUnrealMCPCommonUtils::GetVectorFromJson(Params, TEXT("extent"))
+        : INVALID_NAVEXTENT;
+    ANavigationData* NavData = NavSystem->GetNavDataForProps(AgentProperties, Point, Extent);
+    if (!NavData)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No navigation data matches the requested agent"));
+    }
+
+    FNavLocation ProjectedLocation;
+    const bool bProjected = NavSystem->ProjectPointToNavigation(Point, ProjectedLocation, Extent, NavData);
+    TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
+    ResultJson->SetBoolField(TEXT("success"), true);
+    ResultJson->SetBoolField(TEXT("projected"), bProjected);
+    ResultJson->SetStringField(TEXT("level_path"), LevelPath);
+    ResultJson->SetField(TEXT("input_point"), VectorToJson(Point));
+    ResultJson->SetField(TEXT("query_extent"), VectorToJson(Extent));
+    if (bProjected)
+    {
+        ResultJson->SetField(TEXT("projected_point"), VectorToJson(ProjectedLocation.Location));
+        ResultJson->SetStringField(TEXT("node_ref"), FString::Printf(TEXT("%llu"), ProjectedLocation.NodeRef));
+    }
+    ResultJson->SetObjectField(
+        TEXT("agent"),
+        NavAgentToJson(AgentClassPath, ResolvedClassPath, PropertiesSource, AgentProperties, NavData));
+    return ResultJson;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleFindNavigationPath(const TSharedPtr<FJsonObject>& Params)
+{
+    UWorld* World = nullptr;
+    FString LevelPath;
+    FString Error;
+    if (!GetValidatedEditorWorld(Params, World, LevelPath, Error))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(Error);
+    }
+
+    FString AgentClassPath;
+    if (!Params->TryGetStringField(TEXT("agent_class_path"), AgentClassPath) || AgentClassPath.IsEmpty())
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'agent_class_path' parameter"));
+    }
+    const TArray<TSharedPtr<FJsonValue>>* StartValues = nullptr;
+    const TArray<TSharedPtr<FJsonValue>>* EndValues = nullptr;
+    if (!Params->TryGetArrayField(TEXT("start"), StartValues) || StartValues->Num() < 3
+        || !Params->TryGetArrayField(TEXT("end"), EndValues) || EndValues->Num() < 3)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("'start' and 'end' must each contain three numbers"));
+    }
+
+    UObject* AgentObject = nullptr;
+    FNavAgentProperties AgentProperties;
+    FString PropertiesSource;
+    FString ResolvedClassPath;
+    if (!ResolveNavAgent(AgentClassPath, AgentObject, AgentProperties, PropertiesSource, ResolvedClassPath, Error))
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(Error);
+    }
+
+    UNavigationSystemV1* NavSystem = FNavigationSystem::GetCurrent<UNavigationSystemV1>(World);
+    if (!NavSystem)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("NavigationSystemV1 is not available in the current editor world"));
+    }
+
+    const FVector Start = FUnrealMCPCommonUtils::GetVectorFromJson(Params, TEXT("start"));
+    const FVector End = FUnrealMCPCommonUtils::GetVectorFromJson(Params, TEXT("end"));
+    const FVector Extent = Params->HasField(TEXT("extent"))
+        ? FUnrealMCPCommonUtils::GetVectorFromJson(Params, TEXT("extent"))
+        : INVALID_NAVEXTENT;
+    ANavigationData* NavData = NavSystem->GetNavDataForProps(AgentProperties, Start, Extent);
+    if (!NavData)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("No navigation data matches the requested agent"));
+    }
+
+    FNavLocation ProjectedStart;
+    FNavLocation ProjectedEnd;
+    const bool bStartProjected = NavSystem->ProjectPointToNavigation(Start, ProjectedStart, Extent, NavData);
+    const bool bEndProjected = NavSystem->ProjectPointToNavigation(End, ProjectedEnd, Extent, NavData);
+
+    TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
+    ResultJson->SetBoolField(TEXT("success"), true);
+    ResultJson->SetStringField(TEXT("level_path"), LevelPath);
+    ResultJson->SetField(TEXT("start"), VectorToJson(Start));
+    ResultJson->SetField(TEXT("end"), VectorToJson(End));
+    ResultJson->SetField(TEXT("query_extent"), VectorToJson(Extent));
+    ResultJson->SetBoolField(TEXT("start_projected"), bStartProjected);
+    ResultJson->SetBoolField(TEXT("end_projected"), bEndProjected);
+    if (bStartProjected)
+    {
+        ResultJson->SetField(TEXT("projected_start"), VectorToJson(ProjectedStart.Location));
+    }
+    if (bEndProjected)
+    {
+        ResultJson->SetField(TEXT("projected_end"), VectorToJson(ProjectedEnd.Location));
+    }
+    ResultJson->SetObjectField(
+        TEXT("agent"),
+        NavAgentToJson(AgentClassPath, ResolvedClassPath, PropertiesSource, AgentProperties, NavData));
+
+    if (!bStartProjected || !bEndProjected)
+    {
+        ResultJson->SetStringField(TEXT("query_result"), TEXT("not_run"));
+        ResultJson->SetBoolField(TEXT("path_valid"), false);
+        ResultJson->SetBoolField(TEXT("partial"), false);
+        ResultJson->SetBoolField(TEXT("complete"), false);
+        ResultJson->SetStringField(
+            TEXT("failure_reason"),
+            !bStartProjected && !bEndProjected
+                ? TEXT("start_and_end_projection_failed")
+                : !bStartProjected ? TEXT("start_projection_failed") : TEXT("end_projection_failed"));
+        return ResultJson;
+    }
+
+    FPathFindingQuery Query(AgentObject, *NavData, ProjectedStart.Location, ProjectedEnd.Location);
+    const FPathFindingResult PathResult = NavSystem->FindPathSync(AgentProperties, Query);
+    const bool bPathValid = PathResult.Path.IsValid() && PathResult.Path->IsValid();
+    const bool bPartial = bPathValid && PathResult.Path->IsPartial();
+    const bool bComplete = PathResult.IsSuccessful() && bPathValid && !bPartial;
+    ResultJson->SetStringField(TEXT("query_result"), NavigationQueryResultToString(PathResult.Result));
+    ResultJson->SetBoolField(TEXT("path_valid"), bPathValid);
+    ResultJson->SetBoolField(TEXT("partial"), bPartial);
+    ResultJson->SetBoolField(TEXT("complete"), bComplete);
+
+    TArray<TSharedPtr<FJsonValue>> PathPoints;
+    if (bPathValid)
+    {
+        for (const FNavPathPoint& PathPoint : PathResult.Path->GetPathPoints())
+        {
+            PathPoints.Add(VectorToJson(PathPoint.Location));
+        }
+        ResultJson->SetNumberField(TEXT("length"), PathResult.Path->GetLength());
+        ResultJson->SetNumberField(TEXT("cost"), PathResult.Path->GetCost());
+    }
+    ResultJson->SetArrayField(TEXT("path_points"), PathPoints);
+    if (!bComplete)
+    {
+        ResultJson->SetStringField(
+            TEXT("failure_reason"),
+            bPartial ? TEXT("partial_path")
+                : !bPathValid ? TEXT("invalid_path")
+                : NavigationQueryResultToString(PathResult.Result));
+    }
     return ResultJson;
 }
 

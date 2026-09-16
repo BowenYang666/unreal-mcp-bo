@@ -38,6 +38,7 @@ public class UnrealMCP : ModuleRules
 				"DeveloperSettings",
 				"Niagara",
 				"AIModule",
+				"NavigationSystem",
 				"StateTreeModule"
 			}
 		);

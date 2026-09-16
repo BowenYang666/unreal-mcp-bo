@@ -128,7 +128,8 @@ For read-only inspection:
   "MCP_PROJECT_ENABLED": "1",
   "MCP_UMG_ENABLED": "1",
   "MCP_MATERIAL_ENABLED": "1",
-  "MCP_NIAGARA_ENABLED": "1"
+  "MCP_NIAGARA_ENABLED": "1",
+  "MCP_NAVIGATION_ENABLED": "1"
 }
 ```
 

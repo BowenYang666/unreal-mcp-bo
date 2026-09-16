@@ -246,6 +246,12 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("move_asset") ||
                      CommandType == TEXT("close_editor") ||
                      CommandType == TEXT("open_asset") ||
+                     CommandType == TEXT("set_nav_mesh_bounds_volume") ||
+                     CommandType == TEXT("list_nav_mesh_bounds_volumes") ||
+                     CommandType == TEXT("build_navigation") ||
+                     CommandType == TEXT("get_navigation_status") ||
+                     CommandType == TEXT("project_point_to_navigation") ||
+                     CommandType == TEXT("find_navigation_path") ||
                      CommandType == TEXT("open_level") ||
                      CommandType == TEXT("save_level") ||
                      CommandType == TEXT("create_level"))

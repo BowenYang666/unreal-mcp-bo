@@ -40,6 +40,14 @@ private:
     TSharedPtr<FJsonObject> HandleCloseEditor(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleOpenAsset(const TSharedPtr<FJsonObject>& Params);
 
+    // Navigation editor/query commands
+    TSharedPtr<FJsonObject> HandleSetNavMeshBoundsVolume(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleListNavMeshBoundsVolumes(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleBuildNavigation(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleGetNavigationStatus(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleProjectPointToNavigation(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleFindNavigationPath(const TSharedPtr<FJsonObject>& Params);
+
     // Level management commands
     TSharedPtr<FJsonObject> HandleOpenLevel(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleSaveLevel(const TSharedPtr<FJsonObject>& Params);
