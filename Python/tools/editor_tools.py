@@ -841,6 +841,65 @@ def register_editor_tools(mcp: FastMCP):
             return {"success": False, "message": str(e)}
 
     @mcp.tool()
+    def duplicate_asset(
+        ctx: Context,
+        source_asset_path: str,
+        destination_asset_path: str
+    ) -> Dict[str, Any]:
+        """Duplicate one asset using Unreal's native editor API, saving only the copy.
+
+        Both paths must be full /Game package paths including the asset name,
+        without an object suffix or file extension. Existing destinations are
+        rejected. The source and external references are not changed; dependencies
+        remain referenced in place, rather than being recursively duplicated.
+
+        Returns success, source_path, destination_path, asset_class, and saved.
+        A save failure returns success=False and saved=False; the unsaved copy
+        may remain in memory at destination_path and is not silently overwritten.
+
+        Example:
+            duplicate_asset(
+                source_asset_path="/Game/MarketPlugins/Pack/Textures/T_Spark_A",
+                destination_asset_path="/Game/ThirdParty/Pack/Textures/T_Spark_A")
+        """
+        for parameter, path in (
+            ("source_asset_path", source_asset_path),
+            ("destination_asset_path", destination_asset_path),
+        ):
+            if (not isinstance(path, str) or not path.startswith("/Game/")
+                    or any(not part or part in (".", "..") for part in path[1:].split("/"))
+                    or any(character.isspace() or character in '\\.:\"\'<>|?*' for character in path)):
+                return {"success": False, "saved": False,
+                        "message": f"{parameter} must be a full /Game package path including the asset name, without an object suffix"}
+        if source_asset_path.casefold() == destination_asset_path.casefold():
+            return {"success": False, "saved": False,
+                    "message": "Source and destination asset paths are identical"}
+
+        from unreal_mcp_server import get_unreal_connection
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "saved": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command("duplicate_asset", {
+                "source_asset_path": source_asset_path,
+                "destination_asset_path": destination_asset_path,
+            })
+            if not response:
+                return {"success": False, "saved": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {**response.get("result", {}), "success": False,
+                        "message": response.get("error") or "Asset duplication failed"}
+            result = response.get("result", response)
+            if result.get("success") is not True or result.get("saved") is not True:
+                return {**result, "success": False,
+                        "message": result.get("message", "Asset duplication or saving failed")}
+            return result
+        except Exception as exc:
+            logger.error(f"Error duplicating asset: {exc}")
+            return {"success": False, "saved": False, "message": str(exc)}
+
+    @mcp.tool()
     def close_editor(
         ctx: Context,
         save_all: bool = True

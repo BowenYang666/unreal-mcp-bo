@@ -26,6 +26,8 @@
 #include "Engine/BlueprintGeneratedClass.h"
 #include "EditorAssetLibrary.h"
 #include "Subsystems/AssetEditorSubsystem.h"
+#include "Misc/PackageName.h"
+#include "UObject/Package.h"
 #include "UObject/SavePackage.h"
 #include "EngineUtils.h"
 #include "Animation/AnimBlueprint.h"
@@ -35,6 +37,7 @@
 #include "Materials/Material.h"
 #include "Materials/MaterialInstance.h"
 #include "Engine/DataAsset.h"
+#include "Engine/Texture.h"
 #include "NiagaraSystem.h"
 #include "WidgetBlueprint.h"
 #include "AssetRegistry/AssetRegistryModule.h"
@@ -455,6 +458,10 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleCommand(const FString& C
     else if (CommandType == TEXT("move_asset"))
     {
         return HandleMoveAsset(Params);
+    }
+    else if (CommandType == TEXT("duplicate_asset"))
+    {
+        return HandleDuplicateAsset(Params);
     }
     else if (CommandType == TEXT("close_editor"))
     {
@@ -1286,6 +1293,107 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleMoveAsset(const TSharedP
             FString::Printf(TEXT("destination_folder must be a full /Game/... folder path: %s"), *DestinationFolder));
     }
     return RenameOrMoveAsset(SourcePath, DestinationFolder + TEXT("/") + AssetName, TEXT("move"));
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleDuplicateAsset(const TSharedPtr<FJsonObject>& Params)
+{
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetStringField(TEXT("operation"), TEXT("duplicate"));
+    Result->SetBoolField(TEXT("success"), false);
+    Result->SetBoolField(TEXT("saved"), false);
+    Result->SetBoolField(TEXT("duplicate_created"), false);
+    auto Fail = [&Result](const FString& Message)
+    {
+        Result->SetStringField(TEXT("error"), Message);
+        Result->SetStringField(TEXT("message"), Message);
+        return Result;
+    };
+
+    FString SourcePath;
+    FString DestinationPath;
+    if (!Params->TryGetStringField(TEXT("source_asset_path"), SourcePath)
+        || !Params->TryGetStringField(TEXT("destination_asset_path"), DestinationPath))
+    {
+        return Fail(TEXT("source_asset_path and destination_asset_path are required strings"));
+    }
+    Result->SetStringField(TEXT("source_path"), SourcePath);
+    Result->SetStringField(TEXT("destination_path"), DestinationPath);
+    for (const FString& Path : {SourcePath, DestinationPath})
+    {
+        FText Reason;
+        if (!Path.StartsWith(TEXT("/Game/"), ESearchCase::CaseSensitive)
+            || Path.EndsWith(TEXT("/")) || Path.Contains(TEXT("//"))
+            || !FPackageName::IsValidLongPackageName(Path, false, &Reason))
+        {
+            return Fail(FString::Printf(
+                TEXT("Expected a full /Game package path including the asset name, without an object suffix: '%s'. %s"),
+                *Path, *Reason.ToString()));
+        }
+    }
+    if (SourcePath.Equals(DestinationPath, ESearchCase::IgnoreCase))
+    {
+        return Fail(TEXT("Source and destination asset paths are identical"));
+    }
+    if (!GEditor || GEditor->PlayWorld)
+    {
+        return Fail(TEXT("duplicate_asset requires the editor outside PIE"));
+    }
+    if (UEditorAssetLibrary::DoesAssetExist(DestinationPath)
+        || FPackageName::DoesPackageExist(DestinationPath)
+        || FindPackage(nullptr, *DestinationPath))
+    {
+        return Fail(FString::Printf(TEXT("Destination asset or package already exists; overwrite is forbidden: %s"), *DestinationPath));
+    }
+
+    const FAssetData SourceData = UEditorAssetLibrary::FindAssetData(SourcePath);
+    if (!SourceData.IsValid())
+    {
+        return Fail(FString::Printf(TEXT("Source asset not found: %s"), *SourcePath));
+    }
+    if (SourceData.IsRedirector())
+    {
+        return Fail(TEXT("Source is a redirector; provide the original asset package path"));
+    }
+    UObject* SourceAsset = UEditorAssetLibrary::LoadAsset(SourcePath);
+    if (!SourceAsset || SourceAsset->IsA<UWorld>())
+    {
+        return Fail(TEXT("Source could not be loaded or is a map; only individual content assets are supported"));
+    }
+    Result->SetStringField(TEXT("asset_class"), SourceAsset->GetClass()->GetName());
+
+    UObject* Duplicate = UEditorAssetLibrary::DuplicateAsset(SourcePath, DestinationPath);
+    if (!Duplicate)
+    {
+        return Fail(TEXT("Unreal's native DuplicateAsset failed; see the editor log"));
+    }
+    Result->SetBoolField(TEXT("duplicate_created"), true);
+    Result->SetStringField(TEXT("destination_path"), Duplicate->GetOutermost()->GetName());
+    Result->SetStringField(TEXT("object_path"), Duplicate->GetPathName());
+    if (Duplicate->GetOutermost()->GetName() != DestinationPath
+        || Duplicate->GetClass() != SourceAsset->GetClass())
+    {
+        return Fail(TEXT("Native duplication returned an unexpected path or type; the copy was not saved"));
+    }
+    if (UTexture* CopiedTexture = Cast<UTexture>(Duplicate))
+    {
+        const UTexture* SourceTexture = CastChecked<UTexture>(SourceAsset);
+        if (CopiedTexture->OodleTextureSdkVersion != SourceTexture->OodleTextureSdkVersion)
+        {
+            CopiedTexture->PreEditChange(nullptr);
+            CopiedTexture->OodleTextureSdkVersion = SourceTexture->OodleTextureSdkVersion;
+            CopiedTexture->PostEditChange();
+        }
+    }
+    if (!UEditorAssetLibrary::SaveLoadedAsset(Duplicate, false)
+        || Duplicate->GetOutermost()->IsDirty()
+        || !FPackageName::DoesPackageExist(DestinationPath))
+    {
+        return Fail(TEXT("Copy created but saving failed; an unsaved copy may remain at destination_path. No source or other assets were saved"));
+    }
+
+    Result->SetBoolField(TEXT("saved"), true);
+    Result->SetBoolField(TEXT("success"), true);
+    return Result;
 }
 
 TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleCloseEditor(const TSharedPtr<FJsonObject>& Params)

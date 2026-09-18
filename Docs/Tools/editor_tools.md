@@ -77,7 +77,58 @@ Move an asset to another Content Browser folder without changing its name. The d
 - `asset_path` (string) - Full source asset path, e.g. `/Game/ThirdParty/Animations/A_Walk`
 - `destination_folder` (string) - Full destination folder path, e.g. `/Game/Characters/Animations`
 
-Both operations require `MCP_ASSET_ENABLED=1` (default when unset) and are removed by read-only mode.
+### duplicate_asset
+
+Duplicate one content asset with Unreal's native `DuplicateAsset` API and save
+only the new copy with `SaveLoadedAsset`. No filesystem copying, recursive
+dependency duplication, reference replacement, source rename, or redirector creation.
+
+**Parameters:**
+- `source_asset_path` (string) - Existing full `/Game/.../AssetName` package path.
+- `destination_asset_path` (string) - New full `/Game/.../AssetName` package path, including the name.
+
+Object suffixes, file extensions, folder-only paths, identical paths, existing
+destination packages (including unsaved packages), redirector sources, maps, and
+PIE execution are rejected. Unreal performs the authoritative package-name validation.
+Texture pixels and settings are preserved by native duplication; dependencies
+remain referenced at their existing paths. No original or unrelated package is saved.
+The wrapper restores the source texture's `OodleTextureSdkVersion` before saving:
+UE's new-texture initialization can otherwise upgrade this compression setting
+even when duplicating an unchanged texture. Only the new copy is updated.
+
+```python
+duplicate_asset(
+  source_asset_path="/Game/MarketPlugins/Realistic_Starter_VFX_Pack_Vol2/Textures/T_Impact_Flare",
+  destination_asset_path="/Game/ThirdParty/Realistic_Starter_VFX_Pack_Vol2/Textures/T_Impact_Flare")
+```
+
+**Returns:** `success`, `operation="duplicate"`, `source_path`, `destination_path`,
+`asset_class`, `object_path`, `duplicate_created`, and `saved`. Failure returns
+`success=false` and a `message`. If saving fails after duplication,
+`duplicate_created=true` and `saved=false`; an unsaved copy may remain in memory.
+The tool does not delete it or overwrite it on retry. Resolve that copy explicitly
+before retrying. A transport timeout is indeterminate; inspect the destination
+before retrying rather than assuming nothing happened.
+
+These three asset operations require `MCP_ASSET_ENABLED=1` (default when unset)
+and are removed by read-only mode. They are independent of `MCP_EDITOR_ENABLED`.
+
+#### Verification
+
+From `Python`, run `uv run python -m unittest discover -s tests -p test_duplicate_asset.py -v`.
+For saved texture comparisons, launch the target editor with:
+
+```text
+-MCPDuplicateSourceRoot=/Game/MarketPlugins/Realistic_Starter_VFX_Pack_Vol2/Textures
+-MCPDuplicateDestinationRoot=/Game/ThirdParty/Realistic_Starter_VFX_Pack_Vol2/Textures
+-MCPDuplicateAssetNames=T_Impact_Flare,T_Spark_A
+-ExecCmds="Automation RunTests UnrealMCP.Assets.DuplicatePersistedTextures"
+```
+
+Run this after closing the copying editor to verify fresh disk loads. This test
+only reads assets: it compares all source mip bytes, dimensions, formats, editable
+settings, and dependencies, and checks original/copy identities and dirty states.
+It requires pre-existing source and copied textures; it never creates or saves them.
 
 ### open_asset
 

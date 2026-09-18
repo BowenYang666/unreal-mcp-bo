@@ -244,6 +244,7 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("save_asset") ||
                      CommandType == TEXT("rename_asset") ||
                      CommandType == TEXT("move_asset") ||
+                     CommandType == TEXT("duplicate_asset") ||
                      CommandType == TEXT("close_editor") ||
                      CommandType == TEXT("open_asset") ||
                      CommandType == TEXT("set_nav_mesh_bounds_volume") ||
@@ -402,6 +403,10 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                 // Set error status and include the error message
                 ResponseJson->SetStringField(TEXT("status"), TEXT("error"));
                 ResponseJson->SetStringField(TEXT("error"), ErrorMessage);
+                if (CommandType == TEXT("duplicate_asset"))
+                {
+                    ResponseJson->SetObjectField(TEXT("result"), ResultJson);
+                }
             }
         }
         catch (const std::exception& e)

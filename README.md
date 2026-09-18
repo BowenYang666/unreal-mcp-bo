@@ -4,11 +4,11 @@ Fork of [chongdashu/unreal-mcp](https://github.com/chongdashu/unreal-mcp) for AI
 
 ## Tool Surface
 
-The Python MCP server currently registers **107 tools** before read-only/category filtering.
+The Python MCP server currently registers **108 tools** before read-only/category filtering.
 
 | Category | Count | Reference |
 |---|---:|---|
-| Asset operations | 2 | [Editor tools](Docs/Tools/editor_tools.md#asset-management) |
+| Asset operations | 3 | [Editor tools](Docs/Tools/editor_tools.md#asset--level-management) |
 | Actor + Editor | 16 | [Actor tools](Docs/Tools/actor_tools.md), [Editor tools](Docs/Tools/editor_tools.md) |
 | Blueprint assets | 9 | [Blueprint tools](Docs/Tools/blueprint_tools.md), [reading guide](Docs/Tools/reading_blueprints.md) |
 | Blueprint nodes | 8 | [Node tools](Docs/Tools/node_tools.md) |
@@ -117,7 +117,7 @@ Category filters can be combined with read-only mode. A value of `0`, `false`, `
 
 | Environment variable | Category |
 |---|---|
-| `MCP_ASSET_ENABLED` | Asset rename/move operations |
+| `MCP_ASSET_ENABLED` | Asset rename, move, and duplicate operations |
 | `MCP_EDITOR_ENABLED` | Actors, editor state, assets, levels, logs |
 | `MCP_BLUEPRINT_ENABLED` | Blueprint asset creation/properties/reading |
 | `MCP_NODE_ENABLED` | Blueprint graph node operations/search |

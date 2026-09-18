@@ -444,7 +444,7 @@ if _read_only:
 # ─────────────────────────────────────────────────────────────────────────────
 _CATEGORY_TOOLS = {
     "asset": {
-        "rename_asset", "move_asset",
+        "rename_asset", "move_asset", "duplicate_asset",
     },
     "umg": {
         "create_umg_widget_blueprint", "add_text_block_to_widget", "add_button_to_widget",
@@ -528,7 +528,7 @@ def info():
     return """
         # Unreal MCP Server Guidance
 
-        The server registers 107 tools before read-only/category filtering. Use the
+        The server registers 108 tools before read-only/category filtering. Use the
         MCP tool schemas as the authoritative source for exact parameters.
 
         Core categories: Asset, Actor/Editor, Blueprint, Blueprint Node,
