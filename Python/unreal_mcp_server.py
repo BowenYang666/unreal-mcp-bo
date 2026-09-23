@@ -395,6 +395,7 @@ if _read_only:
         "read_behavior_tree",
         "read_blackboard",
         "read_state_tree",
+        "read_cascade_system",
         # Editor logs: read output log
         "get_editor_logs",
         # Editor state: check unsaved changes
@@ -443,6 +444,7 @@ if _read_only:
 # Categories and their tool name prefixes/sets are defined below.
 # ─────────────────────────────────────────────────────────────────────────────
 _CATEGORY_TOOLS = {
+    "cascade": {"read_cascade_system"},
     "asset": {
         "rename_asset", "move_asset", "duplicate_asset",
     },
@@ -528,11 +530,11 @@ def info():
     return """
         # Unreal MCP Server Guidance
 
-        The server registers 108 tools before read-only/category filtering. Use the
+        The server registers 109 tools before read-only/category filtering. Use the
         MCP tool schemas as the authoritative source for exact parameters.
 
         Core categories: Asset, Actor/Editor, Blueprint, Blueprint Node,
-        Project/AI, UMG, Material, Niagara, and Navigation.
+        Project/AI, UMG, Material, Niagara, Navigation, and Cascade.
 
         Canonical conventions:
         - Blueprint asset/node tools use `blueprint_path` with a full `/Game/...` path.

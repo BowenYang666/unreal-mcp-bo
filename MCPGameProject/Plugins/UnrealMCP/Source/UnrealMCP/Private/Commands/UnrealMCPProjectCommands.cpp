@@ -54,6 +54,10 @@ TSharedPtr<FJsonObject> FUnrealMCPProjectCommands::HandleCommand(const FString& 
     {
         return HandleReadStateTree(Params);
     }
+	else if (CommandType == TEXT("read_cascade_system"))
+	{
+		return HandleReadCascadeSystem(Params);
+	}
     
     return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Unknown project command: %s"), *CommandType));
 }

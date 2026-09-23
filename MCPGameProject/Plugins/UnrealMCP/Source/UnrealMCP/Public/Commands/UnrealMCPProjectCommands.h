@@ -25,6 +25,7 @@ private:
     TSharedPtr<FJsonObject> HandleReadBehaviorTree(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleReadBlackboard(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> HandleReadStateTree(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleReadCascadeSystem(const TSharedPtr<FJsonObject>& Params);
 
     // BT helpers
     static TSharedPtr<FJsonObject> BTNodeToJson(UBTNode* Node);

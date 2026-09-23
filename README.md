@@ -4,7 +4,7 @@ Fork of [chongdashu/unreal-mcp](https://github.com/chongdashu/unreal-mcp) for AI
 
 ## Tool Surface
 
-The Python MCP server currently registers **108 tools** before read-only/category filtering.
+The Python MCP server currently registers **109 tools** before read-only/category filtering.
 
 | Category | Count | Reference |
 |---|---:|---|
@@ -17,6 +17,7 @@ The Python MCP server currently registers **108 tools** before read-only/categor
 | Niagara | 25 | [Niagara tools](Docs/Tools/niagara_tools.md) |
 | Project / AI assets | 6 | [Project tools](Docs/Tools/project_tools.md) |
 | Navigation | 6 | [Navigation tools](Docs/Tools/navigation_tools.md) |
+| Cascade (legacy VFX) | 1 | [Cascade reader](Docs/Tools/cascade_tools.md) |
 
 Notable read support includes Blueprint collapsed subgraphs and pin defaults, Material compile results, Niagara dynamic inputs/curves/renderers, arbitrary reflected UObject properties, Behavior Trees, Blackboards, and StateTrees.
 
@@ -99,7 +100,7 @@ The repository's `mcp.json` is a Claude-format example template. Claude auto-dis
 
 ## Read-Only Mode
 
-Set `UNREAL_MCP_READ_ONLY=1` for project learning, review, or reverse engineering. The server retains exactly these 28 query tools:
+Set `UNREAL_MCP_READ_ONLY=1` for project learning, review, or reverse engineering. The server retains exactly these 29 query tools:
 
 - Actor/editor: `get_actors_in_level`, `find_actors_by_name`, `get_actor_properties`, `get_editor_logs`, `get_unsaved_changes`
 - Blueprint/node: `list_blueprints`, `read_blueprint`, `find_blueprint_nodes`
@@ -108,6 +109,7 @@ Set `UNREAL_MCP_READ_ONLY=1` for project learning, review, or reverse engineerin
 - UMG: `read_widget_layout`
 - Niagara: `list_niagara_systems`, `read_niagara_system`, `get_niagara_parameters`, `list_module_inputs`, `list_module_static_switches`, `read_ns_curve`, `list_renderer_types`
 - Navigation: `list_nav_mesh_bounds_volumes`, `get_navigation_status`, `project_point_to_navigation`, `find_navigation_path`
+- Cascade: `read_cascade_system`
 
 Set `UNREAL_MCP_READ_ONLY=0` (or omit it) for authoring.
 
@@ -126,6 +128,7 @@ Category filters can be combined with read-only mode. A value of `0`, `false`, `
 | `MCP_MATERIAL_ENABLED` | Material and MaterialInstance tools |
 | `MCP_NIAGARA_ENABLED` | Niagara system/emitter/module/renderer tools |
 | `MCP_NAVIGATION_ENABLED` | NavMesh bounds, navigation build/status, point projection, and path queries |
+| `MCP_CASCADE_ENABLED` | Read legacy Cascade ParticleSystem assets |
 
 ## Development Updates
 

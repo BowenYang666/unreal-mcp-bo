@@ -248,6 +248,63 @@ def register_project_tools(mcp: FastMCP):
             return {"success": False, "message": str(e)}
 
     @mcp.tool()
+    def read_cascade_system(
+        ctx: Context,
+        asset_path: str,
+        emitter_index: int = -1,
+        lod_index: int = -1,
+    ) -> Dict[str, Any]:
+        """Read a legacy Cascade ParticleSystem without editing or simulating it.
+
+        asset_path is a full Unreal asset path, not a folder. Indices are zero-based;
+        -1 selects all emitters or all LODs. Returns ordered modules, typed properties,
+        distributions/curve keys, resource references and event/dynamic parameters.
+        Shared inline objects use object_ref links into the returned objects table.
+        Read complete/warnings for unsupported fields or traversal limits. External
+        assets are referenced, not recursively read. Runtime parameter overrides and
+        particle simulation state are not included. Large results spill to a JSON file.
+
+        Example:
+            read_cascade_system(
+                asset_path="/Game/ParagonWraith/FX/Particles/Abilities/Drone/FX/P_Wraith_Drone_Targeting",
+                emitter_index=3, lod_index=0)
+        """
+        if (not isinstance(asset_path, str) or not asset_path.startswith("/")
+                or asset_path.endswith("/") or "\\" in asset_path or ":" in asset_path
+                or asset_path != asset_path.strip() or "//" in asset_path
+                or any(part in (".", "..") for part in asset_path.split("/"))):
+            return {"success": False, "message": "asset_path must be a full Unreal asset path"}
+        for parameter, index in (("emitter_index", emitter_index), ("lod_index", lod_index)):
+            if type(index) is not int or index < -1:
+                return {"success": False, "message": f"{parameter} must be -1 or a nonnegative integer"}
+
+        from unreal_mcp_server import get_unreal_connection, spill_if_oversized
+
+        try:
+            unreal = get_unreal_connection()
+            if not unreal:
+                return {"success": False, "message": "Failed to connect to Unreal Engine"}
+            response = unreal.send_command("read_cascade_system", {
+                "asset_path": asset_path,
+                "emitter_index": emitter_index,
+                "lod_index": lod_index,
+            })
+            if not response:
+                return {"success": False, "message": "No response from Unreal Engine"}
+            if response.get("status") == "error":
+                return {"success": False, "message": response.get("error") or "Cascade read failed"}
+            result = response.get("result", response)
+            return spill_if_oversized(
+                result, "read_cascade_system", f"{asset_path}_e{emitter_index}_lod{lod_index}",
+                preview_keys=("success", "name", "asset_path", "class", "complete", "warnings",
+                              "emitter_count", "selected_emitter_count", "object_count", "referenced_asset_count"),
+                count_keys=("emitters",),
+            )
+        except Exception as exc:
+            logger.error("Error reading Cascade system: %s", exc)
+            return {"success": False, "message": str(exc)}
+
+    @mcp.tool()
     def read_state_tree(
         ctx: Context,
         asset_path: str
