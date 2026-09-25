@@ -404,7 +404,7 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                 // Set error status and include the error message
                 ResponseJson->SetStringField(TEXT("status"), TEXT("error"));
                 ResponseJson->SetStringField(TEXT("error"), ErrorMessage);
-                if (CommandType == TEXT("duplicate_asset"))
+                if (CommandType == TEXT("duplicate_asset") || CommandType == TEXT("set_material_instance_parameters"))
                 {
                     ResponseJson->SetObjectField(TEXT("result"), ResultJson);
                 }

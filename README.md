@@ -19,7 +19,18 @@ The Python MCP server currently registers **109 tools** before read-only/categor
 | Navigation | 6 | [Navigation tools](Docs/Tools/navigation_tools.md) |
 | Cascade (legacy VFX) | 1 | [Cascade reader](Docs/Tools/cascade_tools.md) |
 
-Notable read support includes Blueprint collapsed subgraphs and pin defaults, Material compile results, Niagara dynamic inputs/curves/renderers, arbitrary reflected UObject properties, Behavior Trees, Blackboards, and StateTrees.
+Notable read support includes Blueprint collapsed subgraphs and pin defaults, cached Material compile results, Niagara dynamic inputs/curves/renderers, Cascade emitters/LODs/modules/distributions, arbitrary reflected UObject properties, Behavior Trees, Blackboards, and StateTrees.
+
+Common asset workflows:
+
+- [Duplicate an asset](Docs/Tools/editor_tools.md#duplicate_asset) with Unreal's native API, retaining the original and saving only the copy.
+- [Update an existing material instance](Docs/Tools/material_tools.md#set_material_instance_parameters), including optional Parent changes, parameter overrides and explicit save status.
+- [Read legacy Cascade effects](Docs/Tools/cascade_tools.md) without converting them to Niagara; filter emitters/LODs and inspect curves, events and references.
+- [Read editor logs](Docs/Tools/editor_tools.md#get_editor_logs) with an explicit log path/environment setting and a required time selector.
+
+These are source-repository capabilities. A target project needs the matching
+C++ plugin build, and the MCP client must refresh its schema after Python
+changes. Tool visibility alone does not prove a deployed editor supports it.
 
 `focus_viewport` and `take_screenshot` remain legacy C++ commands but do not have registered Python MCP tools, so they are not part of the supported tool surface.
 

@@ -657,12 +657,16 @@ def register_material_tools(mcp: FastMCP):
         asset_path: str,
         scalar_params: Dict[str, float] = None,
         vector_params: Dict[str, Dict[str, float]] = None,
-        texture_params: Dict[str, str] = None
+        texture_params: Dict[str, str] = None,
+        parent_material_path: str = ""
     ) -> Dict[str, Any]:
         """Override parameters on an EXISTING MaterialInstanceConstant (no re-creation).
 
         Use for iteration: tune scalar/vector/texture overrides on an MI you already created.
         Same value shapes as create_material_instance. Only the parameters you pass are changed.
+        Optionally change Parent before applying overrides. Existing overrides are not cleared,
+        but may stop affecting rendering if the new parent does not define matching parameters.
+        Validates the complete request before editing. Saves only the target instance package.
 
         Args:
             ctx: The MCP context
@@ -670,14 +674,31 @@ def register_material_tools(mcp: FastMCP):
             scalar_params: Dict of scalar overrides {"ParamName": value}.
             vector_params: Dict of vector overrides {"ParamName": {"r":1,"g":0,"b":0,"a":1}}.
             texture_params: Dict of texture overrides {"ParamName": "/Game/.../T_MyTex"}.
+            parent_material_path: Full asset path of a Material or MaterialInstanceConstant.
+                Omit or pass "" to keep the existing parent. Self/cyclic parent chains fail.
 
         Returns:
-            Dict with name, path, parent, scalar_parameters, vector_parameters, texture_parameters
+            Dict with success, saved, previous_parent, parent, parent_changed, modified,
+            and current scalar/vector/texture overrides. A save failure reports saved=False
+            and may leave the instance modified in memory. A transport timeout is indeterminate.
 
         Example:
             set_material_instance_parameters(asset_path="/Game/FX/MI_Lightning", texture_params={"MainTex": "/Game/FX/T_Bolt"}, scalar_params={"Panner_Speed_Y": 0.08})
+            set_material_instance_parameters(asset_path="/Game/ThirdParty/Trail/MI_Trail",
+                parent_material_path="/Game/ThirdParty/Trail/M_Master")
         """
         from unreal_mcp_server import get_unreal_connection
+
+        if parent_material_path and (
+            not isinstance(parent_material_path, str)
+            or not parent_material_path.startswith("/")
+            or parent_material_path.endswith("/")
+            or parent_material_path != parent_material_path.strip()
+            or any(character in parent_material_path for character in ("\\", ":", "//"))
+            or any(part in (".", "..") for part in parent_material_path.split("/"))
+        ):
+            return {"success": False, "saved": False, "modified": False,
+                    "message": "parent_material_path must be a full Unreal asset path"}
 
         try:
             unreal = get_unreal_connection()
@@ -691,12 +712,15 @@ def register_material_tools(mcp: FastMCP):
                 params["vector_params"] = vector_params
             if texture_params:
                 params["texture_params"] = texture_params
+            if parent_material_path:
+                params["parent_material_path"] = parent_material_path
 
             response = unreal.send_command("set_material_instance_parameters", params)
             if not response:
                 return {"success": False, "message": "No response from Unreal Engine"}
             if response.get("status") == "error":
-                return {"success": False, "message": response.get("error", "Unknown error")}
+                return {**response.get("result", {}), "success": False,
+                        "message": response.get("error") or "Material instance update failed"}
 
             result = response.get("result", response)
             logger.info(f"Updated material instance: {result.get('name', 'unknown')}")

@@ -22,6 +22,9 @@
 #include "Factories/MaterialFactoryNew.h"
 #include "Factories/MaterialInstanceConstantFactoryNew.h"
 #include "FileHelpers.h"
+#include "Editor.h"
+#include "ScopedTransaction.h"
+#include "UObject/Package.h"
 
 FUnrealMCPMaterialCommands::FUnrealMCPMaterialCommands()
 {
@@ -1718,12 +1721,114 @@ TSharedPtr<FJsonObject> FUnrealMCPMaterialCommands::HandleCreateMaterialInstance
 // ============================================================================
 // set_material_instance_parameters
 // ============================================================================
+static bool ValidateMaterialInstanceParent(UMaterialInstanceConstant* Instance, UMaterialInterface* Parent, FString& Error)
+{
+    if (!Parent || (!Parent->IsA<UMaterial>() && !Parent->IsA<UMaterialInstanceConstant>()))
+    {
+        Error = TEXT("Parent must be a Material or MaterialInstanceConstant asset");
+        return false;
+    }
+    TSet<UMaterialInterface*> Visited;
+    for (UMaterialInterface* Current = Parent; Current;)
+    {
+        if (Current == Instance || Visited.Contains(Current))
+        {
+            Error = TEXT("Parent assignment would create a cycle, or the proposed parent chain is already cyclic");
+            return false;
+        }
+        Visited.Add(Current);
+        UMaterialInstance* ParentInstance = Cast<UMaterialInstance>(Current);
+        Current = ParentInstance ? ParentInstance->Parent.Get() : nullptr;
+    }
+    return true;
+}
+
+static bool ValidateMaterialInstanceOverrides(const TSharedPtr<FJsonObject>& Params, FString& Error)
+{
+    for (const TCHAR* Field : {TEXT("scalar_params"), TEXT("vector_params"), TEXT("texture_params")})
+    {
+        if (!Params->HasField(Field)) continue;
+        const TSharedPtr<FJsonObject>* Values = nullptr;
+        if (!Params->TryGetObjectField(Field, Values) || !Values || !Values->IsValid())
+        {
+            Error = FString(Field) + TEXT(" must be an object");
+            return false;
+        }
+        for (const auto& Pair : (*Values)->Values)
+        {
+            if (Pair.Key.IsEmpty() || !Pair.Value.IsValid())
+            {
+                Error = TEXT("Parameter names and values must not be empty/null");
+                return false;
+            }
+            if (FCString::Strcmp(Field, TEXT("texture_params")) == 0)
+            {
+                FString Path;
+                if (!Pair.Value->TryGetString(Path) || !Path.StartsWith(TEXT("/"))
+                    || !Cast<UTexture>(UEditorAssetLibrary::LoadAsset(Path)))
+                {
+                    Error = FString::Printf(TEXT("Texture parameter '%s' must reference an existing Texture asset: %s"), *Pair.Key, *Path);
+                    return false;
+                }
+            }
+            else if (FCString::Strcmp(Field, TEXT("scalar_params")) == 0)
+            {
+                double Value;
+                if (Pair.Value->Type != EJson::Number || !Pair.Value->TryGetNumber(Value)
+                    || !FMath::IsFinite(Value) || FMath::Abs(Value) > MAX_flt)
+                {
+                    Error = FString::Printf(TEXT("Scalar parameter '%s' must be a finite float"), *Pair.Key);
+                    return false;
+                }
+            }
+            else
+            {
+                const TSharedPtr<FJsonObject>* Color = nullptr;
+                if (!Pair.Value->TryGetObject(Color) || !Color || !Color->IsValid())
+                {
+                    Error = FString::Printf(TEXT("Vector parameter '%s' must contain r, g, b and optional a"), *Pair.Key);
+                    return false;
+                }
+                for (const TCHAR* Channel : {TEXT("r"), TEXT("g"), TEXT("b"), TEXT("a")})
+                {
+                    if (FCString::Strcmp(Channel, TEXT("a")) == 0 && !(*Color)->HasField(Channel)) continue;
+                    double Value;
+                    if (!(*Color)->HasTypedField<EJson::Number>(Channel) || !(*Color)->TryGetNumberField(Channel, Value)
+                        || !FMath::IsFinite(Value) || FMath::Abs(Value) > MAX_flt)
+                    {
+                        Error = FString::Printf(TEXT("Vector parameter '%s' requires finite r, g, b and optional a"), *Pair.Key);
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+    return true;
+}
+
+static bool UpdateMaterialInstance(UMaterialInstanceConstant* Instance, UMaterialInterface* Parent,
+    const TSharedPtr<FJsonObject>& Params)
+{
+    if (Parent != Instance->Parent)
+    {
+        UMaterialEditingLibrary::SetMaterialInstanceParent(Instance, Parent);
+        if (Instance->Parent != Parent) return false;
+    }
+    ApplyMaterialInstanceParams(Instance, Params);
+    Instance->MarkPackageDirty();
+    Instance->PostEditChange();
+    return true;
+}
+
 TSharedPtr<FJsonObject> FUnrealMCPMaterialCommands::HandleSetMaterialInstanceParameters(const TSharedPtr<FJsonObject>& Params)
 {
-    if (!Params->HasField(TEXT("asset_path")))
+    FString AssetPath;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath) || !AssetPath.StartsWith(TEXT("/")))
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing required parameter: 'asset_path'"));
 
-    const FString AssetPath = Params->GetStringField(TEXT("asset_path"));
+    if (!GEditor || GEditor->PlayWorld)
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Material instance updates require the editor outside PIE"));
+
     UObject* Obj = UEditorAssetLibrary::LoadAsset(AssetPath);
     UMaterialInstanceConstant* Inst = Cast<UMaterialInstanceConstant>(Obj);
     if (!Inst)
@@ -1735,16 +1840,50 @@ TSharedPtr<FJsonObject> FUnrealMCPMaterialCommands::HandleSetMaterialInstancePar
             FString::Printf(TEXT("Material instance not found at path: %s"), *AssetPath));
     }
 
-    ApplyMaterialInstanceParams(Inst, Params);
+    const FString PreviousParent = Inst->Parent ? Inst->Parent->GetPathName() : TEXT("");
+    TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
+    ResultJson->SetBoolField(TEXT("success"), false);
+    ResultJson->SetBoolField(TEXT("saved"), false);
+    ResultJson->SetBoolField(TEXT("modified"), false);
+    ResultJson->SetBoolField(TEXT("parent_changed"), false);
+    ResultJson->SetStringField(TEXT("previous_parent"), PreviousParent);
+    auto Fail = [&ResultJson, Inst](const FString& Message)
+    {
+        BuildMaterialInstanceResponse(Inst, ResultJson);
+        ResultJson->SetStringField(TEXT("status"), TEXT("error"));
+        ResultJson->SetStringField(TEXT("error"), Message);
+        ResultJson->SetStringField(TEXT("message"), Message);
+        return ResultJson;
+    };
+    UMaterialInterface* NewParent = Inst->Parent;
+    FString ParentPath;
+    if (Params->HasField(TEXT("parent_material_path")))
+    {
+        if (!Params->TryGetStringField(TEXT("parent_material_path"), ParentPath))
+            return Fail(TEXT("parent_material_path must be a string"));
+        if (!ParentPath.IsEmpty())
+        {
+            if (!ParentPath.StartsWith(TEXT("/")) || ParentPath.EndsWith(TEXT("/")) || ParentPath.Contains(TEXT(":")))
+                return Fail(TEXT("parent_material_path must be a full Unreal asset path"));
+            NewParent = Cast<UMaterialInterface>(UEditorAssetLibrary::LoadAsset(ParentPath));
+            FString Error;
+            if (!ValidateMaterialInstanceParent(Inst, NewParent, Error)) return Fail(Error);
+        }
+    }
+    FString Error;
+    if (!ValidateMaterialInstanceOverrides(Params, Error)) return Fail(Error);
 
-    Inst->MarkPackageDirty();
-    Inst->PostEditChange();
+    const FScopedTransaction Transaction(NSLOCTEXT("UnrealMCP", "UpdateMaterialInstance", "Update Material Instance"));
+    Inst->Modify();
+    ResultJson->SetBoolField(TEXT("modified"), true);
+    const bool Updated = UpdateMaterialInstance(Inst, NewParent, Params);
+    ResultJson->SetBoolField(TEXT("parent_changed"), PreviousParent != (Inst->Parent ? Inst->Parent->GetPathName() : TEXT("")));
+    if (!Updated) return Fail(TEXT("Unreal rejected the parent assignment; inspect the instance before retrying"));
+    if (!UEditorAssetLibrary::SaveLoadedAsset(Inst, false) || Inst->GetOutermost()->IsDirty())
+        return Fail(TEXT("Instance updated in memory but saving failed; only the target instance package was requested for saving"));
 
-    TArray<UPackage*> PackagesToSave;
-    PackagesToSave.Add(Inst->GetPackage());
-    FEditorFileUtils::PromptForCheckoutAndSave(PackagesToSave, false, false);
-
-    TSharedPtr<FJsonObject> ResultJson = MakeShareable(new FJsonObject);
+    ResultJson->SetBoolField(TEXT("success"), true);
+    ResultJson->SetBoolField(TEXT("saved"), true);
     ResultJson->SetStringField(TEXT("status"), TEXT("success"));
     BuildMaterialInstanceResponse(Inst, ResultJson);
     return ResultJson;
@@ -1753,6 +1892,84 @@ TSharedPtr<FJsonObject> FUnrealMCPMaterialCommands::HandleSetMaterialInstancePar
 // ============================================================================
 // add_material_comment
 // ============================================================================
+#if WITH_DEV_AUTOMATION_TESTS
+#include "Misc/AutomationTest.h"
+#include "Engine/Texture2D.h"
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FUnrealMCPMaterialInstanceParentTest,
+    "UnrealMCP.Material.InstanceParent", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUnrealMCPMaterialInstanceParentTest::RunTest(const FString& Parameters)
+{
+    UMaterial* Original = NewObject<UMaterial>();
+    UMaterial* Replacement = NewObject<UMaterial>();
+    UMaterialInstanceConstant* Instance = NewObject<UMaterialInstanceConstant>();
+    Instance->SetParentEditorOnly(Original);
+    UMaterialInstanceConstant* Child = NewObject<UMaterialInstanceConstant>();
+    Child->SetParentEditorOnly(Instance);
+    UMaterialInstanceConstant* OtherParent = NewObject<UMaterialInstanceConstant>();
+    OtherParent->SetParentEditorOnly(Replacement);
+    FString Error;
+    TestTrue(TEXT("Material parent allowed"), ValidateMaterialInstanceParent(Instance, Replacement, Error));
+    TestTrue(TEXT("MI parent allowed"), ValidateMaterialInstanceParent(Instance, OtherParent, Error));
+    TestFalse(TEXT("Missing/invalid parent rejected"), ValidateMaterialInstanceParent(Instance, nullptr, Error));
+    TestFalse(TEXT("Self rejected"), ValidateMaterialInstanceParent(Instance, Instance, Error));
+    TestFalse(TEXT("Descendant rejected"), ValidateMaterialInstanceParent(Instance, Child, Error));
+    UMaterialInstanceConstant* Cycle = NewObject<UMaterialInstanceConstant>();
+    Cycle->Parent = Cycle;
+    TestFalse(TEXT("Existing cyclic chain rejected"), ValidateMaterialInstanceParent(Instance, Cycle, Error));
+    Cycle->Parent = nullptr;
+    TestTrue(TEXT("Validation leaves parent alone"), Instance->Parent == Original);
+
+    const FMaterialParameterInfo ScalarInfo(TEXT("KeepScalar"));
+    const FMaterialParameterInfo VectorInfo(TEXT("KeepVector"));
+    const FMaterialParameterInfo TextureInfo(TEXT("KeepTexture"));
+    UTexture2D* Texture = NewObject<UTexture2D>();
+    Instance->SetScalarParameterValueEditorOnly(ScalarInfo, 2.5f);
+    Instance->SetVectorParameterValueEditorOnly(VectorInfo, FLinearColor(0.1f, 0.2f, 0.3f, 0.4f));
+    Instance->SetTextureParameterValueEditorOnly(TextureInfo, Texture);
+    const auto Scalars = Instance->ScalarParameterValues;
+    const auto Vectors = Instance->VectorParameterValues;
+    const auto Textures = Instance->TextureParameterValues;
+    TSharedPtr<FJsonObject> Empty = MakeShared<FJsonObject>();
+    TestTrue(TEXT("Parent-only update"), UpdateMaterialInstance(Instance, Replacement, Empty));
+    TestTrue(TEXT("Actual parent changed"), Instance->Parent == Replacement);
+    TestTrue(TEXT("Scalar overrides retained"), Instance->ScalarParameterValues == Scalars);
+    TestTrue(TEXT("Vector overrides retained"), Instance->VectorParameterValues == Vectors);
+    TestTrue(TEXT("Texture overrides retained"), Instance->TextureParameterValues == Textures);
+
+    TSharedPtr<FJsonObject> Params = MakeShared<FJsonObject>();
+    TSharedPtr<FJsonObject> ScalarValues = MakeShared<FJsonObject>();
+    ScalarValues->SetNumberField(TEXT("KeepScalar"), 7.0);
+    Params->SetObjectField(TEXT("scalar_params"), ScalarValues);
+    TestTrue(TEXT("Valid overrides"), ValidateMaterialInstanceOverrides(Params, Error));
+    TestTrue(TEXT("Combined MI parent and overrides"), UpdateMaterialInstance(Instance, OtherParent, Params));
+    TestTrue(TEXT("MI parent selected"), Instance->Parent == OtherParent);
+    TestEqual(TEXT("Override applied after reparenting"), Instance->ScalarParameterValues[0].ParameterValue, 7.0f);
+    TestTrue(TEXT("Other override types preserved"), Instance->VectorParameterValues == Vectors && Instance->TextureParameterValues == Textures);
+    TestTrue(TEXT("Same parent accepted"), UpdateMaterialInstance(Instance, OtherParent, Empty));
+    TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+    BuildMaterialInstanceResponse(Instance, Result);
+    TestEqual(TEXT("Readback parent"), Result->GetStringField(TEXT("parent")), OtherParent->GetPathName());
+
+    ScalarValues->SetStringField(TEXT("KeepScalar"), TEXT("invalid"));
+    TestFalse(TEXT("Malformed scalar rejected"), ValidateMaterialInstanceOverrides(Params, Error));
+    Params->RemoveField(TEXT("scalar_params"));
+    TSharedPtr<FJsonObject> VectorsRequest = MakeShared<FJsonObject>();
+    VectorsRequest->SetObjectField(TEXT("Color"), MakeShared<FJsonObject>());
+    Params->SetObjectField(TEXT("vector_params"), VectorsRequest);
+    TestFalse(TEXT("Missing vector channels rejected"), ValidateMaterialInstanceOverrides(Params, Error));
+    Params->RemoveField(TEXT("vector_params"));
+    TSharedPtr<FJsonObject> TextureValues = MakeShared<FJsonObject>();
+    TextureValues->SetStringField(TEXT("KeepTexture"), TEXT(""));
+    Params->SetObjectField(TEXT("texture_params"), TextureValues);
+    TestFalse(TEXT("Empty texture path rejected"), ValidateMaterialInstanceOverrides(Params, Error));
+    TestTrue(TEXT("Rejected requests leave current parent intact"), Instance->Parent == OtherParent);
+    TestEqual(TEXT("Rejected requests leave overrides intact"), Instance->ScalarParameterValues[0].ParameterValue, 7.0f);
+    return !HasAnyErrors();
+}
+#endif
+
 TSharedPtr<FJsonObject> FUnrealMCPMaterialCommands::HandleAddMaterialComment(const TSharedPtr<FJsonObject>& Params)
 {
     TSharedPtr<FJsonObject> Error;

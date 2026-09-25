@@ -8,20 +8,46 @@ Tools for inspecting editor state, reading logs, saving/opening assets, and mana
 
 ### get_editor_logs
 
-Read recent Unreal Editor output log entries from the log file.
+Read Unreal Editor output log entries directly from a local file; the editor
+does not need to be running. Supply `log_path` or set `UNREAL_PROJECT_LOG`.
+The tool does not automatically discover the active project's log.
+
+At least one time selector is required: `start_time`, `end_time`, a positive
+`relative_seconds_ago`, or a nonzero `pie_session_index`.
 
 **Parameters:**
-- `count` (int, optional) - Number of log lines to return (default: 100)
-- `verbosity` (string, optional) - Filter by verbosity: "all", "error", "warning", "display" (default: "all")
-- `category` (string, optional) - Filter by log category (e.g. "LogTemp", "LogBlueprintUserMessages")
-- `search` (string, optional) - Filter lines containing this keyword
+- `count` (int, optional) - Maximum matching entries, taken from the newest entries and returned oldest-first (default: 100; use a positive value).
+- `verbosity` (string, optional) - Severity threshold: `fatal`, `error`, `warning`, `display`, `log`, `verbose`, `veryverbose`, or `all` (default). For example, `warning` includes warnings, errors and fatal entries.
+- `category` (string, optional) - Case-insensitive exact category match, e.g. `LogTemp`.
+- `search` (string, optional) - Case-insensitive regular expression over the message, e.g. `Spawn|Destroy`. Invalid regex falls back to a literal substring search.
 - `log_path` (string, optional) - Override the log file path. Otherwise uses `UNREAL_PROJECT_LOG` env var.
-- `start_time` / `end_time` (string, optional) - ISO/local time range filter
-- `relative_seconds_ago` (int, optional) - Only include entries from the recent time window
-- `pie_session_index` (int, optional) - Select a Play-In-Editor session from the log
+- `start_time` / `end_time` (string, optional) - Inclusive second-resolution bounds in UE format `YYYY.MM.DD-HH.MM.SS` or ISO `YYYY-MM-DDTHH:MM:SS` (a space instead of `T` is also accepted).
+- `relative_seconds_ago` (int, optional) - Positive values replace `start_time` with the local system time minus this many seconds; default `0` disables it.
+- `pie_session_index` (int, optional) - `-1` selects the latest PIE session, `-2` the previous one; default `0` disables this selector. Overrides the other time bounds. The window ends at the next PIE start or EOF, not necessarily at the selected session's end.
+
+Time values are compared to timestamps as written in the log, without timezone
+conversion. If UE logs use UTC but the machine's local clock does not, prefer
+explicit bounds copied from the log or `pie_session_index` over relative time.
 
 **Returns:**
-- Dict with `log_entries` array, `total_lines`, and applied filters
+- `total_lines`, `returned`, `log_file`, `time_window`, and `logs`.
+- Each `logs` entry has `timestamp`, `category`, `verbosity`, and `message`.
+- PIE queries also include `pie_sessions_found` and `pie_session_used`.
+- An optional `warning` explains when category/search/severity filters removed all entries in the time window.
+- Validation/read failures return `success=false` and `message`; a successful result need not contain a `success` or `status` field.
+
+```python
+get_editor_logs(
+  log_path="D:/UnrealProjects/MyProject/Saved/Logs/MyProject.log",
+  pie_session_index=-1,
+  verbosity="warning",
+  search="Spawn|Destroy")
+
+get_editor_logs(
+  log_path="D:/UnrealProjects/MyProject/Saved/Logs/MyProject.log",
+  start_time="2026.09.25-00.00.00",
+  end_time="2026.09.25-00.05.00")
+```
 
 ### get_unsaved_changes
 
@@ -30,7 +56,8 @@ Check for unsaved changes in the Unreal Editor.
 **Parameters:** None
 
 **Returns:**
-- Dict with `total_unsaved` (int), `unsaved_content` (list of package names), `unsaved_maps` (list of map names)
+- `total_unsaved`, `unsaved_content_count`, and `unsaved_map_count`.
+- `unsaved_content` and `unsaved_maps` are arrays of objects with `name` and `path`, not bare strings.
 
 ### close_editor
 
@@ -43,14 +70,14 @@ Gracefully close the Unreal Editor. Closes all open asset editor tabs first to a
 - Dict with closing status, `saved_count`, and any `failed_saves`
 
 **Example:**
-```json
-{
-  "command": "close_editor",
-  "params": {
-    "save_all": true
-  }
-}
+```python
+get_unsaved_changes()
+close_editor(save_all=True)
 ```
+
+Review the dirty-package list before closing. `save_all=True` saves all dirty
+packages, not just assets touched by the current task. Use `False` only after
+confirming it is safe to close without saving.
 
 ## Asset & Level Management
 
@@ -163,14 +190,27 @@ Create a new level/map at the given content path, optionally from a template.
 
 ## Error Handling
 
-All command responses include a "status" field indicating whether the operation succeeded, and an optional "message" field with details in case of failure.
+Response shapes depend on the tool and transport layer; there is no universal
+`status` field on every Python MCP result.
+
+The raw UE TCP bridge normally wraps successful data in
+`{"status": "success", "result": {...}}` and failures in
+`{"status": "error", "error": "..."}`. Python tools commonly unwrap `result`
+and normalize errors to this shape:
 
 ```json
 {
-  "status": "error",
+  "success": false,
   "message": "Failed to get active viewport"
 }
 ```
+
+Some tools retain the bridge envelope; local tools such as `get_editor_logs`
+return their own data directly. Check each tool's return contract, explicit
+failure fields and, where provided, `saved`/`modified`/`duplicate_created`.
+A successful transport exchange does not guarantee an asset was saved or a
+build completed. Timeouts may occur after UE has started or completed a change;
+inspect state before retrying a mutation.
 
 ## Troubleshooting
 
