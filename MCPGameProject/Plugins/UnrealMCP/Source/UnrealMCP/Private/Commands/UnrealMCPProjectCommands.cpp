@@ -1,5 +1,6 @@
 #include "Commands/UnrealMCPProjectCommands.h"
 #include "Commands/UnrealMCPCommonUtils.h"
+#include "Commands/UnrealMCPAssetProperties.h"
 #include "GameFramework/InputSettings.h"
 #include "EditorAssetLibrary.h"
 #include "JsonObjectConverter.h"
@@ -34,7 +35,19 @@ TSharedPtr<FJsonObject> FUnrealMCPProjectCommands::HandleCommand(const FString& 
     {
         return HandleCreateInputMapping(Params);
     }
-    else if (CommandType == TEXT("read_data_asset"))
+	else if (CommandType == TEXT("create_physical_material"))
+	{
+		return UnrealMCPAssetProperties::CreatePhysicalMaterial(Params);
+	}
+	else if (CommandType == TEXT("create_data_asset"))
+	{
+		return UnrealMCPAssetProperties::CreateDataAsset(Params);
+	}
+	else if (CommandType == TEXT("set_asset_properties"))
+	{
+		return UnrealMCPAssetProperties::Write(Params);
+	}
+	else if (CommandType == TEXT("read_data_asset"))
     {
         return HandleReadDataAsset(Params);
     }
@@ -190,21 +203,21 @@ static FString GetPropertyTypeString(FProperty* Prop)
 	{
 		return FString::Printf(TEXT("struct (%s)"), *StructProp->Struct->GetName());
 	}
-	if (FObjectProperty* ObjProp = CastField<FObjectProperty>(Prop))
-	{
-		return FString::Printf(TEXT("object (%s)"), *ObjProp->PropertyClass->GetName());
-	}
 	if (FClassProperty* ClassProp = CastField<FClassProperty>(Prop))
 	{
 		return FString::Printf(TEXT("class (%s)"), *ClassProp->MetaClass->GetName());
 	}
-	if (FSoftObjectProperty* SoftObjProp = CastField<FSoftObjectProperty>(Prop))
+	if (FObjectProperty* ObjProp = CastField<FObjectProperty>(Prop))
 	{
-		return FString::Printf(TEXT("soft_object (%s)"), *SoftObjProp->PropertyClass->GetName());
+		return FString::Printf(TEXT("object (%s)"), *ObjProp->PropertyClass->GetName());
 	}
 	if (FSoftClassProperty* SoftClassProp = CastField<FSoftClassProperty>(Prop))
 	{
 		return FString::Printf(TEXT("soft_class (%s)"), *SoftClassProp->MetaClass->GetName());
+	}
+	if (FSoftObjectProperty* SoftObjProp = CastField<FSoftObjectProperty>(Prop))
+	{
+		return FString::Printf(TEXT("soft_object (%s)"), *SoftObjProp->PropertyClass->GetName());
 	}
 	if (FArrayProperty* ArrayProp = CastField<FArrayProperty>(Prop))
 	{
@@ -228,6 +241,11 @@ static FString GetPropertyTypeString(FProperty* Prop)
 
 TSharedPtr<FJsonObject> FUnrealMCPProjectCommands::HandleGetClassProperties(const TSharedPtr<FJsonObject>& Params)
 {
+	bool Structured = false;
+	if (Params->TryGetBoolField(TEXT("structured"), Structured) && Structured)
+	{
+		return UnrealMCPAssetProperties::Read(Params);
+	}
 	FString ClassName;
 	FString AssetPath;
 	FString CategoryFilter;

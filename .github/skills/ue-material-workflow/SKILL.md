@@ -2,12 +2,32 @@
 name: ue-material-workflow
 description: "Use this skill when creating, editing, or organizing Material graphs via MCP tools. Covers the complete workflow: creating materials, adding expression nodes, wiring connections, positioning/layouting nodes, grouping with comment boxes, creating material instances, and HLSL custom expressions. Read this BEFORE calling any material MCP tool."
 metadata:
-        version: 1.1.1
+        version: 1.2.0
 ---
 
 # UE Material Workflow (MCP Tools)
 
 You are controlling Unreal Engine's Material Editor through MCP tools. Follow this workflow precisely.
+
+## MCP Entry Points
+
+Use the current client's discovered tool list, including its server prefix.
+Default grouped mode exposes `material_search`, `material_call_read` and
+`material_call_write`. Names in the table and recipes below are internal
+operations, not additional public tools in this mode.
+
+1. Call `material_search(tool="read_material")` for the exact contract, or search
+        with short English keywords; an empty query browses paginated summaries.
+2. Use the returned `call_tool` and `input_schema`. For example, after discovery:
+        `material_call_read(tool="read_material", arguments={"path":"/Game/Materials/M_Test"})`.
+3. Reuse the contract within the session. Pass parameters inside `arguments`,
+        without `ctx`; do not infer the read/write route from an operation's name.
+
+`MCP_TOOL_MODE=direct` exposes the original operations directly instead. Missing
+tools may mean category/read-only filtering or an older server; do not bypass
+filters with raw TCP or change configuration without authorization. `save_asset`
+is still a direct Editor tool. Restart/reconnect refreshes Python tool schemas;
+it does not update the target C++ plugin or authorize editor operations.
 
 ## Available Material MCP Tools
 
@@ -24,7 +44,7 @@ You are controlling Unreal Engine's Material Editor through MCP tools. Follow th
 | `reset_material_node_layout` | Auto-layout all nodes (row-based per material property chain) |
 | `add_material_comment` | Add a comment box (group) to visually contain nodes |
 | `create_material_instance` | Create a material instance with scalar/vector/texture overrides |
-| `set_material_instance_parameters` | Update scalar/vector/texture overrides on an existing instance |
+| `set_material_instance_parameters` | Update an existing instance's Parent and scalar/vector/texture overrides when supported by the deployed plugin |
 | `get_material_instance_parameters` | Read an instance's parent and parameter overrides |
 | `list_materials` | List all materials in the project |
 | `read_material` | Read graph structure and cached `compile_result` without dirtying the asset |
@@ -131,7 +151,7 @@ Call `read_material` after the graph is complete. Mutation tools trigger materia
 "compile_result": { "available": true, "ok": true, "recompiled": false, "error_count": 0, "errors": [] }
 ```
 
-Do not call the material finished unless `compile_result.available` and `compile_result.ok` are both true. Fix every reported error, then read again. `read_material` itself must not create unsaved state.
+Do not call the material finished unless `compile_result.available` and `compile_result.ok` are both true. Cached success is not a wait for pending shader work or proof that the latest edit compiled; verify completion and the current resource before acceptance. Fix every reported error, then read again. `read_material` itself must not create unsaved state in the current implementation; verify older deployed builds before probing user/vendor assets.
 
 ### Step 8 — Save the material
 

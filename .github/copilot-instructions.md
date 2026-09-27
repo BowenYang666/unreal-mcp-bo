@@ -23,6 +23,22 @@ Example: `D:\Projects\MyGame\Content\Player\Anims\MM_Fire.uasset` → `/Game/Pla
 
 Before claiming an asset cannot be inspected, try `get_class_properties(asset_path=...)`. It skips transient/deprecated fields and cannot expose data stored only in custom binary serialization; use specialized readers such as `read_blueprint`, `read_material`, `read_niagara_system`, or `read_state_tree` when graph/hierarchy semantics matter.
 
+Material/Niagara/UMG names in workflows are internal operations in default grouped
+mode. Discover their contract with `<category>_search(tool="<operation>")`, then
+call the returned `call_tool` with `tool` and `arguments` matching `input_schema`.
+Use the actual client-visible names/prefixes; reuse contracts, respect filters,
+and call original names directly only when exposed (for example in direct mode).
+Other categories retain their direct tools.
+
+For an authorized DataAsset or PhysicalMaterial edit, first inspect
+`get_class_properties(asset_path=..., structured=True, property_paths=[...])`.
+This opt-in mode and `set_asset_properties` require the updated native plugin and
+apply only to DataAsset instances and allowlisted PhysicalMaterial fields, not
+arbitrary assets or Blueprint classes. Maps use whole typed key/value entry arrays;
+preserve all inherited struct fields and use null to clear nullable references.
+Creation uses `create_data_asset`/`create_physical_material`, never overwriting.
+Do not infer deployment or write permission from Python schema visibility.
+
 
 # Deploying the UnrealMCP Plugin to Another Project
 

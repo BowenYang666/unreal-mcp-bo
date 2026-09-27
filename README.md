@@ -4,15 +4,19 @@ Fork of [chongdashu/unreal-mcp](https://github.com/chongdashu/unreal-mcp) for AI
 
 ## Tool Surface
 
-The Python MCP server currently registers **109 tools** before read-only/category filtering.
+The Python MCP server provides **119 internal operations**. Default grouped mode
+exposes **67 MCP tools** before read-only/category filtering: Material, Niagara
+and UMG each have search/read/write entry points; smaller categories stay direct.
+Set `MCP_TOOL_MODE=direct` to expose all 119 operations directly.
+See the [grouped calling guide](Docs/Tools/README.md#grouped-mode-default).
 
-| Category | Count | Reference |
+| Category | Internal Operations | Reference |
 |---|---:|---|
-| Asset operations | 3 | [Editor tools](Docs/Tools/editor_tools.md#asset--level-management) |
-| Actor + Editor | 16 | [Actor tools](Docs/Tools/actor_tools.md), [Editor tools](Docs/Tools/editor_tools.md) |
+| Asset operations | 10 | [Editor tools](Docs/Tools/editor_tools.md#asset--level-management), [Bounded asset creation/editing](Docs/Tools/project_tools.md#set_asset_properties) |
+| Actor + Editor | 18 | [Actor tools](Docs/Tools/actor_tools.md), [Editor tools](Docs/Tools/editor_tools.md) |
 | Blueprint assets | 9 | [Blueprint tools](Docs/Tools/blueprint_tools.md), [reading guide](Docs/Tools/reading_blueprints.md) |
 | Blueprint nodes | 8 | [Node tools](Docs/Tools/node_tools.md) |
-| Materials | 15 | [Material tools](Docs/Tools/material_tools.md) |
+| Materials | 16 | [Material tools](Docs/Tools/material_tools.md) |
 | UMG / Widgets | 20 | [UMG tools](Docs/Tools/umg_tools.md) |
 | Niagara | 25 | [Niagara tools](Docs/Tools/niagara_tools.md) |
 | Project / AI assets | 6 | [Project tools](Docs/Tools/project_tools.md) |
@@ -24,6 +28,9 @@ Notable read support includes Blueprint collapsed subgraphs and pin defaults, ca
 Common asset workflows:
 
 - [Duplicate an asset](Docs/Tools/editor_tools.md#duplicate_asset) with Unreal's native API, retaining the original and saving only the copy.
+- [Plan dependency copies and remap references](Docs/Tools/editor_tools.md#dependency-copy-workflow), with explicit existing-NS rebinding, confirmation, status receipts and readback verification. This does not run cross-project Migrate.
+- [Patch DataAsset properties](Docs/Tools/project_tools.md#set_asset_properties) with typed nested paths, batch prevalidation, expected-value checks and target-only saving. Requires the updated C++ plugin; Python visibility is not deployment verification.
+- [Create DataAsset and PhysicalMaterial assets](Docs/Tools/project_tools.md#create_data_asset) without overwriting; edit enum-keyed impact Maps, assign physical materials to Material/MI or components, and [read real collision surfaces](Docs/Tools/editor_tools.md#trace_physical_material).
 - [Update an existing material instance](Docs/Tools/material_tools.md#set_material_instance_parameters), including optional Parent changes, parameter overrides and explicit save status.
 - [Read legacy Cascade effects](Docs/Tools/cascade_tools.md) without converting them to Niagara; filter emitters/LODs and inspect curves, events and references.
 - [Read editor logs](Docs/Tools/editor_tools.md#get_editor_logs) with an explicit log path/environment setting and a required time selector.
@@ -111,9 +118,12 @@ The repository's `mcp.json` is a Claude-format example template. Claude auto-dis
 
 ## Read-Only Mode
 
-Set `UNREAL_MCP_READ_ONLY=1` for project learning, review, or reverse engineering. The server retains exactly these 29 query tools:
+Set `UNREAL_MCP_READ_ONLY=1` for project learning, review, or reverse engineering.
+The server retains these 33 query operations, exposed as **28 MCP tools** in
+grouped mode or **33** in direct mode, before category filtering. Grouped mode
+omits every `*_call_write` entry point and refuses writes through read entry points:
 
-- Actor/editor: `get_actors_in_level`, `find_actors_by_name`, `get_actor_properties`, `get_editor_logs`, `get_unsaved_changes`
+- Actor/editor: `get_actors_in_level`, `find_actors_by_name`, `get_actor_properties`, `get_editor_logs`, `get_unsaved_changes`, `trace_physical_material`
 - Blueprint/node: `list_blueprints`, `read_blueprint`, `find_blueprint_nodes`
 - Project/AI assets: `get_class_properties`, `read_data_asset`, `read_behavior_tree`, `read_blackboard`, `read_state_tree`
 - Material: `list_materials`, `read_material`, `get_material_instance_parameters`
@@ -121,6 +131,7 @@ Set `UNREAL_MCP_READ_ONLY=1` for project learning, review, or reverse engineerin
 - Niagara: `list_niagara_systems`, `read_niagara_system`, `get_niagara_parameters`, `list_module_inputs`, `list_module_static_switches`, `read_ns_curve`, `list_renderer_types`
 - Navigation: `list_nav_mesh_bounds_volumes`, `get_navigation_status`, `project_point_to_navigation`, `find_navigation_path`
 - Cascade: `read_cascade_system`
+- Asset migration: `plan_asset_migration`, `get_asset_migration_status`, `verify_asset_migration`
 
 Set `UNREAL_MCP_READ_ONLY=0` (or omit it) for authoring.
 
@@ -130,7 +141,7 @@ Category filters can be combined with read-only mode. A value of `0`, `false`, `
 
 | Environment variable | Category |
 |---|---|
-| `MCP_ASSET_ENABLED` | Asset rename, move, and duplicate operations |
+| `MCP_ASSET_ENABLED` | Asset rename, move, duplicate, bounded creation/property writes, dependency-copy plan/execute/status/verify |
 | `MCP_EDITOR_ENABLED` | Actors, editor state, assets, levels, logs |
 | `MCP_BLUEPRINT_ENABLED` | Blueprint asset creation/properties/reading |
 | `MCP_NODE_ENABLED` | Blueprint graph node operations/search |

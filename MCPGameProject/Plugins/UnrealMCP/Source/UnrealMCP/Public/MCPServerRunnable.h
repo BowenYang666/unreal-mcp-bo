@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "HAL/Runnable.h"
+#include "HAL/ThreadSafeBool.h"
 #include "Sockets.h"
 #include "Interfaces/IPv4/IPv4Address.h"
 
@@ -30,5 +31,5 @@ private:
 	UUnrealMCPBridge* Bridge;
 	TSharedPtr<FSocket> ListenerSocket;
 	TSharedPtr<FSocket> ClientSocket;
-	bool bRunning;
+	FThreadSafeBool bRunning;
 }; 

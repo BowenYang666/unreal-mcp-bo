@@ -1,4 +1,5 @@
 #include "Commands/UnrealMCPBlueprintCommands.h"
+#include "Commands/UnrealMCPPhysicalMaterialCommands.h"
 #include "Commands/UnrealMCPCommonUtils.h"
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
@@ -427,6 +428,10 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetComponentProperty(
     }
 
     // Check if this is a Spring Arm component and log special debug info
+    if (PropertyName == TEXT("PhysMaterialOverride") || PropertyName == TEXT("BodyInstance.PhysMaterialOverride"))
+    {
+        return UnrealMCPPhysicalMaterial::AssignBlueprintComponent(Blueprint, Cast<UPrimitiveComponent>(ComponentTemplate), Params);
+    }
     if (ComponentTemplate->GetClass()->GetName().Contains(TEXT("SpringArm")))
     {
         UE_LOG(LogTemp, Warning, TEXT("SetComponentProperty - SpringArm component detected! Class: %s"), 

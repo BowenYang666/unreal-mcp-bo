@@ -9,6 +9,7 @@ public class MCPGameProjectEditorTarget : TargetRules
 	{
 		Type = TargetType.Editor;
 		DefaultBuildSettings = BuildSettingsVersion.V5;
+		UndefinedIdentifierWarningLevel = WarningLevel.Error;
 		IncludeOrderVersion = EngineIncludeOrderVersion.Unreal5_5;
 		ExtraModuleNames.Add("MCPGameProject");
 	}

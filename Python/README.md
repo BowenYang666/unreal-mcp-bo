@@ -28,17 +28,26 @@ uv --directory ./Python run python scripts/actors/test_cube.py
 
 ## Environment Controls
 
+- `MCP_TOOL_MODE=grouped` (default): expose Material/Niagara/UMG search/read/write entry points, 67 public tools before filtering. `direct` exposes all 119 operations directly. See the [calling guide](../Docs/Tools/README.md#grouped-mode-default).
 - `UNREAL_MCP_READ_ONLY=1`: expose only the current read-only whitelist.
-- `MCP_ASSET_ENABLED`: controls `rename_asset`, `move_asset`, and `duplicate_asset`.
+- `MCP_ASSET_ENABLED`: controls `rename_asset`, `move_asset`, `duplicate_asset`, `create_data_asset`, `create_physical_material`, `set_asset_properties` (DataAsset instances and allowlisted PhysicalMaterial fields), plus `plan_asset_migration`, `execute_asset_migration`, `get_asset_migration_status`, and `verify_asset_migration`. Read-only mode retains the three migration queries but removes execution. See the [dependency-copy workflow](../Docs/Tools/editor_tools.md#dependency-copy-workflow).
 - `MCP_EDITOR_ENABLED`, `MCP_BLUEPRINT_ENABLED`, `MCP_NODE_ENABLED`, `MCP_PROJECT_ENABLED`, `MCP_UMG_ENABLED`, `MCP_MATERIAL_ENABLED`, `MCP_NIAGARA_ENABLED`, `MCP_NAVIGATION_ENABLED`, `MCP_CASCADE_ENABLED`: set to `0`/`false`/`no`/`off` to disable a category.
 - `UNREAL_PROJECT_LOG`: default log file used by `get_editor_logs`.
 
 ## Development
 
 - Register Python MCP tools in `tools/*.py` with `@mcp.tool()` and call `register_*_tools(mcp)` from `unreal_mcp_server.py`.
+- Keep category membership and the read-only allowlist in sync. Grouped entry points derive their contracts from the original registered tools after filtering; do not duplicate schemas in the dispatcher.
 - Add or update C++ command handlers under `MCPGameProject/Plugins/UnrealMCP/Source/UnrealMCP/Private/Commands/`, then route new command names through `UnrealMCPBridge.cpp`.
 - Python-only/schema changes require an MCP client/server restart, not an Unreal build.
 - C++ or `Build.cs` changes require redeploying the plugin to the target project, rebuilding its Editor target, and relaunching the editor.
+- DataAsset writes/structured reads and fragmented TCP request support require the matching new plugin. Requests are serialized per Python client and the native receiver accepts one JSON object per connection (1 MiB limit, 10-second receive deadline). Transport timeout is not cancellation or proof that nothing changed.
+
+Offline unit and mocked-editor stdio tests (do not require or modify Unreal):
+
+```powershell
+uv --directory ./Python run python -m unittest discover -s tests -v
+```
 
 ## Troubleshooting
 

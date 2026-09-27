@@ -90,13 +90,24 @@ Set the mesh for a StaticMeshComponent.
 
 ### set_component_property
 
-Set a property on a component in a Blueprint.
+Set a property on an SCS component in a Blueprint. Native/inherited components
+are not resolved by this tool.
 
 **Parameters:**
 - `blueprint_path` (string) - Full asset path of the Blueprint
 - `component_name` (string) - The name of the component
 - `property_name` (string) - The name of the property to set
 - `property_value` (any) - The value to set for the property
+- `expected_value` (string, optional) - Only for physical-material overrides; compare the old explicit reference, `""` means none.
+- `save` (boolean, default false) - Only for physical-material overrides; save this Blueprint after successful compilation, refusing a pre-existing dirty package.
+
+For `property_name="PhysMaterialOverride"` or
+`"BodyInstance.PhysMaterialOverride"`, `property_value` is a full PhysicalMaterial
+path or `""`/`null` to clear. This existing setter uses `SetPhysMaterialOverride`,
+marks the Blueprint modified and compiles it; no duplicate BP assignment tool is
+needed. The options above are rejected for other properties. A compile or save
+failure may leave changes in memory; this wrapper preserves the bridge envelope,
+including its partial `result` (`modified`, `saved`, `before`, `after`).
 
 **Returns:**
 - Result of the property setting operation including success status and message

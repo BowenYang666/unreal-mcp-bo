@@ -2,6 +2,11 @@
 
 Tools for creating and editing Niagara particle systems programmatically.
 
+Default grouped mode exposes `niagara_search`, `niagara_call_read` and
+`niagara_call_write`. The operation names/parameters below are passed to these
+entry points, or called directly with `MCP_TOOL_MODE=direct`.
+See the [calling guide](README.md#grouped-mode-default).
+
 ## System Management
 
 ### `create_niagara_system`

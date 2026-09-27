@@ -30,6 +30,8 @@ public class UnrealMCP : ModuleRules
 				"Engine",
 				"RHI",
 				"InputCore",
+				"GameplayTags",
+				"PhysicsCore",
 				"Networking",
 				"Sockets",
 				"HTTP",

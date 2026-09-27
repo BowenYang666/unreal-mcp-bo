@@ -2,6 +2,11 @@
 
 Tools for creating and editing UMG Widget Blueprints (HUDs, menus, in-game UI) programmatically.
 
+Default grouped mode exposes `umg_search`, `umg_call_read` and `umg_call_write`.
+The operation names/parameters below are passed to these entry points, or called
+directly with `MCP_TOOL_MODE=direct`.
+See the [calling guide](README.md#grouped-mode-default).
+
 Most tools identify the target widget blueprint by its content `path` (e.g. `/Game/Widgets/WBP_HUD`). Child widgets are addressed by name, and can be parented to a layout container via `parent_name` (defaults to the root Canvas Panel).
 
 ## Blueprint Management

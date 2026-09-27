@@ -16,6 +16,25 @@ def register_material_tools(mcp: FastMCP):
     """Register material tools with the MCP server."""
 
     @mcp.tool()
+    def set_material_physical_material(ctx: Context, asset_path: str, physical_material_path: str,
+                                       expected_value: str = None, save: bool = True) -> dict:
+        """Assign/clear the PhysicalMaterial reference on a Material or constant MI.
+
+        Example: asset_path="/Game/M_Wall", physical_material_path="/Game/PM_Metal".
+        Empty physical_material_path clears the reference (MI inherits its parent).
+        Optional expected_value compares the current explicit reference, not the
+        inherited one; use "" to expect none. Refreshes existing component physics
+        materials. save=True refuses dirty targets and saves only the target package.
+        Returns before/after/effective_physical_material, modified/saved/package_dirty.
+        Does not change a mesh BodySetup, collision complexity or component override.
+        """
+        from tools.project_tools import call_asset_command
+        params = {"asset_path": asset_path, "physical_material_path": physical_material_path, "save": save}
+        if expected_value is not None:
+            params["expected_value"] = expected_value
+        return call_asset_command("set_material_physical_material", params)
+
+    @mcp.tool()
     def list_materials(
         ctx: Context,
         path: str = "/Game",

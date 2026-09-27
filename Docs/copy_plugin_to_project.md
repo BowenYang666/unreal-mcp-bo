@@ -152,6 +152,25 @@ Content-only projects are supported; UnrealBuildTool may generate temporary targ
 
 Use the Python server from the UnrealMCP repository; do not copy the Python directory into the target UE project. Resolve an absolute `uv` path with `Get-Command uv`.
 
+The current default is `MCP_TOOL_MODE=grouped`: Material, Niagara and UMG each
+expose a category search/read/write interface. Search by internal operation name
+to obtain its `input_schema` and `call_tool`, then execute with `tool` and
+`arguments`. Other categories retain direct tools. `MCP_TOOL_MODE=direct` is the
+compatibility option; preserve existing explicit modes and permissions unless
+their change is authorized. See the [calling guide](Tools/README.md#grouped-mode-default).
+
+Shared Python updates take effect when each MCP server/client restarts, but do
+not update a running editor's C++ DLL. Grouping alone needs no UE build; new
+native features such as DataAsset writes/structured reads do. Category filters
+still apply: `MCP_ASSET_ENABLED=0` hides rename/move/duplicate/DataAsset writes,
+not every asset mutation in other categories.
+
+When authorized to update project skills, preserve local workflow/safety rules
+and add a self-contained grouped/direct routing note. Do not blindly replace
+customized skills or copy links to this repository's `Docs/Tools` tree into a
+project that lacks it. Historical test receipts remain dated evidence, not the
+current tool list. Documentation changes alone authorize no editor operations.
+
 For VS Code/Copilot, create or merge `.vscode/mcp.json`:
 
 ```jsonc

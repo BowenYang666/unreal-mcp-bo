@@ -4,10 +4,12 @@ Unreal Engine MCP Server
 A simple MCP server for interacting with Unreal Engine.
 """
 
+import codecs
 import logging
 import socket
 import sys
 import json
+import threading
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Dict, Any, Optional
 from mcp.server.fastmcp import FastMCP
@@ -34,6 +36,7 @@ class UnrealConnection:
         """Initialize the connection."""
         self.socket = None
         self.connected = False
+        self._request_lock = threading.Lock()
     
     def connect(self) -> bool:
         """Connect to the Unreal Engine instance."""
@@ -79,52 +82,47 @@ class UnrealConnection:
         self.connected = False
 
     def receive_full_response(self, sock, buffer_size=4096) -> bytes:
-        """Receive a complete response from Unreal, handling chunked data."""
-        chunks = []
+        """Receive complete JSON, preserving UTF-8 characters split across reads."""
+        data = bytearray()
+        decoder = codecs.getincrementaldecoder('utf-8')(errors='strict')
+        decoded_data = ""
         sock.settimeout(30)  # 30 second timeout
         try:
             while True:
                 chunk = sock.recv(buffer_size)
                 if not chunk:
-                    if not chunks:
-                        raise Exception("Connection closed before receiving data")
-                    break
-                chunks.append(chunk)
-                
-                # Process the data received so far
-                data = b''.join(chunks)
-                decoded_data = data.decode('utf-8')
-                
-                # Try to parse as JSON to check if complete
+                    if not data:
+                        raise ConnectionError("Connection closed before receiving data")
+                    decoded_data += decoder.decode(b'', final=True)
+                    try:
+                        json.loads(decoded_data)
+                    except json.JSONDecodeError as error:
+                        raise ConnectionError("Connection closed before receiving a complete JSON response") from error
+                    return bytes(data)
+                data.extend(chunk)
+                decoded_data += decoder.decode(chunk, final=False)
+                if decoder.getstate()[0]:
+                    continue
                 try:
                     json.loads(decoded_data)
                     logger.info(f"Received complete response ({len(data)} bytes)")
-                    return data
+                    return bytes(data)
                 except json.JSONDecodeError:
-                    # Not complete JSON yet, continue reading
-                    logger.debug(f"Received partial response, waiting for more data...")
-                    continue
-                except Exception as e:
-                    logger.warning(f"Error processing response chunk: {str(e)}")
-                    continue
-        except socket.timeout:
+                    logger.debug("Received partial response, waiting for more data...")
+        except socket.timeout as error:
             logger.warning("Socket timeout during receive")
-            if chunks:
-                # If we have some data already, try to use it
-                data = b''.join(chunks)
-                try:
-                    json.loads(data.decode('utf-8'))
-                    logger.info(f"Using partial response after timeout ({len(data)} bytes)")
-                    return data
-                except:
-                    pass
-            raise Exception("Timeout receiving Unreal response")
+            raise TimeoutError("Timeout receiving a complete Unreal response; command outcome unknown") from error
         except Exception as e:
             logger.error(f"Error during receive: {str(e)}")
             raise
     
     def send_command(self, command: str, params: Dict[str, Any] = None) -> Optional[Dict[str, Any]]:
         """Send a command to Unreal Engine and get the response."""
+        with self._request_lock:
+            return self._send_command_locked(command, params)
+
+    def _send_command_locked(self, command: str, params: Dict[str, Any] = None) -> Optional[Dict[str, Any]]:
+        """Run one request without sharing its socket with concurrent callers."""
         # Always reconnect for each command, since Unreal closes the connection after each command
         # This is different from Unity which keeps connections alive
         if self.socket:
@@ -202,38 +200,15 @@ class UnrealConnection:
 
 # Global connection state
 _unreal_connection: UnrealConnection = None
+_connection_lock = threading.Lock()
 
 def get_unreal_connection() -> Optional[UnrealConnection]:
-    """Get the connection to Unreal Engine."""
+    """Get the shared client; connection I/O belongs to serialized requests."""
     global _unreal_connection
-    try:
+    with _connection_lock:
         if _unreal_connection is None:
             _unreal_connection = UnrealConnection()
-            if not _unreal_connection.connect():
-                logger.warning("Could not connect to Unreal Engine")
-                _unreal_connection = None
-        else:
-            # Verify connection is still valid with a ping-like test
-            try:
-                # Simple test by sending an empty buffer to check if socket is still connected
-                _unreal_connection.socket.sendall(b'\x00')
-                logger.debug("Connection verified with ping test")
-            except Exception as e:
-                logger.warning(f"Existing connection failed: {e}")
-                _unreal_connection.disconnect()
-                _unreal_connection = None
-                # Try to reconnect
-                _unreal_connection = UnrealConnection()
-                if not _unreal_connection.connect():
-                    logger.warning("Could not reconnect to Unreal Engine")
-                    _unreal_connection = None
-                else:
-                    logger.info("Successfully reconnected to Unreal Engine")
-        
         return _unreal_connection
-    except Exception as e:
-        logger.error(f"Error getting Unreal connection: {e}")
-        return None
 
 
 def spill_if_oversized(
@@ -324,7 +299,7 @@ async def server_lifespan(server: FastMCP) -> AsyncIterator[Dict[str, Any]]:
     logger.info("UnrealMCP server starting up")
     try:
         _unreal_connection = get_unreal_connection()
-        if _unreal_connection:
+        if _unreal_connection and _unreal_connection.connect():
             logger.info("Connected to Unreal Engine on startup")
         else:
             logger.warning("Could not connect to Unreal Engine on startup")
@@ -358,6 +333,7 @@ from tools.umg_tools import register_umg_tools
 from tools.material_tools import register_material_tools
 from tools.niagara_tools import register_niagara_tools
 from tools.navigation_tools import register_navigation_tools
+from tools.grouped_tools import register_grouped_tools
 
 # Register all tools first
 register_editor_tools(mcp)
@@ -377,50 +353,41 @@ register_navigation_tools(mcp)
 #   "env": { "UNREAL_MCP_READ_ONLY": "1" }
 _read_only = os.environ.get("UNREAL_MCP_READ_ONLY", "").strip() in ("1", "true", "yes")
 
-if _read_only:
-    # Tools that are safe in read-only mode (query/inspect only, no side effects)
-    _READ_ONLY_TOOLS = {
-        # Editor: query actors and their properties
-        "get_actors_in_level",
-        "find_actors_by_name",
-        "get_actor_properties",
-        # Blueprint: read structure and list assets
-        "read_blueprint",
-        "list_blueprints",
-        # Node: inspect existing graph nodes
-        "find_blueprint_nodes",
-        # Project: inspect class metadata, assets, and AI graphs
-        "get_class_properties",
-        "read_data_asset",
-        "read_behavior_tree",
-        "read_blackboard",
-        "read_state_tree",
-        "read_cascade_system",
-        # Editor logs: read output log
-        "get_editor_logs",
-        # Editor state: check unsaved changes
-        "get_unsaved_changes",
-        # Material: read material assets and properties
-        "list_materials",
-        "read_material",
-        "get_material_instance_parameters",
-        # UMG: read widget layout
-        "read_widget_layout",
-        # Niagara: read-only inspection
-        "list_niagara_systems",
-        "read_niagara_system",
-        "get_niagara_parameters",
-        "list_module_inputs",
-        "list_module_static_switches",
-        "read_ns_curve",
-        "list_renderer_types",
-        # Navigation: inspect bounds/build state and run read-only queries
-        "list_nav_mesh_bounds_volumes",
-        "get_navigation_status",
-        "project_point_to_navigation",
-        "find_navigation_path",
-    }
+_READ_ONLY_TOOLS = {
+    "plan_asset_migration", "get_asset_migration_status", "verify_asset_migration",
+    "trace_physical_material",
+    "get_actors_in_level",
+    "find_actors_by_name",
+    "get_actor_properties",
+    "read_blueprint",
+    "list_blueprints",
+    "find_blueprint_nodes",
+    "get_class_properties",
+    "read_data_asset",
+    "read_behavior_tree",
+    "read_blackboard",
+    "read_state_tree",
+    "read_cascade_system",
+    "get_editor_logs",
+    "get_unsaved_changes",
+    "list_materials",
+    "read_material",
+    "get_material_instance_parameters",
+    "read_widget_layout",
+    "list_niagara_systems",
+    "read_niagara_system",
+    "get_niagara_parameters",
+    "list_module_inputs",
+    "list_module_static_switches",
+    "read_ns_curve",
+    "list_renderer_types",
+    "list_nav_mesh_bounds_volumes",
+    "get_navigation_status",
+    "project_point_to_navigation",
+    "find_navigation_path",
+}
 
+if _read_only:
     all_tool_names = list(mcp._tool_manager._tools.keys())
     removed = []
     for tool_name in all_tool_names:
@@ -446,7 +413,8 @@ if _read_only:
 _CATEGORY_TOOLS = {
     "cascade": {"read_cascade_system"},
     "asset": {
-        "rename_asset", "move_asset", "duplicate_asset",
+        "rename_asset", "move_asset", "duplicate_asset", "set_asset_properties", "create_data_asset", "create_physical_material",
+        "plan_asset_migration", "execute_asset_migration", "get_asset_migration_status", "verify_asset_migration",
     },
     "umg": {
         "create_umg_widget_blueprint", "add_text_block_to_widget", "add_button_to_widget",
@@ -458,6 +426,7 @@ _CATEGORY_TOOLS = {
         "set_widget_slot_property", "set_widget_anchor",
     },
     "material": {
+        "set_material_physical_material",
         "list_materials", "read_material", "get_material_instance_parameters",
         "create_material", "add_material_expression", "set_material_expression_property",
         "connect_material_expressions", "connect_material_to_property", "create_material_instance",
@@ -497,6 +466,7 @@ _CATEGORY_TOOLS = {
         "read_behavior_tree", "read_blackboard", "read_state_tree",
     },
     "editor": {
+        "set_component_physical_material", "trace_physical_material",
         "get_actors_in_level", "find_actors_by_name", "spawn_actor", "delete_actor",
         "set_actor_transform", "get_actor_properties", "set_actor_property", "spawn_blueprint_actor",
         "get_unsaved_changes", "save_asset",
@@ -524,14 +494,26 @@ for _category, _tool_set in _CATEGORY_TOOLS.items():
 if _disabled_categories:
     logger.info(f"Disabled tool categories: {_disabled_categories}. Remaining tools: {len(mcp._tool_manager._tools)}")
 
+_tool_mode = os.environ.get("MCP_TOOL_MODE", "grouped").strip().lower()
+if _tool_mode not in ("grouped", "direct"):
+    raise ValueError("MCP_TOOL_MODE must be 'grouped' or 'direct'")
+if _tool_mode == "grouped":
+    register_grouped_tools(mcp, _CATEGORY_TOOLS, _READ_ONLY_TOOLS)
+
 @mcp.prompt()
 def info():
     """Information about available Unreal MCP tools and best practices."""
     return """
         # Unreal MCP Server Guidance
 
-        The server registers 109 tools before read-only/category filtering. Use the
-        MCP tool schemas as the authoritative source for exact parameters.
+        There are 119 internal operations. Default grouped mode exposes 67 tools
+        before filtering: Material, Niagara and UMG each expose <category>_search,
+        <category>_call_read and <category>_call_write. Other categories stay direct.
+        Search by keywords or browse with an empty query, then search by exact tool
+        name for its full schema. Call the indicated read/write endpoint with tool
+        and arguments. Reuse the contract for subsequent calls; do not guess names.
+        MCP_TOOL_MODE=direct exposes all 119 operations directly after reconnecting.
+        Read-only/category filters apply in both modes; search never contacts UE.
 
         Core categories: Asset, Actor/Editor, Blueprint, Blueprint Node,
         Project/AI, UMG, Material, Niagara, Navigation, and Cascade.
@@ -547,7 +529,21 @@ def info():
         - `read_blueprint(include_subgraphs=True)` exposes collapsed graphs and pin defaults.
         - Use `get_class_properties(asset_path=...)` for reflected asset values and
             specialized readers for Blueprint/Material/Niagara/StateTree structure.
+        - Asset editing: inspect get_class_properties(asset_path=..., structured=True)
+            before set_asset_properties. Only /Game DataAsset instances and allowlisted
+            PhysicalMaterial fields are supported; save=True refuses dirty packages.
+            Maps use complete key/value entry arrays; preserve inherited struct fields.
+            create_data_asset/create_physical_material never overwrite existing packages.
+            These operations require the matching native plugin, not just Python schemas.
+        - Assign physical materials with set_material_physical_material or
+            set_component_physical_material; validate actual hits with trace_physical_material.
         - Use `UNREAL_MCP_READ_ONLY=1` for inspection-only sessions.
+        - Dependency copying: review plan_asset_migration (including an overflow file)
+            before execute_asset_migration with its plan_id and confirmation_token.
+            Existing NS rebinding requires an explicit rebind_assets list in the plan.
+            After timeout query get_asset_migration_status; never blindly recreate.
+            verify_asset_migration checks saved references without forcing unload.
+            This does not run Unreal's cross-project Migrate or authorize NF changes.
 
         `focus_viewport`, `take_screenshot`, and `set_pawn_properties` are not
         registered Python MCP tools.

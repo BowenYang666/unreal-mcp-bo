@@ -1,8 +1,12 @@
 #include "UnrealMCPBridge.h"
+#include "Commands/UnrealMCPAssetMigration.h"
+#include "Commands/UnrealMCPPhysicalMaterialCommands.h"
 #include "MCPServerRunnable.h"
 #include "Sockets.h"
 #include "SocketSubsystem.h"
 #include "HAL/RunnableThread.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
 #include "Interfaces/IPv4/IPv4Address.h"
 #include "Interfaces/IPv4/IPv4Endpoint.h"
 #include "Dom/JsonObject.h"
@@ -98,7 +102,10 @@ void UUnrealMCPBridge::Initialize(FSubsystemCollectionBase& Collection)
     FIPv4Address::Parse(MCP_SERVER_HOST, ServerAddress);
 
     // Start the server automatically
-    StartServer();
+    if (!FParse::Param(FCommandLine::Get(), TEXT("UnrealMCPNoServer")))
+    {
+        StartServer();
+    }
 }
 
 // Clean up resources when subsystem is destroyed
@@ -228,6 +235,34 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                 ResultJson = MakeShareable(new FJsonObject);
                 ResultJson->SetStringField(TEXT("message"), TEXT("pong"));
             }
+            else if (CommandType == TEXT("plan_asset_migration"))
+            {
+                ResultJson = UnrealMCPAssetMigration::Plan(Params);
+            }
+            else if (CommandType == TEXT("execute_asset_migration"))
+            {
+                ResultJson = UnrealMCPAssetMigration::Execute(Params);
+            }
+            else if (CommandType == TEXT("get_asset_migration_status"))
+            {
+                ResultJson = UnrealMCPAssetMigration::Status(Params);
+            }
+            else if (CommandType == TEXT("verify_asset_migration"))
+            {
+                ResultJson = UnrealMCPAssetMigration::Verify(Params);
+            }
+            else if (CommandType == TEXT("set_material_physical_material"))
+            {
+                ResultJson = UnrealMCPPhysicalMaterial::AssignMaterial(Params);
+            }
+            else if (CommandType == TEXT("set_component_physical_material"))
+            {
+                ResultJson = UnrealMCPPhysicalMaterial::AssignLevelComponent(Params);
+            }
+            else if (CommandType == TEXT("trace_physical_material"))
+            {
+                ResultJson = UnrealMCPPhysicalMaterial::Trace(Params);
+            }
             // Editor Commands (including actor manipulation)
             else if (CommandType == TEXT("get_actors_in_level") || 
                      CommandType == TEXT("find_actors_by_name") ||
@@ -288,6 +323,9 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
             }
             // Project Commands
             else if (CommandType == TEXT("create_input_mapping") ||
+                     CommandType == TEXT("create_data_asset") ||
+                     CommandType == TEXT("create_physical_material") ||
+                     CommandType == TEXT("set_asset_properties") ||
                      CommandType == TEXT("read_data_asset") ||
                      CommandType == TEXT("get_class_properties") ||
                      CommandType == TEXT("read_behavior_tree") ||
@@ -404,7 +442,12 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                 // Set error status and include the error message
                 ResponseJson->SetStringField(TEXT("status"), TEXT("error"));
                 ResponseJson->SetStringField(TEXT("error"), ErrorMessage);
-                if (CommandType == TEXT("duplicate_asset") || CommandType == TEXT("set_material_instance_parameters"))
+                if (CommandType == TEXT("duplicate_asset") || CommandType == TEXT("set_material_instance_parameters")
+                    || CommandType == TEXT("set_asset_properties") || CommandType == TEXT("create_data_asset")
+                    || CommandType == TEXT("create_physical_material") || CommandType == TEXT("set_material_physical_material")
+                    || CommandType == TEXT("set_component_physical_material") || CommandType == TEXT("set_component_property")
+                    || CommandType == TEXT("plan_asset_migration") || CommandType == TEXT("execute_asset_migration")
+                    || CommandType == TEXT("get_asset_migration_status") || CommandType == TEXT("verify_asset_migration"))
                 {
                     ResponseJson->SetObjectField(TEXT("result"), ResultJson);
                 }

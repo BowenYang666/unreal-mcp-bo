@@ -2,14 +2,19 @@
 
 Tools for creating and editing Material graphs and Material Instances programmatically.
 
-The material category contains 15 tools. `MCP_MATERIAL_ENABLED=0` disables them;
+The material category contains 16 operations. In default grouped mode use
+`material_search`, then `material_call_read` or `material_call_write` with the
+operation name and its arguments. See the [calling guide](README.md#grouped-mode-default).
+The names/examples below are internal operations, or direct calls when
+`MCP_TOOL_MODE=direct`. `MCP_MATERIAL_ENABLED=0` disables the category;
 read-only mode retains `list_materials`, `read_material` and
 `get_material_instance_parameters`. `save_asset` belongs to the editor category.
 MCP callers do not supply the injected Python `ctx` parameter.
 
 Use full asset paths when resources have duplicate names. Graph tools operate
 on a Material, not a Material Instance. Use `set_material_instance_parameters`
-for an existing MI's Parent or overrides; there is no general asset-property setter.
+for an existing MI's Parent or overrides; the bounded `set_asset_properties`
+does not support materials or replace their specialized editors.
 
 ## Parameters At A Glance
 
@@ -24,6 +29,7 @@ omitted. The `name`/`path` readers require at least one of those selectors.
 | `create_material` | `asset_path`, `blend_mode="Opaque"`, `shading_model="DefaultLit"`, `two_sided=False`, `material_domain="Surface"` |
 | `create_material_instance` | `asset_path`, `parent_material_path`, `scalar_params=None`, `vector_params=None`, `texture_params=None` |
 | `set_material_instance_parameters` | `asset_path`, `scalar_params=None`, `vector_params=None`, `texture_params=None`, `parent_material_path=""` |
+| `set_material_physical_material` | `asset_path`, `physical_material_path`, `expected_value=None`, `save=True` |
 | `add_material_expression` | `asset_path`, `expression_type`, `pos_x=0`, `pos_y=0` |
 | `set_material_expression_property` | `asset_path`, `node_index`, `property_name`, `value=None` (supply a value appropriate for the property) |
 | `connect_material_expressions` | `asset_path`, `from_node_index`, `to_node_index`, `to_input_name`, `from_output_name=""` |
@@ -44,6 +50,7 @@ and enum selections are strings. MI override objects are described below.
 | Read/list tools | No explicit edit, compile or save |
 | `create_material`, `create_material_instance` | Attempt to save the new package; current handlers do not check the save return value, so creation alone is not proof of persistence |
 | `set_material_instance_parameters` | Saves only the target instance package and checks saving; inspect `success`, `saved`, `modified` and actual Parent |
+| `set_material_physical_material` | By default saves only the target; refuses a pre-existing dirty package. `save=False` leaves edits in memory |
 | Graph/property/layout tools | Modify in memory and mark the material dirty; call `save_asset(asset_path=...)` after finishing |
 
 Read before editing, serialize mutations to the same asset, and inspect the
@@ -53,6 +60,33 @@ rather than assuming old indices still refer to the same node.
 See [Editor error handling](editor_tools.md#error-handling) for response envelopes
 and indeterminate transport failures. Do not retry creation blindly after a
 timeout: the destination may already exist.
+
+### set_material_physical_material
+
+Assign the explicit physical material reference on a Material or constant
+Material Instance under `/Game`. Discover through
+`material_search(tool="set_material_physical_material")`, then use its returned
+write endpoint. `physical_material_path` is a full PhysicalMaterial path, or `""`
+to clear; a cleared MI inherits its parent's effective physical material.
+Optional `expected_value` compares the old explicit reference, not the inherited
+one; `""` expects no override, omission skips that check.
+
+```python
+material_call_write(tool="set_material_physical_material", arguments={
+  "asset_path": "/Game/Materials/M_Wall",
+  "physical_material_path": "/Game/Physics/PM_Metal",
+  "expected_value": "",
+  "save": True})
+```
+
+Updates editor property notifications and the physics materials of registered
+components using this material or a descendant MI. Does not change component
+overrides, mesh BodySetup, collision complexity, mass or inertia. A material
+assignment need not control a simple trace; validate the intended collision path
+using [trace_physical_material](editor_tools.md#trace_physical_material).
+Returns `before`, `after`, `effective_physical_material`, `modified`, `saved`,
+`package_dirty`, `target`, `success`. Save failure can leave edits in memory;
+read back after an indeterminate timeout. There is no implicit rollback/retry.
 
 ## Reading & Discovery
 

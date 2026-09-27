@@ -191,8 +191,19 @@ def register_blueprint_tools(mcp: FastMCP):
         component_name: str,
         property_name: str,
         property_value,
+        expected_value: str = None,
+        save: bool = False,
     ) -> Dict[str, Any]:
-        """Set a property on a component in a Blueprint."""
+        """Set a property on an SCS component in a Blueprint.
+
+        For property_name="PhysMaterialOverride" or "BodyInstance.PhysMaterialOverride",
+        property_value is a PhysicalMaterial path or ""/null to clear. This path
+        uses SetPhysMaterialOverride and compiles the Blueprint. Optional
+        expected_value compares the old explicit ref ("" means none); save=True
+        saves only this BP and rejects an already dirty package. These two options
+        are unsupported for other properties. Native/inherited components are not
+        resolved by this SCS-only tool. Example property_value="/Game/PM_Metal".
+        """
         from unreal_mcp_server import get_unreal_connection
         
         try:
@@ -208,6 +219,12 @@ def register_blueprint_tools(mcp: FastMCP):
                 "property_value": property_value
             }
             
+            if expected_value is not None or save:
+                if property_name not in ("PhysMaterialOverride", "BodyInstance.PhysMaterialOverride"):
+                    return {"success": False, "message": "expected_value/save are only supported for PhysMaterialOverride"}
+                if expected_value is not None:
+                    params["expected_value"] = expected_value
+                params["save"] = save
             logger.info(f"Setting component property with params: {params}")
             response = unreal.send_command("set_component_property", params)
             

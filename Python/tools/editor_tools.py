@@ -13,6 +13,42 @@ logger = logging.getLogger("UnrealMCP")
 
 def register_editor_tools(mcp: FastMCP):
     """Register editor tools with the MCP server."""
+
+    @mcp.tool()
+    def set_component_physical_material(ctx: Context, level_path: str, actor_name: str,
+                                        component_name: str, physical_material_path: str,
+                                        expected_value: str = None, save: bool = False) -> dict:
+        """Set a current editor-world primitive component's physical material override.
+
+        Example: level_path="/Game/Maps/Test", actor_name="MetalWall",
+        component_name="StaticMeshComponent0", physical_material_path="/Game/PM_Metal".
+        Empty reference clears override. expected_value optionally checks the old
+        explicit reference ("" means none). Uses SetPhysMaterialOverride so collision
+        shapes update immediately. Requires exact current level and no PIE. No
+        external-actor packages in v1. save=False marks map dirty; save=True saves
+        only that map and refuses pre-existing dirty changes. Mass/inertia not rebuilt.
+        Returns modified/saved/package_dirty and before/after. No implicit retry.
+        """
+        from tools.project_tools import call_asset_command
+        params = {"level_path": level_path, "actor_name": actor_name, "component_name": component_name,
+                  "physical_material_path": physical_material_path, "save": save}
+        if expected_value is not None:
+            params["expected_value"] = expected_value
+        return call_asset_command("set_component_physical_material", params)
+
+    @mcp.tool()
+    def trace_physical_material(ctx: Context, level_path: str, start: list[float], end: list[float],
+                                trace_complex: bool = False) -> dict:
+        """Read actual Visibility-channel collision hit, PhysMaterial and SurfaceType.
+
+        Example: level_path="/Game/Maps/Test", start=[0,0,200], end=[0,0,-200].
+        Current editor world only, no PIE. Pass trace_complex=True for triangle
+        collision. Returns blocking_hit, actor, component, physical_material and
+        stable surface_type. A miss/default material is not evidence of assignment.
+        """
+        from tools.project_tools import call_asset_command
+        return call_asset_command("trace_physical_material", {
+            "level_path": level_path, "start": start, "end": end, "trace_complex": trace_complex})
     
     @mcp.tool()
     def get_actors_in_level(ctx: Context) -> Dict[str, Any]:

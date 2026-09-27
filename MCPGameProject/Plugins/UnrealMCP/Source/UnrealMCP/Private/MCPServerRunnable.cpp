@@ -1,4 +1,5 @@
 #include "MCPServerRunnable.h"
+#include "MCPRequestBuffer.h"
 #include "UnrealMCPBridge.h"
 #include "Sockets.h"
 #include "SocketSubsystem.h"
@@ -56,9 +57,13 @@ uint32 FMCPServerRunnable::Run()
                 ClientSocket->SetSendBufferSize(SocketBufferSize, SocketBufferSize);
                 ClientSocket->SetReceiveBufferSize(SocketBufferSize, SocketBufferSize);
                 
-                uint8 Buffer[8192];
-                while (bRunning)
+                ClientSocket->SetNonBlocking(true);
+                uint8 Buffer[RecvBufferSize];
+                FMCPRequestBuffer RequestBuffer;
+                const double ReceiveDeadline = FPlatformTime::Seconds() + 10.0;
+                while (bRunning && FPlatformTime::Seconds() < ReceiveDeadline)
                 {
+                    if (!ClientSocket->Wait(ESocketWaitConditions::WaitForRead, FTimespan::FromMilliseconds(100))) continue;
                     int32 BytesRead = 0;
                     if (ClientSocket->Recv(Buffer, sizeof(Buffer), BytesRead))
                     {
@@ -68,34 +73,41 @@ uint32 FMCPServerRunnable::Run()
                             break;
                         }
 
-                        // Convert received data to string
-                        Buffer[BytesRead] = '\0';
-                        FString ReceivedText = UTF8_TO_TCHAR(Buffer);
-                        UE_LOG(LogTemp, Display, TEXT("MCPServerRunnable: Received: %s"), *ReceivedText);
-
-                        // Parse JSON
                         TSharedPtr<FJsonObject> JsonObject;
-                        TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(ReceivedText);
-                        
-                        if (FJsonSerializer::Deserialize(Reader, JsonObject))
+                        const auto ParseResult = RequestBuffer.Append(Buffer, BytesRead, JsonObject);
+                        if (ParseResult == FMCPRequestBuffer::EResult::TooLarge)
+                        {
+                            UE_LOG(LogTemp, Warning, TEXT("MCP request exceeds 1 MiB"));
+                            break;
+                        }
+                        if (ParseResult == FMCPRequestBuffer::EResult::Invalid)
+                        {
+                            UE_LOG(LogTemp, Warning, TEXT("MCP request is not a valid single JSON object"));
+                            break;
+                        }
+                        if (ParseResult == FMCPRequestBuffer::EResult::Complete)
                         {
                             // Get command type
                             FString CommandType;
-                            if (JsonObject->TryGetStringField(TEXT("type"), CommandType))
+                            const TSharedPtr<FJsonObject>* CommandParams = nullptr;
+                            if (JsonObject->TryGetStringField(TEXT("type"), CommandType)
+                                && JsonObject->TryGetObjectField(TEXT("params"), CommandParams))
                             {
                                 // Execute command
-                                FString Response = Bridge->ExecuteCommand(CommandType, JsonObject->GetObjectField(TEXT("params")));
+                                FString Response = Bridge->ExecuteCommand(CommandType, *CommandParams);
                                 
                                 // Convert to UTF-8 once and send in chunks
                                 FTCHARToUTF8 Converter(*Response);
                                 const uint8* DataPtr = (const uint8*)Converter.Get();
                                 int32 TotalBytes = Converter.Length();
                                 int32 TotalSent = 0;
+                                const double SendDeadline = FPlatformTime::Seconds() + 10.0;
                                 
                                 UE_LOG(LogTemp, Display, TEXT("MCPServerRunnable: Sending response (%d bytes)"), TotalBytes);
                                 
-                                while (TotalSent < TotalBytes)
+                                while (bRunning && TotalSent < TotalBytes && FPlatformTime::Seconds() < SendDeadline)
                                 {
+                                    if (!ClientSocket->Wait(ESocketWaitConditions::WaitForWrite, FTimespan::FromMilliseconds(100))) continue;
                                     int32 BytesSent = 0;
                                     bool bSuccess = ClientSocket->Send(DataPtr + TotalSent, TotalBytes - TotalSent, BytesSent);
                                     if (!bSuccess || BytesSent <= 0)
@@ -113,12 +125,9 @@ uint32 FMCPServerRunnable::Run()
                             }
                             else
                             {
-                                UE_LOG(LogTemp, Warning, TEXT("MCPServerRunnable: Missing 'type' field in command"));
+                                UE_LOG(LogTemp, Warning, TEXT("MCPServerRunnable: Missing or invalid type/params fields"));
                             }
-                        }
-                        else
-                        {
-                            UE_LOG(LogTemp, Warning, TEXT("MCPServerRunnable: Failed to parse JSON from: %s"), *ReceivedText);
+                            break;
                         }
                     }
                     else
@@ -152,6 +161,8 @@ uint32 FMCPServerRunnable::Run()
                         }
                     }
                 }
+                ClientSocket->Close();
+                ClientSocket.Reset();
             }
             else
             {

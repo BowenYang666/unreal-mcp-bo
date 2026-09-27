@@ -74,20 +74,22 @@ class DuplicateAssetTests(unittest.TestCase):
     def test_registration_filters(self):
         environment = {key: value for key, value in os.environ.items()
                        if key != "UNREAL_MCP_READ_ONLY" and not (key.startswith("MCP_") and key.endswith("_ENABLED"))}
-        for overrides, expected_count, exposed in (
-            ({}, 109, True),
-            ({"UNREAL_MCP_READ_ONLY": "1"}, 29, False),
-            ({"MCP_ASSET_ENABLED": "0"}, 106, False),
-            ({"MCP_EDITOR_ENABLED": "0"}, 93, True),
+        for overrides, grouped_count, direct_count, exposed in (
+            ({}, 67, 119, True),
+            ({"UNREAL_MCP_READ_ONLY": "1"}, 28, 33, False),
+            ({"MCP_ASSET_ENABLED": "0"}, 57, 109, False),
+            ({"MCP_EDITOR_ENABLED": "0"}, 49, 101, True),
         ):
-            with self.subTest(overrides=overrides):
-                process = subprocess.run(
-                    [sys.executable, "-c", "import json, unreal_mcp_server as server; "
-                     "print(json.dumps(sorted(server.mcp._tool_manager._tools)))"],
-                    env={**environment, **overrides}, capture_output=True, text=True, check=True)
-                tools = json.loads(process.stdout)
-                self.assertEqual(len(tools), expected_count)
-                self.assertEqual("duplicate_asset" in tools, exposed)
+            for mode, expected_count in (("grouped", grouped_count), ("direct", direct_count)):
+                with self.subTest(overrides=overrides, mode=mode):
+                    process = subprocess.run(
+                        [sys.executable, "-c", "import json, unreal_mcp_server as server; "
+                         "print(json.dumps(sorted(server.mcp._tool_manager._tools)))"],
+                        env={**environment, **overrides, "MCP_TOOL_MODE": mode},
+                        capture_output=True, text=True, check=True)
+                    tools = json.loads(process.stdout)
+                    self.assertEqual(len(tools), expected_count)
+                    self.assertEqual("duplicate_asset" in tools, exposed)
 
 
 if __name__ == "__main__":

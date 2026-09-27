@@ -114,6 +114,27 @@ First resolve `uv` with `Get-Command uv`. Prefer its absolute path so GUI client
 
 Use the same external Python server for every onboarded project; do not copy the `Python` directory into the UE project.
 
+### Tool Exposure and Project Skills
+
+`MCP_TOOL_MODE=grouped` is the default; `direct` exposes original operation names
+for compatibility. Preserve an existing explicit mode unless its change is
+authorized. In grouped mode Material/Niagara/UMG each expose `<category>_search`,
+`<category>_call_read` and `<category>_call_write`; other categories remain direct.
+Use search with an exact internal operation name to obtain `input_schema` and
+`call_tool`, then pass `tool` and `arguments` to that endpoint. Read-only mode
+omits write endpoints, and disabled categories have no endpoints. Discover the
+actual filtered list; do not treat an unfiltered tool count as a smoke-test gate.
+
+A shared Python source update changes discovery on the client's next restart,
+not the loaded UE DLL. New DataAsset writes and structured reads require the
+matching native plugin, while the grouping change itself does not require a build.
+
+Review target project skills/instructions for old direct-call examples. If their
+update is authorized, add a short self-contained routing note and preserve project
+safety rules, recipes and dated evidence. Do not copy this repository's relative
+`Docs/Tools` links into projects without those docs, overwrite customized skills,
+or create a new skill tree merely because a project has none.
+
 ### Environment Profiles
 
 For read-only inspection:
@@ -135,7 +156,7 @@ For read-only inspection:
 
 `UNREAL_MCP_READ_ONLY=1` removes mutation tools after registration. Keeping categories enabled allows their safe query tools through the read-only whitelist, including `find_blueprint_nodes`, `get_class_properties`, `read_data_asset`, `read_behavior_tree`, `read_blackboard`, and `read_state_tree`. `get_class_properties` is essential for inspecting editable class metadata and current values on any loaded asset without modifying it.
 
-For authoring, set `UNREAL_MCP_READ_ONLY=0`; set category flags to `0` only when that category should not be exposed. Use `MCP_ASSET_ENABLED=0` when the client must not rename or move assets.
+For authoring, set `UNREAL_MCP_READ_ONLY=0`; set category flags to `0` only when that category should not be exposed. `MCP_ASSET_ENABLED=0` hides rename, move, duplicate and `set_asset_properties`; it is not a global ban on other categories' asset edits. Keep existing permissions unless explicitly authorized to change them.
 
 ### VS Code / Copilot
 
