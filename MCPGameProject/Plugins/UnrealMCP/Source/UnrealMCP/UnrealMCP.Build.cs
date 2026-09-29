@@ -65,7 +65,12 @@ public class UnrealMCP : ModuleRules
 				"MaterialEditor",
 				"StateTreeEditorModule",
 				"PropertyBindingUtils",
-				"LevelEditor"
+				"LevelEditor",
+				"RenderCore",
+				"ImageWrapper",
+				"AssetTools",
+				"InterchangeEngine",
+				"CinematicCamera"
 			}
 		);
 		

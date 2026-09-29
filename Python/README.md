@@ -28,7 +28,9 @@ uv --directory ./Python run python scripts/actors/test_cube.py
 
 ## Environment Controls
 
-- `MCP_TOOL_MODE=grouped` (default): expose Material/Niagara/UMG search/read/write entry points, 67 public tools before filtering. `direct` exposes all 119 operations directly. See the [calling guide](../Docs/Tools/README.md#grouped-mode-default).
+- `MCP_TOOL_MODE=grouped` (default): expose Material/Niagara/UMG/Scene search/read/write entry points, 70 public tools before filtering. `direct` exposes all 138 operations directly. Scene's original names are internal in grouped mode; discover contracts through `scene_search`. See the [calling guide](../Docs/Tools/README.md#grouped-mode-default).
+- `MCP_SCENE_ENABLED`: controls 19 guarded scene operations. See [scene tools](../Docs/Tools/scene_tools.md) for identity, preview, task status and save constraints. Folder parameters require native `folder_contract=1`, not merely updated Python schemas.
+- `UNREAL_MCP_PORT`: native editor TCP port, default 13090. Match `-UnrealMCPPort=<port>` when running multiple editors. Host remains loopback.
 - `UNREAL_MCP_READ_ONLY=1`: expose only the current read-only whitelist.
 - `MCP_ASSET_ENABLED`: controls `rename_asset`, `move_asset`, `duplicate_asset`, `create_data_asset`, `create_physical_material`, `set_asset_properties` (DataAsset instances and allowlisted PhysicalMaterial fields), plus `plan_asset_migration`, `execute_asset_migration`, `get_asset_migration_status`, and `verify_asset_migration`. Read-only mode retains the three migration queries but removes execution. See the [dependency-copy workflow](../Docs/Tools/editor_tools.md#dependency-copy-workflow).
 - `MCP_EDITOR_ENABLED`, `MCP_BLUEPRINT_ENABLED`, `MCP_NODE_ENABLED`, `MCP_PROJECT_ENABLED`, `MCP_UMG_ENABLED`, `MCP_MATERIAL_ENABLED`, `MCP_NIAGARA_ENABLED`, `MCP_NAVIGATION_ENABLED`, `MCP_CASCADE_ENABLED`: set to `0`/`false`/`no`/`off` to disable a category.

@@ -39,13 +39,15 @@ The tool skips transient/deprecated fields and cannot reconstruct data stored on
 Use the current client's discovered tools, including its server prefix.
 `get_class_properties`, `read_data_asset`, `read_blueprint`, `read_state_tree`
 and `read_cascade_system` remain direct tools when their categories are enabled.
-In default grouped mode, Material/Niagara/UMG readers are internal operations:
+In default grouped mode, Material/Niagara/UMG/Scene readers are internal operations:
 
 | Operation | Discover its exact contract | Execute |
 |---|---|---|
 | `read_material` | `material_search(tool="read_material")` | Returned `call_tool`, normally `material_call_read` |
 | `read_niagara_system` | `niagara_search(tool="read_niagara_system")` | Returned `call_tool`, normally `niagara_call_read` |
 | `read_widget_layout` | `umg_search(tool="read_widget_layout")` | Returned `call_tool`, normally `umg_call_read` |
+| `get_editor_context` | `scene_search(tool="get_editor_context")` | Returned `call_tool`, normally `scene_call_read` |
+| `inspect_scene_target` / `inspect_scene_asset` | `scene_search(tool=exact_operation)` | Returned `call_tool`, normally `scene_call_read` |
 
 Pass `tool` and an `arguments` object matching `input_schema`; do not send `ctx`.
 Reuse contracts rather than searching before every call. `MCP_TOOL_MODE=direct`

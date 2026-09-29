@@ -10,6 +10,7 @@ import socket
 import sys
 import json
 import threading
+import os
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Dict, Any, Optional
 from mcp.server.fastmcp import FastMCP
@@ -27,7 +28,9 @@ logger = logging.getLogger("UnrealMCP")
 
 # Configuration
 UNREAL_HOST = "127.0.0.1"
-UNREAL_PORT = 13090
+UNREAL_PORT = int(os.environ.get("UNREAL_MCP_PORT", "13090"))
+if not 1 <= UNREAL_PORT <= 65535:
+    raise ValueError("UNREAL_MCP_PORT must be 1..65535")
 
 class UnrealConnection:
     """Connection to an Unreal Engine instance."""
@@ -323,7 +326,6 @@ mcp = FastMCP(
 )
 
 # Import and register tools
-import os
 
 from tools.editor_tools import register_editor_tools
 from tools.blueprint_tools import register_blueprint_tools
@@ -334,6 +336,7 @@ from tools.material_tools import register_material_tools
 from tools.niagara_tools import register_niagara_tools
 from tools.navigation_tools import register_navigation_tools
 from tools.grouped_tools import register_grouped_tools
+from tools.scene_tools import register_scene_tools
 
 # Register all tools first
 register_editor_tools(mcp)
@@ -344,6 +347,7 @@ register_umg_tools(mcp)
 register_material_tools(mcp)
 register_niagara_tools(mcp)
 register_navigation_tools(mcp)
+register_scene_tools(mcp)
 
 # Read-only mode: if UNREAL_MCP_READ_ONLY=1, remove all write/modify tools
 # and keep only read/query tools. This is useful when you want the AI to
@@ -354,6 +358,9 @@ register_navigation_tools(mcp)
 _read_only = os.environ.get("UNREAL_MCP_READ_ONLY", "").strip() in ("1", "true", "yes")
 
 _READ_ONLY_TOOLS = {
+    "get_editor_context", "list_scene_actors", "inspect_scene_target",
+    "get_scene_mesh", "get_scene_viewport", "get_scene_task_status",
+    "inspect_scene_asset", "get_scene_import_status",
     "plan_asset_migration", "get_asset_migration_status", "verify_asset_migration",
     "trace_physical_material",
     "get_actors_in_level",
@@ -411,6 +418,13 @@ if _read_only:
 # Categories and their tool name prefixes/sets are defined below.
 # ─────────────────────────────────────────────────────────────────────────────
 _CATEGORY_TOOLS = {
+    "scene": {
+        "get_editor_context", "list_scene_actors", "inspect_scene_target", "patch_scene_target",
+        "manage_scene_actor", "get_scene_mesh", "set_scene_mesh", "save_scene_level",
+        "get_scene_viewport", "set_scene_viewport", "capture_scene_viewport", "get_scene_task_status",
+        "inspect_scene_asset", "import_scene_asset", "get_scene_import_status",
+        "undo_scene_edit", "apply_scene_manifest", "recapture_scene_skylight", "set_scene_actor_folders",
+    },
     "cascade": {"read_cascade_system"},
     "asset": {
         "rename_asset", "move_asset", "duplicate_asset", "set_asset_properties", "create_data_asset", "create_physical_material",
@@ -506,19 +520,22 @@ def info():
     return """
         # Unreal MCP Server Guidance
 
-        There are 119 internal operations. Default grouped mode exposes 67 tools
-        before filtering: Material, Niagara and UMG each expose <category>_search,
+        There are 138 internal operations. Default grouped mode exposes 70 tools
+        before filtering: Material, Niagara, UMG and Scene each expose <category>_search,
         <category>_call_read and <category>_call_write. Other categories stay direct.
         Search by keywords or browse with an empty query, then search by exact tool
         name for its full schema. Call the indicated read/write endpoint with tool
         and arguments. Reuse the contract for subsequent calls; do not guess names.
-        MCP_TOOL_MODE=direct exposes all 119 operations directly after reconnecting.
+        MCP_TOOL_MODE=direct exposes all 138 operations directly after reconnecting.
         Read-only/category filters apply in both modes; search never contacts UE.
 
         Core categories: Asset, Actor/Editor, Blueprint, Blueprint Node,
-        Project/AI, UMG, Material, Niagara, Navigation, and Cascade.
+        Project/AI, UMG, Material, Niagara, Scene, Navigation, and Cascade.
 
         Canonical conventions:
+        - In grouped mode, start scene work with scene_search(tool="get_editor_context"),
+            then scene_call_read(tool="get_editor_context", arguments={}). Scene operation
+            names are internal; use scene_search for their exact read/write contracts.
         - Blueprint asset/node tools use `blueprint_path` with a full `/Game/...` path.
         - `spawn_blueprint_actor` is the exception: it uses `blueprint_name` plus `actor_name`.
         - `create_blueprint.name` must be a full content path.

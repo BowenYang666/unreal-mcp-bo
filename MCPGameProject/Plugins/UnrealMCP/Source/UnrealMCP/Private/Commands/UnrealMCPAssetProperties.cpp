@@ -616,6 +616,25 @@ namespace
     }
 }
 
+TSharedPtr<FJsonValue> EncodeValue(FProperty* Property, const void* Address, FString& Error)
+{
+    if (!Supported(Property)) { Error = TEXT("Unsupported value type"); return nullptr; }
+    int32 Budget = MaxValues;
+    return Encode(Property, Address, Error, Budget);
+}
+
+bool DecodeValue(FProperty* Property, void* Address, const TSharedPtr<FJsonValue>& Value, FString& Error)
+{
+    if (!Supported(Property)) { Error = TEXT("Unsupported value type"); return false; }
+    int32 Budget = MaxValues;
+    return Decode(Property, Address, Value, Error, Budget);
+}
+
+TSharedPtr<FJsonObject> DescribeValue(FProperty* Property)
+{
+    return Schema(Property);
+}
+
 static TSharedPtr<FJsonObject> CreateAllowedAsset(const TSharedPtr<FJsonObject>& Params, bool Physical)
 {
     FString Path;

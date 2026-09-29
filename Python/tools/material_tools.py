@@ -177,9 +177,12 @@ def register_material_tools(mcp: FastMCP):
         name: str = "",
         path: str = ""
     ) -> Dict[str, Any]:
-        """Get a MaterialInstance's parameter overrides (scalar, vector, texture).
+        """Get a MaterialInstance's local overrides and available inherited parameters.
 
-        Returns the parent material reference and all overridden parameter values.
+        Returns parent, local scalar/vector/texture overrides, and (native contract v2)
+        available_parameters with type, association/index, effective_value,
+        local_override/inherited and writable_by_name. Read compile_result and
+        shader_compilation_pending_global; cached availability alone is not completion.
 
         Provide either 'name' or 'path' to identify the material instance.
 
@@ -677,7 +680,11 @@ def register_material_tools(mcp: FastMCP):
         scalar_params: Dict[str, float] = None,
         vector_params: Dict[str, Dict[str, float]] = None,
         texture_params: Dict[str, str] = None,
-        parent_material_path: str = ""
+        parent_material_path: str = "",
+        save: bool = False,
+        clear_scalar_params: list[str] = None,
+        clear_vector_params: list[str] = None,
+        clear_texture_params: list[str] = None
     ) -> Dict[str, Any]:
         """Override parameters on an EXISTING MaterialInstanceConstant (no re-creation).
 
@@ -685,7 +692,10 @@ def register_material_tools(mcp: FastMCP):
         Same value shapes as create_material_instance. Only the parameters you pass are changed.
         Optionally change Parent before applying overrides. Existing overrides are not cleared,
         but may stop affecting rendering if the new parent does not define matching parameters.
-        Validates the complete request before editing. Saves only the target instance package.
+        Validates the complete request before editing. Defaults to unsaved preview;
+        updates require a native plugin advertising parameter_contract=2. Unknown,
+        wrong-type or ambiguous parameter names fail before edits. Only unique global
+        parameters are writable by name; layer/blend parameters are read-only here.
 
         Args:
             ctx: The MCP context
@@ -695,6 +705,10 @@ def register_material_tools(mcp: FastMCP):
             texture_params: Dict of texture overrides {"ParamName": "/Game/.../T_MyTex"}.
             parent_material_path: Full asset path of a Material or MaterialInstanceConstant.
                 Omit or pass "" to keep the existing parent. Self/cyclic parent chains fail.
+            save: Explicitly save only the target package; refuses pre-existing dirty edits.
+            clear_scalar_params: Names to remove from local scalar overrides, e.g. ["Roughness"].
+            clear_vector_params: Names to remove from local vector overrides, e.g. ["Tint"].
+            clear_texture_params: Names to remove from local texture overrides, e.g. ["MainTex"].
 
         Returns:
             Dict with success, saved, previous_parent, parent, parent_changed, modified,
@@ -724,7 +738,14 @@ def register_material_tools(mcp: FastMCP):
             if not unreal:
                 return {"success": False, "message": "Failed to connect to Unreal Engine"}
 
-            params = {"asset_path": asset_path}
+            capability = unreal.send_command("get_material_instance_parameters", {"path": asset_path})
+            if not capability or capability.get("status") == "error" or capability.get("result", {}).get("parameter_contract", 0) < 2:
+                return {"success": False, "saved": False, "modified": False,
+                        "message": "Native parameter contract v2 unavailable; update the plugin before editing"}
+            params = {"asset_path": asset_path, "save": save}
+            for key, names in (("clear_scalar_params", clear_scalar_params), ("clear_vector_params", clear_vector_params), ("clear_texture_params", clear_texture_params)):
+                if names is not None:
+                    params[key] = names
             if scalar_params:
                 params["scalar_params"] = scalar_params
             if vector_params:

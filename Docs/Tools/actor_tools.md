@@ -146,17 +146,11 @@ Set a single property on an actor via reflection.
 - `property_name` (string) - The property to set
 - `property_value` - The new value (type depends on the property)
 
-**Example:**
-```json
-{
-  "command": "set_actor_property",
-  "params": {
-    "name": "MyPointLight",
-    "property_name": "Intensity",
-    "property_value": 5000
-  }
-}
-```
+This legacy tool only resolves top-level actor fields. It cannot set PointLight
+`Intensity`, which belongs to the LightComponent. Use the guarded
+[scene component workflow](scene_tools.md#preview-edits): inspect the actor to obtain
+its exact component name, then patch that component's `Intensity` with an optional
+`expected_value`. Blueprint SCS defaults are a different editing target.
 
 ### spawn_blueprint_actor
 
@@ -210,4 +204,5 @@ Supported actor types for `spawn_actor`:
 - `DirectionalLight`
 - `CameraActor`
 
-`spawn_actor` creates the actor class; use `set_actor_property` or component-specific tools to assign meshes, light settings, and other properties afterward.
+`spawn_actor` creates the actor class; use component-specific scene tools for meshes
+and light settings. Do not pass component fields to `set_actor_property`.

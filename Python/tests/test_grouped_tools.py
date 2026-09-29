@@ -2,11 +2,13 @@ import importlib.util
 import json
 import logging
 import os
+import tempfile
+from contextlib import asynccontextmanager
 from pathlib import Path
 import sys
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -38,7 +40,7 @@ class GroupedToolsTests(unittest.IsolatedAsyncioTestCase):
             self.calls.append("other")
             return {}
 
-        self.categories = {"material": {"read_sample", "write_sample"}, "niagara": set(), "umg": set()}
+        self.categories = {"material": {"read_sample", "write_sample"}, "niagara": set(), "umg": set(), "scene": set()}
         self.original_schema = self.server._tool_manager.get_tool("read_sample").parameters
 
     def group(self):
@@ -111,11 +113,20 @@ class GroupedToolsTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.server._tool_manager.get_tool("niagara_search"))
         self.assertEqual(self.calls, [])
 
+    async def test_scene_growth_keeps_three_public_entry_points(self):
+        self.categories["material"] = set()
+        self.categories["scene"] = {"read_sample", "write_sample", "other_sample"}
+        self.group()
+        self.assertEqual(set(self.server._tool_manager._tools), {"scene_search", "scene_call_read", "scene_call_write"})
+        result = await self.invoke("scene_search", {"tool": "other_sample"})
+        self.assertEqual(result["call_tool"], "scene_call_write")
+        self.assertEqual(self.calls, [])
+
 
 class GroupedServerTests(unittest.IsolatedAsyncioTestCase):
     def load_server(self, mode=None, read_only=False, disabled=()):
         environment = {f"MCP_{category.upper()}_ENABLED": "1" for category in (
-            "material", "niagara", "umg", "editor", "asset", "blueprint", "node", "project", "navigation", "cascade")}
+            "material", "niagara", "umg", "editor", "asset", "blueprint", "node", "project", "navigation", "cascade", "scene")}
         environment.update({f"MCP_{category.upper()}_ENABLED": "0" for category in disabled})
         environment["UNREAL_MCP_READ_ONLY"] = "1" if read_only else "0"
         path = Path(__file__).resolve().parents[1] / "unreal_mcp_server.py"
@@ -135,12 +146,12 @@ class GroupedServerTests(unittest.IsolatedAsyncioTestCase):
         grouped = self.load_server()
         direct_tools = await direct.mcp.list_tools()
         grouped_tools = await grouped.mcp.list_tools()
-        self.assertEqual(len(direct_tools), 119)
-        self.assertEqual(len(grouped_tools), 67)
+        self.assertEqual(len(direct_tools), 138)
+        self.assertEqual(len(grouped_tools), 70)
         self.assertEqual(set().union(*direct._CATEGORY_TOOLS.values()), {tool.name for tool in direct_tools})
         size = lambda tools: len(json.dumps([tool.model_dump(exclude_none=True) for tool in tools]))
         self.assertLess(size(grouped_tools), size(direct_tools) * 0.5)
-        for category in ("material", "niagara", "umg"):
+        for category in ("material", "niagara", "umg", "scene"):
             search = grouped.mcp._tool_manager.get_tool(f"{category}_search")
             for name in direct._CATEGORY_TOOLS[category]:
                 with self.subTest(tool=name):
@@ -153,28 +164,104 @@ class GroupedServerTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(contract["effect"], expected_effect)
 
     async def test_readonly_and_disabled_categories(self):
-        self.assertEqual(len(await self.load_server("direct", True).mcp.list_tools()), 33)
+        self.assertEqual(len(await self.load_server("direct", True).mcp.list_tools()), 41)
         readonly = self.load_server(read_only=True)
-        self.assertEqual(len(await readonly.mcp.list_tools()), 28)
-        for category in ("material", "niagara", "umg"):
+        self.assertEqual(len(await readonly.mcp.list_tools()), 30)
+        for category in ("material", "niagara", "umg", "scene"):
             self.assertIsNone(readonly.mcp._tool_manager.get_tool(f"{category}_call_write"))
             write_name = next(iter(readonly._CATEGORY_TOOLS[category] - readonly._READ_ONLY_TOOLS))
             with self.assertRaises(ToolError):
                 await readonly.mcp._tool_manager.get_tool(f"{category}_search").run({"tool": write_name})
         disabled = self.load_server(disabled=("material", "niagara", "umg"))
-        self.assertEqual(len(await disabled.mcp.list_tools()), 58)
+        self.assertEqual(len(await disabled.mcp.list_tools()), 61)
         for category in ("material", "niagara", "umg"):
             for suffix in ("search", "call_read", "call_write"):
                 self.assertIsNone(disabled.mcp._tool_manager.get_tool(f"{category}_{suffix}"))
         with self.assertRaises(ValueError):
             self.load_server("typo")
 
+    async def test_scene_discovery_filters_and_dispatch(self):
+        server = self.load_server()
+        connection = Mock()
+        module = ModuleType("unreal_mcp_server")
+        module.get_unreal_connection = Mock(return_value=connection)
+        connection.send_command.return_value = {"status": "success", "result": {"success": True, "saved": False, "state": "pending"}}
+        async def invoke(endpoint, arguments):
+            return await server.mcp._tool_manager.get_tool(endpoint).run(arguments)
+        with patch.dict(sys.modules, unreal_mcp_server=module):
+            contract = await invoke("scene_search", {"tool": "patch_scene_target"})
+            self.assertEqual(contract["call_tool"], "scene_call_write")
+            self.assertEqual(contract["effect"], "write")
+            browse = await invoke("scene_search", {"limit": 5})
+            self.assertEqual(browse["total"], 19)
+            self.assertTrue(browse["has_more"])
+            connection.send_command.assert_not_called()
+            await invoke("scene_call_read", {"tool": "get_editor_context", "arguments": {}})
+            connection.send_command.assert_called_once_with("get_editor_context", {})
+            connection.reset_mock()
+            arguments = {"project_path": "project", "level_path": "map", "actor_path": "actor",
+                         "changes": [{"path": "Intensity", "value": 1200}]}
+            connection.send_command.return_value = {"status": "error", "error": "readback failed", "result": {"modified": True, "saved": False}}
+            result = await invoke("scene_call_write", {"tool": "patch_scene_target", "arguments": arguments})
+            self.assertFalse(result["success"])
+            self.assertTrue(result["modified"])
+            self.assertFalse(result["saved"])
+            connection.send_command.assert_called_once_with("patch_scene_target", {**arguments, "component_name": ""})
+            connection.reset_mock()
+            for endpoint, name, payload in (
+                ("scene_call_read", "patch_scene_target", arguments),
+                ("scene_call_write", "get_editor_context", {}),
+                ("material_call_write", "patch_scene_target", arguments),
+                ("scene_call_read", "get_editor_context", {"unexpected": True}),
+            ):
+                with self.assertRaises(ToolError):
+                    await invoke(endpoint, {"tool": name, "arguments": payload})
+            connection.send_command.assert_not_called()
+        for readonly in (False, True):
+            disabled = self.load_server(read_only=readonly, disabled=("scene",))
+            for suffix in ("search", "call_read", "call_write"):
+                self.assertIsNone(disabled.mcp._tool_manager.get_tool(f"scene_{suffix}"))
+
+    async def test_scene_acceptance_script_uses_discovered_mode(self):
+        path = Path(__file__).resolve().parents[1] / "scripts" / "scene" / "verify_scene_loop.py"
+        spec = importlib.util.spec_from_file_location("_scene_acceptance_test", path)
+        script = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(script)
+
+        @asynccontextmanager
+        async def fake_stdio(parameters):
+            yield None, None
+
+        for mode in ("grouped", "direct"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                server = self.load_server(mode)
+                connection = Mock()
+                connection.send_command.return_value = {"status": "success", "result": {
+                    "success": True, "project_path": "E:/Test/Test.uproject"}}
+                module = ModuleType("unreal_mcp_server")
+                module.get_unreal_connection = Mock(return_value=connection)
+                session = AsyncMock()
+                session.__aenter__.return_value = session
+                session.list_tools.return_value = SimpleNamespace(tools=await server.mcp.list_tools())
+                async def invoke_tool(name, payload):
+                    result = await server.mcp._tool_manager.get_tool(name).run(payload)
+                    return SimpleNamespace(isError=False, content=[SimpleNamespace(text=json.dumps(result))])
+                session.call_tool.side_effect = invoke_tool
+                arguments = SimpleNamespace(receipt=str(Path(directory) / "receipt.json"), project="E:/Test/Test.uproject",
+                    level="/Game/__Dev/SceneTools/Test", action="context", port=13091)
+                with patch.dict(sys.modules, unreal_mcp_server=module), patch.object(script, "stdio_client", fake_stdio), \
+                        patch.object(script, "ClientSession", return_value=session), patch("builtins.print"):
+                    await script.run(arguments)
+                expected = ["scene_search", "scene_call_read"] if mode == "grouped" else ["get_editor_context"]
+                self.assertEqual([entry.args[0] for entry in session.call_tool.await_args_list], expected)
+                connection.send_command.assert_called_once_with("get_editor_context", {})
+
     async def test_real_wrappers_forward_without_schema_or_result_changes(self):
         server = self.load_server()
         connection = Mock()
         module = ModuleType("unreal_mcp_server")
         module.get_unreal_connection = Mock(return_value=connection)
-        connection.send_command.return_value = {"status": "success", "result": {"success": True, "saved": True}}
+        connection.send_command.return_value = {"status": "success", "result": {"success": True, "saved": True, "parameter_contract": 2}}
         with patch.dict(sys.modules, unreal_mcp_server=module):
             for category, name, arguments, expected_command in (
                 ("material", "set_material_instance_parameters", {
@@ -191,7 +278,7 @@ class GroupedServerTests(unittest.IsolatedAsyncioTestCase):
                         "tool": name, "arguments": arguments})
                     self.assertIsInstance(result, dict)
                     self.assertEqual(connection.send_command.call_args.args[0], expected_command)
-        self.assertEqual(connection.send_command.call_count, 4)
+        self.assertEqual(connection.send_command.call_count, 5)
 
     async def test_stdio_discovery_dispatch_and_errors(self):
         environment = {key: value for key, value in os.environ.items()
@@ -202,7 +289,7 @@ class GroupedServerTests(unittest.IsolatedAsyncioTestCase):
             "import unreal_mcp_server as server\n"
             "connection = Mock()\n"
             "connection.send_command.side_effect = lambda command, params: "
-            "{'status': 'success', 'result': {'command': command, 'params': params}}\n"
+            "{'status': 'success', 'result': ({'parameter_contract': 2} if command == 'get_material_instance_parameters' else {'command': command, 'params': params})}\n"
             "server.get_unreal_connection = lambda: connection\n"
             "server.mcp.run(transport='stdio')\n"
         )
@@ -212,7 +299,11 @@ class GroupedServerTests(unittest.IsolatedAsyncioTestCase):
         async with stdio_client(parameters) as (reader, writer):
             async with ClientSession(reader, writer) as session:
                 await session.initialize()
-                self.assertEqual(len((await session.list_tools()).tools), 67)
+                self.assertEqual(len((await session.list_tools()).tools), 70)
+                scene_contract = await session.call_tool("scene_search", {"tool": "get_editor_context"})
+                self.assertEqual(json.loads(scene_contract.content[0].text)["call_tool"], "scene_call_read")
+                scene_result = await session.call_tool("scene_call_read", {"tool": "get_editor_context", "arguments": {}})
+                self.assertEqual(json.loads(scene_result.content[0].text), {"command": "get_editor_context", "params": {}})
                 migration = await session.call_tool("plan_asset_migration", {
                     "roots": ["/Game/NS_Test"],
                     "path_rules": [{"source_root": "/Game", "target_root": "/Game/__Dev/Test"}]})
@@ -231,8 +322,10 @@ class GroupedServerTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(result.isError)
                 self.assertEqual(json.loads(result.content[0].text), {
                     "command": "set_material_instance_parameters",
-                    "params": {"asset_path": "/Game/Test", "parent_material_path": "/Game/Parent"}})
+                    "params": {"asset_path": "/Game/Test", "parent_material_path": "/Game/Parent", "save": False}})
                 for endpoint, arguments in (
+                    ("get_editor_context", {}),
+                    ("scene_call_read", {"tool": "capture_scene_viewport", "arguments": {}}),
                     ("material_call_read", {"tool": "set_material_instance_parameters", "arguments": {}}),
                     ("material_call_write", {"tool": "set_niagara_parameter", "arguments": {}}),
                     ("material_call_write", {"tool": "set_material_instance_parameters", "arguments": {"unexpected": True}}),

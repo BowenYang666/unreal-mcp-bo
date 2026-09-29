@@ -152,7 +152,7 @@ Content-only projects are supported; UnrealBuildTool may generate temporary targ
 
 Use the Python server from the UnrealMCP repository; do not copy the Python directory into the target UE project. Resolve an absolute `uv` path with `Get-Command uv`.
 
-The current default is `MCP_TOOL_MODE=grouped`: Material, Niagara and UMG each
+The current default is `MCP_TOOL_MODE=grouped`: Material, Niagara, UMG and Scene each
 expose a category search/read/write interface. Search by internal operation name
 to obtain its `input_schema` and `call_tool`, then execute with `tool` and
 `arguments`. Other categories retain direct tools. `MCP_TOOL_MODE=direct` is the

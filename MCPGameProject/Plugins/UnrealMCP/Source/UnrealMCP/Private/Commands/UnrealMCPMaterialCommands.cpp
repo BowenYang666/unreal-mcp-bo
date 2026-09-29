@@ -25,6 +25,9 @@
 #include "Editor.h"
 #include "ScopedTransaction.h"
 #include "UObject/Package.h"
+#include "ShaderCompiler.h"
+
+static void AddMaterialInstanceContract(UMaterialInstanceConstant* Instance, TSharedPtr<FJsonObject> Result);
 
 FUnrealMCPMaterialCommands::FUnrealMCPMaterialCommands()
 {
@@ -540,15 +543,16 @@ TSharedPtr<FJsonObject> FUnrealMCPMaterialCommands::HandleGetMaterialInstancePar
         TArray<FAssetData> AssetDataList;
         AssetRegistry.GetAssets(Filter, AssetDataList);
 
+        TArray<FAssetData> Matches;
         for (const FAssetData& AssetData : AssetDataList)
         {
             if (AssetData.AssetName.ToString().Equals(Name, ESearchCase::IgnoreCase))
             {
-                UObject* LoadedObj = AssetData.GetAsset();
-                MatInst = Cast<UMaterialInstanceConstant>(LoadedObj);
-                break;
+                Matches.Add(AssetData);
             }
         }
+        if (Matches.Num() > 1) return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Ambiguous instance name; specify full path"));
+        if (Matches.Num() == 1) MatInst = Cast<UMaterialInstanceConstant>(Matches[0].GetAsset());
 
         if (!MatInst)
         {
@@ -559,6 +563,8 @@ TSharedPtr<FJsonObject> FUnrealMCPMaterialCommands::HandleGetMaterialInstancePar
     TSharedPtr<FJsonObject> ResultJson = MakeShareable(new FJsonObject);
     ResultJson->SetStringField(TEXT("name"), MatInst->GetName());
     ResultJson->SetStringField(TEXT("path"), MatInst->GetPathName());
+    ResultJson->SetBoolField(TEXT("supports_preview_updates"), true);
+    ResultJson->SetBoolField(TEXT("package_dirty"), MatInst->GetPackage()->IsDirty());
 
     // Parent material
     if (MatInst->Parent)
@@ -631,6 +637,7 @@ TSharedPtr<FJsonObject> FUnrealMCPMaterialCommands::HandleGetMaterialInstancePar
         ResultJson->SetArrayField(TEXT("font_parameters"), FontArray);
     }
 
+    AddMaterialInstanceContract(MatInst, ResultJson);
     return ResultJson;
 }
 
@@ -1643,6 +1650,107 @@ static void BuildMaterialInstanceResponse(UMaterialInstanceConstant* Inst, TShar
     ResultJson->SetArrayField(TEXT("texture_parameters"), TextureArray);
 }
 
+static void AddMaterialInstanceContract(UMaterialInstanceConstant* Instance, TSharedPtr<FJsonObject> Result)
+{
+    TArray<TSharedPtr<FJsonValue>> Available;
+    for (int32 Type = 0; Type < 3; ++Type)
+    {
+        TArray<FMaterialParameterInfo> Infos; TArray<FGuid> Ids;
+        if (Type == 0) Instance->GetAllScalarParameterInfo(Infos, Ids);
+        else if (Type == 1) Instance->GetAllVectorParameterInfo(Infos, Ids);
+        else Instance->GetAllTextureParameterInfo(Infos, Ids);
+        for (const auto& Info : Infos)
+        {
+            auto Entry = MakeShared<FJsonObject>();
+            Entry->SetStringField(TEXT("name"), Info.Name.ToString());
+            Entry->SetStringField(TEXT("type"), Type == 0 ? TEXT("scalar") : Type == 1 ? TEXT("vector") : TEXT("texture"));
+            Entry->SetNumberField(TEXT("association"), static_cast<int32>(Info.Association)); Entry->SetNumberField(TEXT("index"), Info.Index);
+            int32 Matches = 0; for (const auto& Other : Infos) if (Other.Name == Info.Name) ++Matches;
+            Entry->SetBoolField(TEXT("writable_by_name"), Matches == 1 && Info.Association == EMaterialParameterAssociation::GlobalParameter);
+            bool Local = false;
+            if (Type == 0)
+            {
+                float Value = 0; Instance->GetScalarParameterValue(Info, Value); Entry->SetNumberField(TEXT("effective_value"), Value);
+                Local = Instance->ScalarParameterValues.ContainsByPredicate([&](const FScalarParameterValue& Parameter) { return Parameter.ParameterInfo == Info; });
+            }
+            else if (Type == 1)
+            {
+                FLinearColor Value; Instance->GetVectorParameterValue(Info, Value);
+                auto Color = MakeShared<FJsonObject>(); Color->SetNumberField(TEXT("r"), Value.R); Color->SetNumberField(TEXT("g"), Value.G);
+                Color->SetNumberField(TEXT("b"), Value.B); Color->SetNumberField(TEXT("a"), Value.A); Entry->SetObjectField(TEXT("effective_value"), Color);
+                Local = Instance->VectorParameterValues.ContainsByPredicate([&](const FVectorParameterValue& Parameter) { return Parameter.ParameterInfo == Info; });
+            }
+            else
+            {
+                UTexture* Value = nullptr; Instance->GetTextureParameterValue(Info, Value);
+                if (Value) Entry->SetStringField(TEXT("effective_value"), Value->GetPathName()); else Entry->SetField(TEXT("effective_value"), MakeShared<FJsonValueNull>());
+                Local = Instance->TextureParameterValues.ContainsByPredicate([&](const FTextureParameterValue& Parameter) { return Parameter.ParameterInfo == Info; });
+            }
+            Entry->SetBoolField(TEXT("local_override"), Local); Entry->SetBoolField(TEXT("inherited"), !Local);
+            Available.Add(MakeShared<FJsonValueObject>(Entry));
+        }
+    }
+    Result->SetArrayField(TEXT("available_parameters"), Available);
+    Result->SetNumberField(TEXT("parameter_contract"), 2);
+    Result->SetBoolField(TEXT("supports_preview_updates"), true);
+    Result->SetBoolField(TEXT("package_dirty"), Instance->GetPackage()->IsDirty());
+    const bool Pending = GShaderCompilingManager && GShaderCompilingManager->IsCompiling();
+    Result->SetBoolField(TEXT("shader_compilation_pending_global"), Pending);
+    auto Resource = GUsingNullRHI ? nullptr : Instance->GetMaterialResource(GShaderPlatformForFeatureLevel[GMaxRHIFeatureLevel]);
+    auto Compilation = MakeShared<FJsonObject>();
+    Compilation->SetBoolField(TEXT("available"), Resource && Resource->GetGameThreadShaderMap());
+    Compilation->SetBoolField(TEXT("ok"), Resource && Resource->GetGameThreadShaderMap() && Resource->GetCompileErrors().IsEmpty() && !Pending);
+    Compilation->SetBoolField(TEXT("recompiled"), false);
+    TArray<TSharedPtr<FJsonValue>> Errors;
+    if (Resource) for (const auto& Error : Resource->GetCompileErrors()) Errors.Add(MakeShared<FJsonValueString>(Error));
+    Compilation->SetArrayField(TEXT("errors"), Errors); Result->SetObjectField(TEXT("compile_result"), Compilation);
+}
+
+static bool ValidateMaterialParameterNames(UMaterialInterface* Parent, UMaterialInstanceConstant* Instance, const TSharedPtr<FJsonObject>& Params, FString& Error)
+{
+    int32 Count = 0;
+    for (int32 Type = 0; Type < 3; ++Type)
+    {
+        const FString Field = Type == 0 ? TEXT("scalar_params") : Type == 1 ? TEXT("vector_params") : TEXT("texture_params");
+        TArray<FMaterialParameterInfo> Infos; TArray<FGuid> Ids;
+        if (Parent)
+        {
+            if (Type == 0) Parent->GetAllScalarParameterInfo(Infos, Ids);
+            else if (Type == 1) Parent->GetAllVectorParameterInfo(Infos, Ids);
+            else Parent->GetAllTextureParameterInfo(Infos, Ids);
+        }
+        auto Known = [&](const FString& Name)
+        {
+            int32 Matches = 0; bool Global = false;
+            for (const auto& Info : Infos) if (Info.Name.ToString() == Name) { ++Matches; Global = Info.Association == EMaterialParameterAssociation::GlobalParameter; }
+            return Matches == 1 && Global;
+        };
+        TSet<FName> Seen;
+        const TSharedPtr<FJsonObject>* Values;
+        if (Params->TryGetObjectField(Field, Values)) for (const auto& Pair : (*Values)->Values)
+        {
+            if (++Count > 64 || !Known(Pair.Key) || Seen.Contains(FName(*Pair.Key))) { Error = TEXT("Unknown, wrong-type, ambiguous or duplicate parameter: ") + Pair.Key; return false; }
+            Seen.Add(FName(*Pair.Key));
+        }
+        const FString ClearField = TEXT("clear_") + Field;
+        if (!Params->HasField(ClearField)) continue;
+        const TArray<TSharedPtr<FJsonValue>>* Names;
+        if (!Params->TryGetArrayField(ClearField, Names)) { Error = ClearField + TEXT(" must be a name array"); return false; }
+        for (const auto& Value : *Names)
+        {
+            FString Name;
+            if (!Value->TryGetString(Name) || Name.IsEmpty() || ++Count > 64 || Seen.Contains(FName(*Name))) { Error = TEXT("Invalid, duplicate or simultaneously set/cleared parameter"); return false; }
+            const FMaterialParameterInfo Info{FName(*Name)};
+            const bool Local = Type == 0 ? Instance->ScalarParameterValues.ContainsByPredicate([&](const FScalarParameterValue& Parameter) { return Parameter.ParameterInfo == Info; })
+                : Type == 1 ? Instance->VectorParameterValues.ContainsByPredicate([&](const FVectorParameterValue& Parameter) { return Parameter.ParameterInfo == Info; })
+                : Instance->TextureParameterValues.ContainsByPredicate([&](const FTextureParameterValue& Parameter) { return Parameter.ParameterInfo == Info; });
+            if (!Local && !Known(Name)) { Error = TEXT("Unknown override to clear: ") + Name; return false; }
+            Seen.Add(FName(*Name));
+        }
+    }
+    return true;
+}
+
 TSharedPtr<FJsonObject> FUnrealMCPMaterialCommands::HandleCreateMaterialInstance(const TSharedPtr<FJsonObject>& Params)
 {
     if (!Params->HasField(TEXT("asset_path")) || !Params->HasField(TEXT("parent_material_path")))
@@ -1815,6 +1923,18 @@ static bool UpdateMaterialInstance(UMaterialInstanceConstant* Instance, UMateria
         if (Instance->Parent != Parent) return false;
     }
     ApplyMaterialInstanceParams(Instance, Params);
+    for (const TCHAR* Field : {TEXT("clear_scalar_params"), TEXT("clear_vector_params"), TEXT("clear_texture_params")})
+    {
+        const TArray<TSharedPtr<FJsonValue>>* Names;
+        if (!Params->TryGetArrayField(Field, Names)) continue;
+        for (const auto& Name : *Names)
+        {
+            const FMaterialParameterInfo Info{FName(*Name->AsString())};
+            if (FCString::Strcmp(Field, TEXT("clear_scalar_params")) == 0) Instance->ScalarParameterValues.RemoveAll([&](const FScalarParameterValue& Parameter) { return Parameter.ParameterInfo == Info; });
+            else if (FCString::Strcmp(Field, TEXT("clear_vector_params")) == 0) Instance->VectorParameterValues.RemoveAll([&](const FVectorParameterValue& Parameter) { return Parameter.ParameterInfo == Info; });
+            else Instance->TextureParameterValues.RemoveAll([&](const FTextureParameterValue& Parameter) { return Parameter.ParameterInfo == Info; });
+        }
+    }
     Instance->MarkPackageDirty();
     Instance->PostEditChange();
     return true;
@@ -1850,6 +1970,7 @@ TSharedPtr<FJsonObject> FUnrealMCPMaterialCommands::HandleSetMaterialInstancePar
     auto Fail = [&ResultJson, Inst](const FString& Message)
     {
         BuildMaterialInstanceResponse(Inst, ResultJson);
+        AddMaterialInstanceContract(Inst, ResultJson);
         ResultJson->SetStringField(TEXT("status"), TEXT("error"));
         ResultJson->SetStringField(TEXT("error"), Message);
         ResultJson->SetStringField(TEXT("message"), Message);
@@ -1872,20 +1993,28 @@ TSharedPtr<FJsonObject> FUnrealMCPMaterialCommands::HandleSetMaterialInstancePar
     }
     FString Error;
     if (!ValidateMaterialInstanceOverrides(Params, Error)) return Fail(Error);
+    if (!ValidateMaterialParameterNames(NewParent, Inst, Params, Error)) return Fail(Error);
+    bool Save = false;
+    if (Params->HasField(TEXT("save")) && !Params->TryGetBoolField(TEXT("save"), Save)) return Fail(TEXT("save must be boolean"));
+    if (Save && Inst->GetPackage()->IsDirty()) return Fail(TEXT("Target package already dirty; preview edits and explicitly save the reviewed asset separately"));
 
     const FScopedTransaction Transaction(NSLOCTEXT("UnrealMCP", "UpdateMaterialInstance", "Update Material Instance"));
+    auto Before = MakeShared<FJsonObject>(); BuildMaterialInstanceResponse(Inst, Before);
+    ResultJson->SetObjectField(TEXT("before"), Before);
     Inst->Modify();
     ResultJson->SetBoolField(TEXT("modified"), true);
     const bool Updated = UpdateMaterialInstance(Inst, NewParent, Params);
     ResultJson->SetBoolField(TEXT("parent_changed"), PreviousParent != (Inst->Parent ? Inst->Parent->GetPathName() : TEXT("")));
     if (!Updated) return Fail(TEXT("Unreal rejected the parent assignment; inspect the instance before retrying"));
-    if (!UEditorAssetLibrary::SaveLoadedAsset(Inst, false) || Inst->GetOutermost()->IsDirty())
+    if (Save && (!UEditorAssetLibrary::SaveLoadedAsset(Inst, false) || Inst->GetOutermost()->IsDirty()))
         return Fail(TEXT("Instance updated in memory but saving failed; only the target instance package was requested for saving"));
 
     ResultJson->SetBoolField(TEXT("success"), true);
-    ResultJson->SetBoolField(TEXT("saved"), true);
+    ResultJson->SetBoolField(TEXT("saved"), Save);
+    ResultJson->SetBoolField(TEXT("package_dirty"), Inst->GetPackage()->IsDirty());
     ResultJson->SetStringField(TEXT("status"), TEXT("success"));
     BuildMaterialInstanceResponse(Inst, ResultJson);
+    AddMaterialInstanceContract(Inst, ResultJson);
     return ResultJson;
 }
 
@@ -1895,6 +2024,53 @@ TSharedPtr<FJsonObject> FUnrealMCPMaterialCommands::HandleSetMaterialInstancePar
 #if WITH_DEV_AUTOMATION_TESTS
 #include "Misc/AutomationTest.h"
 #include "Engine/Texture2D.h"
+#include "Misc/PackageName.h"
+#include "HAL/FileManager.h"
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FUnrealMCPMaterialInstancePreviewTest,
+    "UnrealMCP.Material.InstancePreview", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUnrealMCPMaterialInstancePreviewTest::RunTest(const FString& Parameters)
+{
+    const FString PackageName = TEXT("/Game/__Dev/SceneTools/MI_Preview_") + FGuid::NewGuid().ToString(EGuidFormats::Digits);
+    auto Instance = NewObject<UMaterialInstanceConstant>(CreatePackage(*PackageName), TEXT("MI_Preview"), RF_Public | RF_Standalone | RF_Transactional);
+    auto Parent = NewObject<UMaterial>();
+    auto Parameter = NewObject<UMaterialExpressionScalarParameter>(Parent);
+    Parameter->ParameterName = TEXT("PreviewScalar"); Parameter->DefaultValue = 3;
+    Parent->GetExpressionCollection().AddExpression(Parameter); Parent->PostEditChange();
+    Instance->SetParentEditorOnly(Parent);
+    FAssetRegistryModule::AssetCreated(Instance);
+    Instance->GetPackage()->SetDirtyFlag(false);
+    auto Request = MakeShared<FJsonObject>(); Request->SetStringField(TEXT("asset_path"), Instance->GetPathName());
+    FUnrealMCPMaterialCommands Commands;
+    auto Scalars = MakeShared<FJsonObject>(); Scalars->SetNumberField(TEXT("PreviewScalar"), 5); Scalars->SetNumberField(TEXT("Missing"), 99);
+    Request->SetObjectField(TEXT("scalar_params"), Scalars);
+    TestFalse(TEXT("Invalid parameter batch rejected"), Commands.HandleCommand(TEXT("set_material_instance_parameters"), Request)->GetBoolField(TEXT("success")));
+    TestTrue(TEXT("Invalid batch adds no override"), Instance->ScalarParameterValues.IsEmpty());
+    Scalars->RemoveField(TEXT("Missing"));
+    auto Result = Commands.HandleCommand(TEXT("set_material_instance_parameters"), Request);
+    TestTrue(TEXT("Preview succeeds"), Result->GetBoolField(TEXT("success")));
+    TestFalse(TEXT("Default does not save"), Result->GetBoolField(TEXT("saved")));
+    const FString Filename = FPackageName::LongPackageNameToFilename(PackageName, FPackageName::GetAssetPackageExtension());
+    TestFalse(TEXT("No asset file written"), IFileManager::Get().FileExists(*Filename));
+    float Effective = 0; Instance->GetScalarParameterValue(FMaterialParameterInfo(TEXT("PreviewScalar")), Effective);
+    TestEqual(TEXT("Effective local value"), Effective, 5.f);
+    Request->RemoveField(TEXT("scalar_params"));
+    Request->SetArrayField(TEXT("clear_scalar_params"), {MakeShared<FJsonValueString>(TEXT("PreviewScalar"))});
+    Result = Commands.HandleCommand(TEXT("set_material_instance_parameters"), Request);
+    TestTrue(TEXT("Single override clear succeeds"), Result->GetBoolField(TEXT("success")));
+    TestTrue(TEXT("Only local scalar cleared"), Instance->ScalarParameterValues.IsEmpty());
+    Instance->GetScalarParameterValue(FMaterialParameterInfo(TEXT("PreviewScalar")), Effective);
+    TestEqual(TEXT("Inherited default restored"), Effective, 3.f);
+    TestEqual(TEXT("Available parameter discovered"), Result->GetArrayField(TEXT("available_parameters")).Num(), 1);
+    Instance->GetPackage()->SetDirtyFlag(true);
+    Request->SetBoolField(TEXT("save"), true);
+    Result = Commands.HandleCommand(TEXT("set_material_instance_parameters"), Request);
+    TestFalse(TEXT("Dirty package save rejected"), Result->GetBoolField(TEXT("success")));
+    TestFalse(TEXT("Dirty save did not write file"), IFileManager::Get().FileExists(*Filename));
+    Instance->GetPackage()->SetDirtyFlag(false);
+    return !HasAnyErrors();
+}
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FUnrealMCPMaterialInstanceParentTest,
     "UnrealMCP.Material.InstanceParent", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

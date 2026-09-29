@@ -28,7 +28,7 @@ omitted. The `name`/`path` readers require at least one of those selectors.
 | `get_material_instance_parameters` | `name=""`, `path=""` |
 | `create_material` | `asset_path`, `blend_mode="Opaque"`, `shading_model="DefaultLit"`, `two_sided=False`, `material_domain="Surface"` |
 | `create_material_instance` | `asset_path`, `parent_material_path`, `scalar_params=None`, `vector_params=None`, `texture_params=None` |
-| `set_material_instance_parameters` | `asset_path`, `scalar_params=None`, `vector_params=None`, `texture_params=None`, `parent_material_path=""` |
+| `set_material_instance_parameters` | `asset_path`, `scalar_params=None`, `vector_params=None`, `texture_params=None`, `parent_material_path=""`, `save=False`, `clear_scalar_params=None`, `clear_vector_params=None`, `clear_texture_params=None` |
 | `set_material_physical_material` | `asset_path`, `physical_material_path`, `expected_value=None`, `save=True` |
 | `add_material_expression` | `asset_path`, `expression_type`, `pos_x=0`, `pos_y=0` |
 | `set_material_expression_property` | `asset_path`, `node_index`, `property_name`, `value=None` (supply a value appropriate for the property) |
@@ -49,7 +49,7 @@ and enum selections are strings. MI override objects are described below.
 |---|---|
 | Read/list tools | No explicit edit, compile or save |
 | `create_material`, `create_material_instance` | Attempt to save the new package; current handlers do not check the save return value, so creation alone is not proof of persistence |
-| `set_material_instance_parameters` | Saves only the target instance package and checks saving; inspect `success`, `saved`, `modified` and actual Parent |
+| `set_material_instance_parameters` | Defaults to preview without saving; explicit save=True refuses pre-existing dirty edits and saves only the target. Inspect actual Parent/overrides and compilation separately |
 | `set_material_physical_material` | By default saves only the target; refuses a pre-existing dirty package. `save=False` leaves edits in memory |
 | Graph/property/layout tools | Modify in memory and mark the material dirty; call `save_asset(asset_path=...)` after finishing |
 
@@ -195,6 +195,15 @@ All supplied overrides are validated before mutation, including texture asset
 existence/type, numeric values and vector channels. Invalid texture paths are
 errors for this update tool, not silently skipped.
 
+Native parameter_contract=2 is required. Python checks that read-only capability
+before sending any update, so an old plugin cannot ignore save=False and silently
+save. Unknown, wrong-type or ambiguous names fail before mutation against the
+proposed parent. Only uniquely named global parameters are writable by this API;
+layer/blend associations remain readable but are not guessed.
+Use clear_scalar_params=["Roughness"], clear_vector_params=["Tint"] or
+clear_texture_params=["MainTex"] to remove individual local overrides. A name cannot
+be simultaneously assigned and cleared. Omitted fields leave other overrides intact.
+
 ```python
 set_material_instance_parameters(
   asset_path="/Game/ThirdParty/Trail/MI_Trail",
@@ -209,15 +218,22 @@ Static switch/layer parameter editing is not added by this operation.
 
 Returns the existing instance/override fields plus `success`, `saved`,
 `previous_parent`, `parent_changed`, and `modified`. `parent` is the actual
-current parent, not simply the requested path. Only the target instance's package
-is saved (including any pre-existing unsaved edits to that instance), never Save
-All. Parent and texture packages are not saved. Validation errors do not edit the
+current parent, not simply the requested path. Default save=False leaves edits in
+memory. Explicit save=True refuses a pre-existing dirty target package; save reviewed
+preview edits separately with save_asset. No Save All. Parent and texture packages
+are not saved. Validation errors do not edit the
 instance. If saving fails after the update, `success=false`, `saved=false`,
 `modified=true` and readback fields describe the remaining in-memory state;
 there is no automatic rollback. Transport errors/timeouts are indeterminate,
 so inspect before retrying. `saved=true` does not assert shader compilation is
 complete. The operation supports an editor undo transaction; undo itself is not
 automatically saved.
+
+The v2 reader also returns available_parameters with effective inherited values,
+type, association/index, local_override/inherited and writable_by_name. Mutation
+receipts add before override arrays. compile_result reports cached shader-map
+availability/errors without compiling; shader_compilation_pending_global prevents
+claiming current completion while engine shader jobs remain.
 
 Tests: `uv run python -m unittest discover -s tests -p test_material_instance_parameters.py -v`
 from `Python`, and UE automation `UnrealMCP.Material.InstanceParent` (transient

@@ -4,16 +4,27 @@ Fork of [chongdashu/unreal-mcp](https://github.com/chongdashu/unreal-mcp) for AI
 
 ## Tool Surface
 
-The Python MCP server provides **119 internal operations**. Default grouped mode
-exposes **67 MCP tools** before read-only/category filtering: Material, Niagara
-and UMG each have search/read/write entry points; smaller categories stay direct.
-Set `MCP_TOOL_MODE=direct` to expose all 119 operations directly.
+The Python MCP server provides **138 internal operations**. Default grouped mode
+exposes **70 MCP tools** before read-only/category filtering: Material, Niagara,
+UMG and Scene each have search/read/write entry points; smaller categories stay direct.
+Set `MCP_TOOL_MODE=direct` to expose all 138 operations directly.
+
+[Scene tools](Docs/Tools/scene_tools.md) add guarded level-instance editing,
+fixed-view capture tasks, mesh/texture imports, placement manifests and controlled undo.
+In grouped mode, discover these operations through `scene_search`, then use the
+returned `scene_call_read` or `scene_call_write` contract. Original scene operation
+names are not separate public tools. New operations added to the Scene category
+reuse these entry points rather than expanding the public tool list.
+They require the matching native plugin. New scene edits and material-instance v2
+updates default to unsaved preview. `UNREAL_MCP_PORT` selects a separate editor port;
+always verify project identity before editing.
 See the [grouped calling guide](Docs/Tools/README.md#grouped-mode-default).
 
 | Category | Internal Operations | Reference |
 |---|---:|---|
 | Asset operations | 10 | [Editor tools](Docs/Tools/editor_tools.md#asset--level-management), [Bounded asset creation/editing](Docs/Tools/project_tools.md#set_asset_properties) |
 | Actor + Editor | 18 | [Actor tools](Docs/Tools/actor_tools.md), [Editor tools](Docs/Tools/editor_tools.md) |
+| Scene | 19 | [Scene tools](Docs/Tools/scene_tools.md) |
 | Blueprint assets | 9 | [Blueprint tools](Docs/Tools/blueprint_tools.md), [reading guide](Docs/Tools/reading_blueprints.md) |
 | Blueprint nodes | 8 | [Node tools](Docs/Tools/node_tools.md) |
 | Materials | 16 | [Material tools](Docs/Tools/material_tools.md) |

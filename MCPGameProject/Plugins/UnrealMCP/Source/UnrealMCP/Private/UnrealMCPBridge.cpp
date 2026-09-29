@@ -1,5 +1,7 @@
 #include "UnrealMCPBridge.h"
 #include "Commands/UnrealMCPAssetMigration.h"
+#include "Commands/UnrealMCPSceneCommands.h"
+#include "Commands/UnrealMCPSceneAssets.h"
 #include "Commands/UnrealMCPPhysicalMaterialCommands.h"
 #include "MCPServerRunnable.h"
 #include "Sockets.h"
@@ -99,6 +101,16 @@ void UUnrealMCPBridge::Initialize(FSubsystemCollectionBase& Collection)
     ConnectionSocket = nullptr;
     ServerThread = nullptr;
     Port = MCP_SERVER_PORT;
+    FString RequestedPort = FPlatformMisc::GetEnvironmentVariable(TEXT("UNREAL_MCP_PORT"));
+    FParse::Value(FCommandLine::Get(), TEXT("UnrealMCPPort="), RequestedPort);
+    if (!RequestedPort.IsEmpty())
+    {
+        if (!RequestedPort.IsNumeric() || !LexTryParseString(Port, *RequestedPort) || Port < 1 || Port > 65535)
+        {
+            UE_LOG(LogTemp, Error, TEXT("UnrealMCP: invalid port; refusing to start server"));
+            return;
+        }
+    }
     FIPv4Address::Parse(MCP_SERVER_HOST, ServerAddress);
 
     // Start the server automatically
@@ -229,8 +241,43 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
         try
         {
             TSharedPtr<FJsonObject> ResultJson;
+            const FString BeforeSceneTransaction = UnrealMCPScene::UndoToken();
             
-            if (CommandType == TEXT("ping"))
+            if ((UnrealMCPScene::IsBusy() || UnrealMCPSceneAssets::IsBusy()) && CommandType != TEXT("ping") && CommandType != TEXT("get_editor_context")
+                && CommandType != TEXT("get_scene_task_status") && CommandType != TEXT("get_scene_import_status")
+                && !(CommandType == TEXT("capture_scene_viewport") && UnrealMCPScene::IsBusy())
+                && CommandType != TEXT("import_scene_asset")
+                && CommandType != TEXT("inspect_scene_target") && CommandType != TEXT("list_scene_actors")
+                && CommandType != TEXT("get_scene_mesh") && CommandType != TEXT("get_scene_viewport"))
+            {
+                ResultJson = MakeShared<FJsonObject>(); ResultJson->SetBoolField(TEXT("success"), false);
+                ResultJson->SetStringField(TEXT("error"), TEXT("Scene task active; query its status before other commands"));
+            }
+            else if (CommandType == TEXT("get_editor_context")) ResultJson = UnrealMCPScene::Context(Params);
+            else if (CommandType == TEXT("list_scene_actors")) ResultJson = UnrealMCPScene::List(Params);
+            else if (CommandType == TEXT("inspect_scene_target")) ResultJson = UnrealMCPScene::Inspect(Params);
+            else if (CommandType == TEXT("patch_scene_target")) ResultJson = UnrealMCPScene::Patch(Params);
+            else if (CommandType == TEXT("manage_scene_actor")) ResultJson = UnrealMCPScene::ManageActor(Params);
+            else if (CommandType == TEXT("set_scene_actor_folders")) ResultJson = UnrealMCPScene::SetActorFolders(Params);
+            else if (CommandType == TEXT("get_scene_mesh"))
+            {
+                auto ReadParams = MakeShared<FJsonObject>(*Params);
+                ReadParams->RemoveField(TEXT("static_mesh")); ReadParams->RemoveField(TEXT("materials"));
+                ResultJson = UnrealMCPScene::Mesh(ReadParams);
+            }
+            else if (CommandType == TEXT("set_scene_mesh")) ResultJson = UnrealMCPScene::Mesh(Params);
+            else if (CommandType == TEXT("save_scene_level")) ResultJson = UnrealMCPScene::Save(Params);
+            else if (CommandType == TEXT("get_scene_viewport")) ResultJson = UnrealMCPScene::Viewport(Params, false);
+            else if (CommandType == TEXT("set_scene_viewport")) ResultJson = UnrealMCPScene::Viewport(Params, true);
+            else if (CommandType == TEXT("capture_scene_viewport")) ResultJson = UnrealMCPScene::Capture(Params);
+            else if (CommandType == TEXT("get_scene_task_status")) ResultJson = UnrealMCPScene::Task(Params);
+            else if (CommandType == TEXT("inspect_scene_asset")) ResultJson = UnrealMCPSceneAssets::Inspect(Params);
+            else if (CommandType == TEXT("import_scene_asset")) ResultJson = UnrealMCPSceneAssets::Import(Params);
+            else if (CommandType == TEXT("get_scene_import_status")) ResultJson = UnrealMCPSceneAssets::Status(Params);
+            else if (CommandType == TEXT("undo_scene_edit")) ResultJson = UnrealMCPScene::Undo(Params);
+            else if (CommandType == TEXT("apply_scene_manifest")) ResultJson = UnrealMCPScene::Manifest(Params);
+            else if (CommandType == TEXT("recapture_scene_skylight")) ResultJson = UnrealMCPScene::RecaptureSky(Params);
+            else if (CommandType == TEXT("ping"))
             {
                 ResultJson = MakeShareable(new FJsonObject);
                 ResultJson->SetStringField(TEXT("message"), TEXT("pong"));
@@ -419,6 +466,8 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
             }
             
             // Check if the result contains an error
+            if (CommandType == TEXT("patch_scene_target") || CommandType == TEXT("manage_scene_actor") || CommandType == TEXT("set_scene_mesh") || CommandType == TEXT("apply_scene_manifest") || CommandType == TEXT("set_scene_actor_folders"))
+                UnrealMCPScene::RecordTransaction(Params, ResultJson, BeforeSceneTransaction);
             bool bSuccess = true;
             FString ErrorMessage;
             
@@ -447,7 +496,8 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                     || CommandType == TEXT("create_physical_material") || CommandType == TEXT("set_material_physical_material")
                     || CommandType == TEXT("set_component_physical_material") || CommandType == TEXT("set_component_property")
                     || CommandType == TEXT("plan_asset_migration") || CommandType == TEXT("execute_asset_migration")
-                    || CommandType == TEXT("get_asset_migration_status") || CommandType == TEXT("verify_asset_migration"))
+                    || CommandType == TEXT("get_asset_migration_status") || CommandType == TEXT("verify_asset_migration")
+                    || CommandType.Contains(TEXT("scene_")) || CommandType == TEXT("get_editor_context"))
                 {
                     ResponseJson->SetObjectField(TEXT("result"), ResultJson);
                 }
