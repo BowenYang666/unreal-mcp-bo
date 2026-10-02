@@ -227,6 +227,36 @@ def register_scene_tools(mcp: FastMCP):
             changes=changes, dry_run=dry_run, managed_only=managed_only))
 
     @mcp.tool()
+    def set_scene_actor_visibility(ctx: Context, project_path: str, level_path: str,
+                                   actor_path: str, hidden_in_editor: bool,
+                                   dry_run: bool = True, expected_hidden_in_editor: bool = None) -> dict:
+        """Preview/set one actor's temporary editor hiding, including Blueprint instances.
+
+        Example: actor_path copied from list_scene_actors, hidden_in_editor=True,
+        expected_hidden_in_editor=False, dry_run=True; review before dry_run=False.
+        Requires native get_editor_context.editor_visibility_contract=1. Read the
+        editor_visibility object via list_scene_actors/inspect_scene_target first.
+        temporary_hidden is the actor's own flag; temporary_hidden_in_hierarchy and
+        editor_hidden are separate engine states, not a guarantee of rendered visibility.
+        Explicit False restores the own flag; other hiding causes remain untouched.
+        Exact project/map/actor paths only, no label or name-prefix lookup. No WP,
+        external actor packages, sublevel targets, PIE/Simulate or component selectors.
+        Stale expected state aborts; repeating the same requested state is a no-op.
+        Uses the Outliner-style temporary actor API, not Blueprint property patching;
+        no construction-script rerun, property edits, saving or package dirtying.
+        Does not recursively set other actors or change component visibility, runtime
+        hidden-in-game, collision, tick, lighting settings or attachments. Child-actor
+        rendering can still inherit hiding through UE's normal parent rules.
+        Session-only: not a permanent gameplay disable or saved map setting. No map
+        undo transaction; restore before.temporary_hidden explicitly through this tool.
+        Dry runs report current before/after and would_modify without applying. On
+        timeout outcome is unknown: re-inspect, never blindly retry or toggle.
+        """
+        return call_scene("set_scene_actor_visibility", dict(project_path=project_path, level_path=level_path,
+            actor_path=actor_path, hidden_in_editor=hidden_in_editor, dry_run=dry_run,
+            expected_hidden_in_editor=expected_hidden_in_editor))
+
+    @mcp.tool()
     def get_scene_mesh(ctx: Context, project_path: str, level_path: str,
                        actor_path: str, component_name: str) -> dict:
         """Read a level StaticMeshComponent's mesh and every material slot/override.

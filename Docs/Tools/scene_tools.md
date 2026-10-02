@@ -1,7 +1,7 @@
 # Scene Tools
 
 Default grouped mode exposes `scene_search`, `scene_call_read` and `scene_call_write`.
-The 19 operation names used below are internal in this mode, not separate public tools.
+The 20 operation names used below are internal in this mode, not separate public tools.
 `MCP_TOOL_MODE=direct` retains their original public names for compatible scripts.
 Disable the entire category with `MCP_SCENE_ENABLED=0`. Read-only mode retains search
 and read dispatch, but no write entry point; hidden operations cannot be discovered
@@ -26,11 +26,22 @@ scene_call_write(tool="patch_scene_target", arguments={
 
 Use actual selectors from inspection, not the illustrative paths above. Search returns
 `input_schema`, `effect` and `call_tool` on exact lookup. Empty query browses summaries
-with offset/limit; cache discovered contracts rather than fetching all 19 schemas.
+with offset/limit; cache discovered contracts rather than fetching all 20 schemas.
 Use the current client's server prefix. Do not inject `ctx`, bypass filters or retry
 mutations on transport errors. Native commands, defaults and receipts are unchanged.
 
 ## Status
+
+Temporary editor visibility was built and deployed to SkillTest and NodeFall on
+2026-09-30. SkillTest passed the temporary-visibility, instance-patch and Outliner-folder
+native tests; the full Python suite passed 65 tests. NF's running plugin reported
+`editor_visibility_contract=1` and a real grouped MCP hide preview for an existing BP
+returned `would_modify=true`, `modified=false`; before/after readback was identical
+and dirty packages remained empty. No business actor was actually hidden or restored.
+Only four Scene files were deployed to NF; its local extensions and migration module
+were left untouched. This visibility update does not deploy the separate texture
+migration fix to NF. Full profiles still expose 70 tools; NF's existing filters expose
+62, with three Scene entry points in either case.
 
 The Outliner folder extension was built and deployed to SkillTest on 2026-09-29.
 The actual loaded plugin reports `folder_contract=1` through both client profiles.
@@ -229,6 +240,91 @@ tests reran successfully. No native folder behavior change was required by this 
   session was gracefully reopened on the user's original OpeningRescue map; no default
   startup configuration was changed. No business-map organization or automatic UI
   collapse was performed, and NF was not touched.
+
+## Temporary Editor Visibility
+
+`set_scene_actor_visibility` is a separate Actor-level operation for Outliner-style
+temporary hiding, including existing Blueprint instances. Require native context
+`editor_visibility_contract=1`; a discovered Python schema alone is not proof of a
+deployed native command. It remains behind the existing Scene write endpoint and is
+absent in read-only mode. Older plugins reject the new command instead of silently
+ignoring it. General reflected Blueprint property-patch restrictions are unchanged.
+
+List or inspect the exact actor first. Both return `editor_visibility` with:
+
+- `temporary_hidden`: the actor's own temporary editor flag, used by the setter and
+  its optional `expected_hidden_in_editor` conflict check.
+- `temporary_hidden_in_hierarchy`: UE's query including the ChildActor parent chain.
+- `editor_hidden`: UE's editor-hidden query, also affected by layers/level state.
+- `hidden_in_game`: read-only gameplay hiding state, never changed by this command.
+
+None of these alone guarantees rendered pixels: component visibility, viewport modes
+and normal parent rendering rules still apply. Clearing the temporary flag does not
+clear layer/level hiding or force components visible.
+
+```text
+scene_search(tool="set_scene_actor_visibility")
+scene_call_write(tool="set_scene_actor_visibility", arguments={
+  "project_path":"E:/Projects/Test/Test.uproject",
+  "level_path":"/Game/Test",
+  "actor_path":"/Game/Test.Test:PersistentLevel.BP_ExistingSky_C_0",
+  "hidden_in_editor":true,
+  "expected_hidden_in_editor":false,
+  "dry_run":true
+})
+```
+
+Use the returned `call_tool` with real inspected paths; these are only examples.
+Review the preview, then explicitly set `dry_run=false` to apply. Restoring means
+setting `hidden_in_editor` to the earlier `before.temporary_hidden`, preferably with
+the currently observed value as `expected_hidden_in_editor`. It is a setter, not a
+toggle; identical requests are no-ops and stale expected state aborts before mutation.
+
+Only one exact actor is selected, no label/prefix fallback, bulk sweep or recursive
+child writes. Native and Blueprint instances do not need a managed ownership tag.
+Wrong project/map, PIE/Simulate, World Partition, external packages, sublevel targets,
+component selectors and unknown parameters are refused. Capture/import tasks block it.
+
+The implementation calls `SetIsTemporarilyHiddenInEditor` and redraws editor viewports.
+It does not call `Modify` or `PostEditChange`, rerun construction scripts, save, dirty
+packages, edit Blueprint assets, or replace/recreate components. It does not change
+attachments, component visibility, gameplay hidden state, collision, tick or lighting
+properties. It does not recursively set another actor's flag, but UE may still hide
+ChildActor rendering through normal parent rules. Hiding is NOT a gameplay disable:
+BP logic, timers and gameplay effects are not stopped, and Play is not promised hidden.
+
+Receipts contain `before`, `after`, `requested_hidden_in_editor`, `would_modify`,
+`modified`, `dry_run`, `package_dirty_before` and `package_dirty`; `saved=false`,
+`session_only=true`, `undo_supported=false`. This session-only state is not a saved
+map setting and is not added to the map undo stack; use explicit restoration instead
+of `undo_scene_edit`. On readback failure inspect the actual state; a timeout is an
+unknown outcome and never permission to blindly retry or delete the actor.
+
+Native regression `UnrealMCP.Scene.TemporaryEditorVisibility` covers an unmanaged BP,
+preview/identity/conflict rejection, hide/restore/no-op, unchanged clean and dirty map
+states, unchanged Blueprint package and undo stack, component identity, attachments,
+mesh/material/visibility/collision/tick, unselected light and child flags, and layer
+hiding remaining visible in the receipt after the temporary flag is restored.
+
+### Visibility Deployment Record
+
+- UE 5.7.4; `SkillTestEditor` and `NodeFallEditor` builds both succeeded. SkillTest
+  target-native tests all completed with Success in `Saved/Logs/Scene-Visibility-Deployment.log`.
+  Repository native test log: `MCPGameProject/Saved/Logs/Scene-TemporaryVisibility.log`.
+- SkillTest was already closed. Its GUI was not launched into NF's occupied default
+  port; validation used an isolated `-UnrealMCPNoServer` editor process and test map.
+- NF was checked through `get_editor_context` and `get_unsaved_changes` immediately
+  before `close_editor`: zero unsaved packages, idle editor, `saved_count=0` on close.
+  It was reopened on the actual pre-close map `/Game/Dev/Enemies/Maps/L_cyberpunk_start1_dev`,
+  not on the different map mentioned in its old process command line.
+- New NF process PID 46908 at acceptance; normal `127.0.0.1:13090`, existing Claude
+  config/filters unchanged. Actual BP preview and `BP_NFPlayerController` read passed.
+  Existing MCP clients need restart/reconnect; client trust/approval was not changed.
+- Backups: SkillTest `Saved/UnrealMCP-before-visibility-20260930-161746` and NF
+  `Saved/UnrealMCP-before-visibility-20260930-162524`. `UnrealMCP-Visibility-Guard.clixml`
+  under each project's Saved folder protects 604 SkillTest and 1002 NF files, including
+  NF plugin files outside the four explicitly updated Scene files. No save, deletion,
+  sky replacement or live visibility apply was performed in either business map.
 
 ## Preview Edits
 

@@ -1,10 +1,10 @@
 # Unreal MCP Tools
 
-Index for **138 internal operations**. Default grouped mode exposes **70 MCP
-tools** before read-only/category filtering; direct compatibility mode exposes 138.
+Index for **139 internal operations**. Default grouped mode exposes **70 MCP
+tools** before read-only/category filtering; direct compatibility mode exposes 139.
 
 - [Actor Tools](actor_tools.md) (8)
-- [Scene Tools](scene_tools.md) (19) - Guarded instances, captures, imports, placement manifests, Outliner folders and controlled undo
+- [Scene Tools](scene_tools.md) (20) - Guarded instances, captures, imports, placement manifests, Outliner folders, temporary editor visibility and controlled undo
 - [Editor Tools](editor_tools.md) (10 editor + 3 asset operations)
 - [Bounded Asset Creation and Property Writes](project_tools.md#set_asset_properties) (3 additional Asset operations)
 - [Dependency Copy Workflow](editor_tools.md#dependency-copy-workflow) (4 additional Asset operations: plan, execute, status, verify)
@@ -74,7 +74,7 @@ routing/argument errors are MCP tool errors.
 
 - `MCP_TOOL_MODE=grouped` (default): 70 public tools; original names from these
 	four categories are internal and cannot be called directly via MCP.
-- `MCP_TOOL_MODE=direct`: all 138 public operations, no grouped entry points.
+- `MCP_TOOL_MODE=direct`: all 139 public operations, no grouped entry points.
 - `UNREAL_MCP_READ_ONLY=1`: 30 public tools in grouped mode, 41 in direct mode.
 	Only approved read operations remain; hidden writes cannot be searched or run.
 - Existing `MCP_MATERIAL_ENABLED`, `MCP_NIAGARA_ENABLED`, `MCP_UMG_ENABLED`, `MCP_SCENE_ENABLED`
@@ -91,7 +91,7 @@ new C++ permission boundary. Client approval UI and annotations are not relied o
 to enforce read/write separation. Context savings depend on the client's own
 tool discovery/caching; fewer advertised tools are not a measured token count.
 
-Scene grouping replaces 19 public operation schemas with three entry points. Scene
+Scene grouping replaces 20 public operation schemas with three entry points. Scene
 search returns compact summaries by default and a complete schema on exact lookup.
 Future Scene operations added to its category use the same entry points. Existing
 scripts that call original scene names must use discovery/dispatch or explicitly

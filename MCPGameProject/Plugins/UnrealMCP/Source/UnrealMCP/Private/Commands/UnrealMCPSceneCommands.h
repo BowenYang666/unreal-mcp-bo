@@ -11,6 +11,7 @@ namespace UnrealMCPScene
     TSharedPtr<FJsonObject> List(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> ManageActor(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> SetActorFolders(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> SetActorVisibility(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> Mesh(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> Save(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> Viewport(const TSharedPtr<FJsonObject>& Params, bool Write);

@@ -424,6 +424,7 @@ _CATEGORY_TOOLS = {
         "get_scene_viewport", "set_scene_viewport", "capture_scene_viewport", "get_scene_task_status",
         "inspect_scene_asset", "import_scene_asset", "get_scene_import_status",
         "undo_scene_edit", "apply_scene_manifest", "recapture_scene_skylight", "set_scene_actor_folders",
+        "set_scene_actor_visibility",
     },
     "cascade": {"read_cascade_system"},
     "asset": {
@@ -520,13 +521,13 @@ def info():
     return """
         # Unreal MCP Server Guidance
 
-        There are 138 internal operations. Default grouped mode exposes 70 tools
+        There are 139 internal operations. Default grouped mode exposes 70 tools
         before filtering: Material, Niagara, UMG and Scene each expose <category>_search,
         <category>_call_read and <category>_call_write. Other categories stay direct.
         Search by keywords or browse with an empty query, then search by exact tool
         name for its full schema. Call the indicated read/write endpoint with tool
         and arguments. Reuse the contract for subsequent calls; do not guess names.
-        MCP_TOOL_MODE=direct exposes all 138 operations directly after reconnecting.
+        MCP_TOOL_MODE=direct exposes all 139 operations directly after reconnecting.
         Read-only/category filters apply in both modes; search never contacts UE.
 
         Core categories: Asset, Actor/Editor, Blueprint, Blueprint Node,

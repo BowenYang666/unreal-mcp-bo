@@ -259,6 +259,7 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
             else if (CommandType == TEXT("patch_scene_target")) ResultJson = UnrealMCPScene::Patch(Params);
             else if (CommandType == TEXT("manage_scene_actor")) ResultJson = UnrealMCPScene::ManageActor(Params);
             else if (CommandType == TEXT("set_scene_actor_folders")) ResultJson = UnrealMCPScene::SetActorFolders(Params);
+            else if (CommandType == TEXT("set_scene_actor_visibility")) ResultJson = UnrealMCPScene::SetActorVisibility(Params);
             else if (CommandType == TEXT("get_scene_mesh"))
             {
                 auto ReadParams = MakeShared<FJsonObject>(*Params);

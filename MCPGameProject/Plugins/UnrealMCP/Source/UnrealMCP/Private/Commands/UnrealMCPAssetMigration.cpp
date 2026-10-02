@@ -11,6 +11,7 @@
 #include "Misc/FileHelper.h"
 #include "Misc/PackageName.h"
 #include "Misc/Paths.h"
+#include "Misc/ScopeExit.h"
 #include "Misc/SecureHash.h"
 #include "NiagaraSystem.h"
 #include "NiagaraParameterCollection.h"
@@ -557,6 +558,8 @@ TSharedPtr<FJsonObject> Execute(const TSharedPtr<FJsonObject>& Params)
     for (const auto& Pair : Stored->Copies)
         if (FindPackage(nullptr, *Pair.Value) || FPackageName::DoesPackageExist(Pair.Value) || UEditorAssetLibrary::DoesAssetExist(Pair.Value))
             return Failure(TEXT("Destination now occupied; overwrite forbidden: ") + Pair.Value);
+    TArray<UObject*> SourceAssets; Sources.GenerateValueArray(SourceAssets);
+    FAssetCompilingManager::Get().FinishCompilationForObjects(SourceAssets);
     for (const auto& Pair : Sources) if (Pair.Value->GetPackage()->IsDirty()) return Failure(TEXT("Source became dirty during preflight: ") + Pair.Key);
     Stored->Started = true;
     Result->SetBoolField(TEXT("success"), false);
@@ -581,6 +584,7 @@ TSharedPtr<FJsonObject> Execute(const TSharedPtr<FJsonObject>& Params)
     };
     TMap<UObject*, UObject*> ObjectMap;
     TArray<UObject*> Targets;
+    TMap<UTexture*, FName> TextureSdkVersions;
     TMap<FString, TMap<FString, FString>> RebindSnapshots;
     for (const FString& Path : Stored->Rebind)
     {
@@ -607,7 +611,11 @@ TSharedPtr<FJsonObject> Execute(const TSharedPtr<FJsonObject>& Params)
         UObject* Copy = StaticDuplicateObjectEx(Duplicate);
         if (!Copy) return Fail(TEXT("Native duplication failed: ") + Pair.Key);
         Copy->SetFlags(RF_Public | RF_Standalone | RF_Transactional);
-        if (auto Texture = Cast<UTexture>(Copy)) Texture->OodleTextureSdkVersion = CastChecked<UTexture>(Source)->OodleTextureSdkVersion;
+        if (auto Texture = Cast<UTexture>(Copy))
+        {
+            TextureSdkVersions.Add(Texture, CastChecked<UTexture>(Source)->OodleTextureSdkVersion);
+            ItemBySource[Pair.Key]->SetBoolField(TEXT("texture_compilation_pending_after_duplicate"), Texture->IsCompiling());
+        }
         if (auto Collection = Cast<UNiagaraParameterCollection>(Copy))
         {
             FNameProperty* Namespace = FindFProperty<FNameProperty>(Collection->GetClass(), TEXT("Namespace"));
@@ -633,9 +641,20 @@ TSharedPtr<FJsonObject> Execute(const TSharedPtr<FJsonObject>& Params)
         RebindSnapshots[Path] = NormalizeSnapshot(RebindSnapshots[Path], ObjectPaths, Stored->Namespaces);
         Targets.Add(Sources[Path]);
     }
+    FAssetCompilingManager::Get().FinishCompilationForObjects(Targets);
+    TArray<UObject*> Editing;
+    auto FinishEdits = [&]()
+    {
+        for (UObject* Target : Editing) Target->PostEditChange();
+        Editing.Reset();
+    };
+    ON_SCOPE_EXIT { FinishEdits(); };
     for (UObject* Target : Targets)
     {
+        Target->PreEditChange(nullptr);
+        Editing.Add(Target);
         Target->Modify();
+        if (auto Texture = Cast<UTexture>(Target)) Texture->OodleTextureSdkVersion = TextureSdkVersions.FindChecked(Texture);
         const int64 Changed = RemapPackage(Target->GetPackage(), ObjectMap, Stored->Copies, Stored->Namespaces);
         for (const auto& Item : Items) if (Item->AsObject()->GetStringField(TEXT("destination")) == Target->GetPackage()->GetName())
         { Item->AsObject()->SetNumberField(TEXT("references_remapped"), Changed); if (Changed) Item->AsObject()->SetBoolField(TEXT("modified"), true); }
@@ -644,9 +663,9 @@ TSharedPtr<FJsonObject> Execute(const TSharedPtr<FJsonObject>& Params)
     for (const FString& Path : Stored->Rebind)
         if (!CheckSnapshot(RebindSnapshots[Path], EditableSnapshot(Sources[Path]->GetPackage()), Result, Path, TEXT("rebind")))
             return Fail(TEXT("Editable non-reference state changed during rebinding; not saved: ") + Path);
+    FinishEdits();
     for (UObject* Target : Targets)
     {
-        Target->PostEditChange();
         if (auto System = Cast<UNiagaraSystem>(Target)) { System->RequestCompile(true); System->WaitForCompilationComplete(true, false); }
     }
     FAssetCompilingManager::Get().FinishCompilationForObjects(Targets);

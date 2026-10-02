@@ -39,6 +39,107 @@
 #include "Misc/Parse.h"
 #include "Widgets/SViewport.h"
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMCPSceneVisibilityTest, "UnrealMCP.Scene.TemporaryEditorVisibility", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMCPSceneVisibilityTest::RunTest(const FString& Parameters)
+{
+    UWorld* World = FAutomationEditorCommonUtils::CreateNewMap();
+    auto Blueprint = FKismetEditorUtilities::CreateBlueprint(AStaticMeshActor::StaticClass(), GetTransientPackage(),
+        MakeUniqueObjectName(GetTransientPackage(), UBlueprint::StaticClass(), TEXT("VisibilityBP")), BPTYPE_Normal, UBlueprint::StaticClass(), UBlueprintGeneratedClass::StaticClass());
+    if (!TestNotNull(TEXT("BP fixture"), Blueprint)) return false;
+    FKismetEditorUtilities::CompileBlueprint(Blueprint);
+    auto Actor = World->SpawnActor<AStaticMeshActor>(Blueprint->GeneratedClass);
+    auto Child = World->SpawnActor<AStaticMeshActor>();
+    auto OtherLight = World->SpawnActor<ARectLight>();
+    if (!TestNotNull(TEXT("BP instance"), Actor) || !TestNotNull(TEXT("Child fixture"), Child) || !TestNotNull(TEXT("Unselected light"), OtherLight)) return false;
+    Actor->SetActorLabel(TEXT("VisibilityFixture"));
+    TestTrue(TEXT("Child attachment"), Child->AttachToActor(Actor, FAttachmentTransformRules::KeepWorldTransform));
+    auto Component = Actor->GetStaticMeshComponent();
+    Component->SetStaticMesh(LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube")));
+    Component->SetMaterial(0, UMaterial::GetDefaultMaterial(MD_Surface));
+    const FTransform Transform = Actor->GetActorTransform();
+    const auto Tags = Actor->Tags; const auto Mesh = Component->GetStaticMesh(); const auto Material = Component->GetMaterial(0);
+    const bool Visible = Component->IsVisible(), HiddenInGame = Actor->IsHidden(), Tick = Actor->IsActorTickEnabled();
+    const auto Collision = Component->GetCollisionEnabled(); const float Intensity = OtherLight->GetLightComponent()->Intensity;
+    const bool BlueprintDirty = Blueprint->GetPackage()->IsDirty();
+    auto Request = MakeShared<FJsonObject>();
+    Request->SetStringField(TEXT("project_path"), FPaths::ConvertRelativePathToFull(FPaths::GetProjectFilePath()));
+    Request->SetStringField(TEXT("level_path"), World->GetPackage()->GetName());
+    Request->SetStringField(TEXT("actor_path"), Actor->GetPathName()); Request->SetBoolField(TEXT("hidden_in_editor"), true);
+    Request->SetBoolField(TEXT("expected_hidden_in_editor"), false);
+    World->GetPackage()->SetDirtyFlag(false);
+    auto Preview = UnrealMCPScene::SetActorVisibility(Request);
+    TestTrue(TEXT("Dry-run default"), Preview->GetBoolField(TEXT("dry_run")));
+    TestTrue(TEXT("Preview reports change"), Preview->GetBoolField(TEXT("would_modify")));
+    TestFalse(TEXT("Preview does not modify"), Preview->GetBoolField(TEXT("modified")));
+    TestFalse(TEXT("Preview keeps actor shown"), Actor->IsTemporarilyHiddenInEditor(false));
+    TestFalse(TEXT("Preview does not dirty map"), World->GetPackage()->IsDirty());
+    Request->SetBoolField(TEXT("dry_run"), false);
+    for (const FString Field : {TEXT("project_path"), TEXT("level_path"), TEXT("actor_path")})
+    {
+        auto Wrong = MakeShared<FJsonObject>(*Request); Wrong->SetStringField(Field, TEXT("VisibilityFixture"));
+        TestFalse(TEXT("Exact identity required: ") + Field, UnrealMCPScene::SetActorVisibility(Wrong)->GetBoolField(TEXT("success")));
+    }
+    auto Invalid = MakeShared<FJsonObject>(*Request); Invalid->RemoveField(TEXT("hidden_in_editor"));
+    TestFalse(TEXT("Missing requested state rejected"), UnrealMCPScene::SetActorVisibility(Invalid)->GetBoolField(TEXT("success")));
+    Invalid->SetField(TEXT("hidden_in_editor"), MakeShared<FJsonValueNull>());
+    TestFalse(TEXT("Null state rejected"), UnrealMCPScene::SetActorVisibility(Invalid)->GetBoolField(TEXT("success")));
+    Invalid = MakeShared<FJsonObject>(*Request); Invalid->SetBoolField(TEXT("save"), true);
+    TestFalse(TEXT("No save option"), UnrealMCPScene::SetActorVisibility(Invalid)->GetBoolField(TEXT("success")));
+    Invalid = MakeShared<FJsonObject>(*Request); Invalid->SetStringField(TEXT("component_name"), Component->GetName());
+    TestFalse(TEXT("Not a component setter"), UnrealMCPScene::SetActorVisibility(Invalid)->GetBoolField(TEXT("success")));
+    Invalid = MakeShared<FJsonObject>(*Request); Invalid->SetBoolField(TEXT("expected_hidden_in_editor"), true);
+    TestFalse(TEXT("Stale expected state rejected"), UnrealMCPScene::SetActorVisibility(Invalid)->GetBoolField(TEXT("success")));
+    TestFalse(TEXT("Rejected requests do not dirty map"), World->GetPackage()->IsDirty());
+    TestFalse(TEXT("Rejected requests do not hide actor"), Actor->IsTemporarilyHiddenInEditor(false));
+    for (bool InitiallyDirty : {false, true})
+    {
+        World->GetPackage()->SetDirtyFlag(InitiallyDirty);
+        const FString UndoBefore = UnrealMCPScene::UndoToken();
+        Request->SetBoolField(TEXT("hidden_in_editor"), true); Request->SetBoolField(TEXT("expected_hidden_in_editor"), false);
+        auto Receipt = UnrealMCPScene::SetActorVisibility(Request);
+        TestTrue(TEXT("Unmanaged BP instance can hide"), Receipt->GetBoolField(TEXT("success")));
+        TestTrue(TEXT("Temporary flag set"), Actor->IsTemporarilyHiddenInEditor(false));
+        TestTrue(TEXT("Hidden readback"), Receipt->GetObjectField(TEXT("after"))->GetBoolField(TEXT("temporary_hidden")));
+        TestFalse(TEXT("Never saved"), Receipt->GetBoolField(TEXT("saved")));
+        TestTrue(TEXT("Session-only receipt"), Receipt->GetBoolField(TEXT("session_only")));
+        TestFalse(TEXT("No map undo promised"), Receipt->GetBoolField(TEXT("undo_supported")));
+        TestEqual(TEXT("Map dirty state preserved"), World->GetPackage()->IsDirty(), InitiallyDirty);
+        TestEqual(TEXT("Blueprint dirty state preserved"), Blueprint->GetPackage()->IsDirty(), BlueprintDirty);
+        TestEqual(TEXT("User undo stack unchanged"), UnrealMCPScene::UndoToken(), UndoBefore);
+        TestFalse(TEXT("Attached actor own hidden flag untouched"), Child->IsTemporarilyHiddenInEditor(false));
+        TestFalse(TEXT("Unselected light visibility untouched"), OtherLight->IsTemporarilyHiddenInEditor(false));
+        TestEqual(TEXT("Light intensity unchanged"), OtherLight->GetLightComponent()->Intensity, Intensity);
+        TestEqual(TEXT("BP component not reconstructed"), Actor->GetStaticMeshComponent(), Component);
+        TestEqual(TEXT("Gameplay hidden unchanged"), Actor->IsHidden(), HiddenInGame);
+        TestEqual(TEXT("Component visibility unchanged"), Component->IsVisible(), Visible);
+        TestEqual(TEXT("Tick unchanged"), Actor->IsActorTickEnabled(), Tick);
+        TestEqual(TEXT("Collision unchanged"), Component->GetCollisionEnabled(), Collision);
+        TestTrue(TEXT("Transform mesh material and ownership unchanged"), Actor->GetActorTransform().Equals(Transform)
+            && Component->GetStaticMesh() == Mesh && Component->GetMaterial(0) == Material && Actor->Tags == Tags);
+        TestEqual(TEXT("Attachment unchanged"), Child->GetAttachParentActor(), static_cast<AActor*>(Actor));
+        auto Inspection = UnrealMCPScene::Inspect(Request);
+        TestTrue(TEXT("Inspection exposes temporary state"), Inspection->GetObjectField(TEXT("editor_visibility"))->GetBoolField(TEXT("temporary_hidden")));
+        Request->SetStringField(TEXT("filter"), Actor->GetActorLabel());
+        auto Listing = UnrealMCPScene::List(Request); Request->RemoveField(TEXT("filter"));
+        if (TestEqual(TEXT("Fixture found by label"), Listing->GetArrayField(TEXT("actors")).Num(), 1))
+            TestTrue(TEXT("Listing exposes temporary state"), Listing->GetArrayField(TEXT("actors"))[0]->AsObject()->GetObjectField(TEXT("editor_visibility"))->GetBoolField(TEXT("temporary_hidden")));
+        Request->SetBoolField(TEXT("expected_hidden_in_editor"), true);
+        TestFalse(TEXT("Repeated requested state is no-op"), UnrealMCPScene::SetActorVisibility(Request)->GetBoolField(TEXT("modified")));
+        Actor->SetIsHiddenEdLayer(true);
+        Request->SetBoolField(TEXT("hidden_in_editor"), false);
+        Receipt = UnrealMCPScene::SetActorVisibility(Request);
+        TestTrue(TEXT("Restore succeeds"), Receipt->GetBoolField(TEXT("success")));
+        TestFalse(TEXT("Own temporary flag restored"), Actor->IsTemporarilyHiddenInEditor(false));
+        TestTrue(TEXT("Layer hiding still reported honestly"), Receipt->GetObjectField(TEXT("after"))->GetBoolField(TEXT("editor_hidden")));
+        Actor->SetIsHiddenEdLayer(false);
+        TestEqual(TEXT("Restore keeps map dirty state"), World->GetPackage()->IsDirty(), InitiallyDirty);
+        TestEqual(TEXT("Restore does not add undo"), UnrealMCPScene::UndoToken(), UndoBefore);
+    }
+    World->GetPackage()->SetDirtyFlag(false);
+    return !HasAnyErrors();
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMCPScenePatchTest, "UnrealMCP.Scene.InstancePatch", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FMCPScenePatchTest::RunTest(const FString& Parameters)

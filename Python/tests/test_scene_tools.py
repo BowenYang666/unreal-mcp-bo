@@ -151,6 +151,35 @@ class SceneToolsTests(unittest.TestCase):
         self.assertEqual(result["transaction_id"], "folder-transaction")
         self.assertEqual(result["items"][0]["before"], "")
 
+    def test_visibility_schema_defaults_and_expected_false(self):
+        tool = self.tools.get_tool("set_scene_actor_visibility")
+        self.assertEqual(tool.parameters["required"], ["project_path", "level_path", "actor_path", "hidden_in_editor"])
+        self.assertEqual(tool.parameters["properties"]["expected_hidden_in_editor"]["type"], "boolean")
+        tool.fn(None, "project", "map", "exact-path", True)
+        self.connection.send_command.assert_called_once_with("set_scene_actor_visibility", {
+            "project_path": "project", "level_path": "map", "actor_path": "exact-path", "hidden_in_editor": True, "dry_run": True})
+        self.connection.reset_mock()
+        tool.fn(None, "project", "map", "exact-path", True, False, False)
+        self.connection.send_command.assert_called_once_with("set_scene_actor_visibility", {
+            "project_path": "project", "level_path": "map", "actor_path": "exact-path", "hidden_in_editor": True,
+            "dry_run": False, "expected_hidden_in_editor": False})
+
+    def test_visibility_receipt_and_timeout_do_not_claim_save(self):
+        payload = {"success": True, "modified": True, "saved": False, "session_only": True,
+            "undo_supported": False, "package_dirty_before": False, "package_dirty": False,
+            "before": {"temporary_hidden": False},
+            "after": {"temporary_hidden": True, "hidden_in_game": False, "editor_hidden": True}}
+        self.connection.send_command.return_value = {"status": "success", "result": payload}
+        tool = self.tools.get_tool("set_scene_actor_visibility")
+        self.assertEqual(tool.fn(None, "project", "map", "actor", True, False), payload)
+        self.connection.reset_mock()
+        self.connection.send_command.side_effect = TimeoutError("timeout")
+        result = tool.fn(None, "project", "map", "actor", False, False)
+        self.assertEqual(result["stage"], "transport")
+        self.assertNotIn("modified", result)
+        self.assertNotIn("saved", result)
+        self.connection.send_command.assert_called_once()
+
     def test_manifest_and_undo_forwarding(self):
         manifest = {"version": 1, "namespace": "Test", "objects": []}
         self.tools.get_tool("apply_scene_manifest").fn(None, "project", "map", manifest)

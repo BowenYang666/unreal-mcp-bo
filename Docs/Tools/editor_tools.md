@@ -271,6 +271,15 @@ Both the immediate rebind comparison and the post-compile comparison report
 JSON `null`; `before` is the expected snapshot after applying only planned
 reference/namespace mappings. A mismatch still prevents automatic saving.
 
+Texture compilation remains enabled. Execution finishes load-triggered source
+compilation before duplication, then finishes duplicate-triggered compilation before
+changing settings or serializing reference replacements. Restoring the source's
+`OodleTextureSdkVersion` occurs inside the target's `PreEditChange`/`PostEditChange`
+lifecycle, not while the duplicate's previous build is pending. Opened edit scopes
+are also closed on early failure. Final compilation completes before target saves.
+Texture item receipts include `texture_compilation_pending_after_duplicate`, an
+observation of the duplicate at creation, not its current compilation state.
+
 Read `success`, `state`, per-item `created`/`modified`/`saved`, compilation results
 and errors. An error may leave unsaved copies or in-memory changes; no rollback is
 promised. An execution journal is maintained under the active project's
@@ -283,6 +292,9 @@ than copying again. Do not create a new plan to blindly retry a timeout.
 Query the same `plan_id` after a timeout or uncertain result. Returns the current
 plan or execution receipt; after editor restart it reads the journal. A journal
 left `running` is reported as `interrupted_unknown`. It cannot resume execution.
+Status reads leave the original journal unchanged as evidence; its on-disk `running`
+text is not proof of a live task. Existing per-item progress is retained, without
+claiming that interrupted work was rolled back or completed.
 An unknown ID is not evidence that no files were created. Oversized failure
 receipts retain `success=false` and their full item details in `file_path`.
 
@@ -299,6 +311,42 @@ isolated `__Dev` assets, plus a real stdio MCP session discovering the four tool
 and producing an executable read-only plan for the three LaserImpact roots and
 `MI_BulletHole`. The connection test performs no formal asset rebinding and does
 not run cross-project Migrate; those require separate review and authorization.
+
+#### GoodSky Async Texture Regression (2026-09-30)
+
+Fixed the UE 5.7.4 fatal texture-compiler reentry observed while executing plan
+`9204EAB54D1EBED6F49D30874166BB17`. That historical plan was used only for status
+inspection, never replayed. The failure involved restoring a copied texture's SDK
+setting before its earlier asynchronous build had finished; waiting only after
+reference replacement was too late. The repair covers source/duplicate compilation
+barriers, the complete target edit interval, and final compilation before saving.
+
+SkillTest validation used the same three GoodSky roots and longest-prefix rules,
+but a fresh plan and an isolated destination:
+
+- Root: `/Game/__Dev/AssetMigration_GoodSky_abc49a1da5034275b53051d06f01d6df`.
+- New plan: `DEF265514455EEDA621D0C8001C51622`, completed and saved all 15 items.
+- `Editor.AsyncTextureCompilation=1`; all seven texture copies were actually pending
+  after duplication. No compilation-disable workaround or original target overwrite.
+- All editable texture settings, including the original Oodle SDK, matched after
+  copying and again after loading from disk in a separate editor process.
+- Fresh-process dependency/hash/compilation verification passed. Existing Niagara
+  move/rename rebinding and five focused migration regressions also passed.
+- `UnrealMCP.AssetMigration.GoodSkyAsyncTextures` uses explicit `-MCPGoodSkyRoot=`;
+  cold verification adds `-MCPGoodSkyVerify=<new_completed_plan_id>`. It rejects
+  non-isolated roots. `InterruptedJournal` checks status and non-resumption against
+  a unique orphan journal while preserving its per-item progress and original bytes.
+- Logs: SkillTest `Saved/Logs/Migration-GoodSky-Async.log` and
+  `Saved/Logs/Migration-GoodSky-ColdVerify.log`; receipt:
+  `Saved/AssetMigration-GoodSky-Receipt.json`.
+- Actual MCP after restart: old plan `interrupted_unknown`/`success=false`, new plan
+  `completed`, verification `success=true`/`issues=[]`, OpeningRescue dirty packages empty.
+- All 50 original GoodSky files, protected SkillTest/NF maps, project/config files
+  and original crash journal hashes were unchanged. The original business target
+  directory still had no saved assets. One unrelated SkillTest source test was edited
+  concurrently and left untouched; this was not counted as a migration write.
+- Fix and tests were built/deployed to SkillTest only. No NF plugin update or asset
+  migration was performed for this repair, and no level actors were replaced.
 
 ### open_asset
 

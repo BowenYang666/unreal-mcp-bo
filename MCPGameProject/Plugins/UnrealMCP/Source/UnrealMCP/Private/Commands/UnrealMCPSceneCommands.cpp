@@ -334,12 +334,23 @@ namespace
         return true;
     }
 
+    TSharedPtr<FJsonObject> EditorVisibilityInfo(AActor* Actor)
+    {
+        auto Result = MakeShared<FJsonObject>();
+        Result->SetBoolField(TEXT("temporary_hidden"), Actor->IsTemporarilyHiddenInEditor(false));
+        Result->SetBoolField(TEXT("temporary_hidden_in_hierarchy"), Actor->IsTemporarilyHiddenInEditor(true));
+        Result->SetBoolField(TEXT("editor_hidden"), Actor->IsHiddenEd());
+        Result->SetBoolField(TEXT("hidden_in_game"), Actor->IsHidden());
+        return Result;
+    }
+
     TSharedPtr<FJsonObject> ActorInfo(AActor* Actor)
     {
         auto Result = MakeShared<FJsonObject>();
         Result->SetStringField(TEXT("actor_path"), Actor->GetPathName());
         Result->SetStringField(TEXT("label"), Actor->GetActorLabel());
         Result->SetStringField(TEXT("folder_path"), ActorFolderPath(Actor));
+        Result->SetObjectField(TEXT("editor_visibility"), EditorVisibilityInfo(Actor));
         Result->SetBoolField(TEXT("scene_managed"), Actor->ActorHasTag(TEXT("UnrealMCP.SceneManaged")));
         TArray<TSharedPtr<FJsonValue>> Namespaces;
         const FString Prefix = TEXT("UnrealMCP.Manifest_");
@@ -387,6 +398,7 @@ TSharedPtr<FJsonObject> Context(const TSharedPtr<FJsonObject>& Params)
     Result->SetStringField(TEXT("engine_version"), FEngineVersion::Current().ToString());
     Result->SetStringField(TEXT("scene_contract"), TEXT("1"));
     Result->SetNumberField(TEXT("folder_contract"), 1);
+    Result->SetNumberField(TEXT("editor_visibility_contract"), 1);
     const auto Plugin = IPluginManager::Get().FindPlugin(TEXT("UnrealMCP"));
     Result->SetStringField(TEXT("plugin_version"), Plugin ? Plugin->GetDescriptor().VersionName : TEXT("unknown"));
     UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
@@ -465,6 +477,7 @@ TSharedPtr<FJsonObject> Inspect(const TSharedPtr<FJsonObject>& Params)
     if (auto Actor = Cast<AActor>(Target))
     {
         Result->SetStringField(TEXT("folder_path"), ActorFolderPath(Actor));
+        Result->SetObjectField(TEXT("editor_visibility"), EditorVisibilityInfo(Actor));
         Result->SetBoolField(TEXT("folder_editable"), SupportsFolderTarget(Actor, World));
         Result->SetBoolField(TEXT("scene_managed"), Actor->ActorHasTag(TEXT("UnrealMCP.SceneManaged")));
         TArray<TSharedPtr<FJsonValue>> Components;
@@ -744,6 +757,54 @@ TSharedPtr<FJsonObject> SetActorFolders(const TSharedPtr<FJsonObject>& Params)
     if (!Modified) Transaction.Cancel();
     Result->SetBoolField(TEXT("modified"), Modified); Result->SetBoolField(TEXT("package_dirty"), World->GetPackage()->IsDirty());
     Result->SetArrayField(TEXT("items"), Items); return Result;
+}
+
+TSharedPtr<FJsonObject> SetActorVisibility(const TSharedPtr<FJsonObject>& Params)
+{
+    if (CaptureBusy || UnrealMCPSceneAssets::IsBusy()) return Failure(TEXT("Scene task active"));
+    FString Error; UWorld* World = ResolveWorld(Params, Error);
+    if (!World) return Failure(Error);
+    if (World->IsPartitionedWorld()) return Failure(TEXT("World Partition visibility edits are unsupported"));
+    auto Actor = Cast<AActor>(ResolveTarget(World, Params, Error));
+    if (!Actor) return Failure(Error.IsEmpty() ? TEXT("Select an exact actor, not a component") : Error);
+    for (const auto& Pair : Params->Values)
+        if (Pair.Key != TEXT("project_path") && Pair.Key != TEXT("level_path") && Pair.Key != TEXT("actor_path")
+            && Pair.Key != TEXT("hidden_in_editor") && Pair.Key != TEXT("dry_run") && Pair.Key != TEXT("expected_hidden_in_editor"))
+            return Failure(TEXT("Unknown visibility parameter: ") + Pair.Key);
+    bool Hidden, DryRun = true, Expected;
+    if (!Params->TryGetBoolField(TEXT("hidden_in_editor"), Hidden)
+        || (Params->HasField(TEXT("dry_run")) && !Params->TryGetBoolField(TEXT("dry_run"), DryRun)))
+        return Failure(TEXT("hidden_in_editor is required and dry_run must be boolean"));
+    const bool Before = Actor->IsTemporarilyHiddenInEditor(false);
+    if (Params->HasField(TEXT("expected_hidden_in_editor")))
+    {
+        if (!Params->TryGetBoolField(TEXT("expected_hidden_in_editor"), Expected)) return Failure(TEXT("expected_hidden_in_editor must be boolean"));
+        if (Expected != Before) return Failure(TEXT("expected_hidden_in_editor conflict; re-inspect the actor"));
+    }
+    auto Result = MakeShared<FJsonObject>(); Result->SetStringField(TEXT("actor_path"), Actor->GetPathName());
+    Result->SetObjectField(TEXT("before"), EditorVisibilityInfo(Actor));
+    Result->SetBoolField(TEXT("requested_hidden_in_editor"), Hidden);
+    Result->SetBoolField(TEXT("package_dirty_before"), Actor->GetPackage()->IsDirty());
+    const bool WouldModify = Before != Hidden;
+    const bool Applied = !DryRun && WouldModify;
+    if (Applied)
+    {
+        Actor->SetIsTemporarilyHiddenInEditor(Hidden);
+        GEditor->RedrawLevelEditingViewports();
+    }
+    const bool Success = DryRun || Actor->IsTemporarilyHiddenInEditor(false) == Hidden;
+    Result->SetBoolField(TEXT("success"), Success); Result->SetBoolField(TEXT("dry_run"), DryRun);
+    Result->SetBoolField(TEXT("would_modify"), WouldModify); Result->SetBoolField(TEXT("modified"), Applied);
+    Result->SetBoolField(TEXT("saved"), false); Result->SetBoolField(TEXT("session_only"), true);
+    Result->SetBoolField(TEXT("undo_supported"), false);
+    Result->SetBoolField(TEXT("package_dirty"), Actor->GetPackage()->IsDirty());
+    Result->SetObjectField(TEXT("after"), EditorVisibilityInfo(Actor));
+    if (!Success)
+    {
+        Result->SetStringField(TEXT("stage"), TEXT("visibility_readback"));
+        Result->SetStringField(TEXT("error"), TEXT("Actor visibility did not match after apply; re-inspect before retrying"));
+    }
+    return Result;
 }
 
 TSharedPtr<FJsonObject> Mesh(const TSharedPtr<FJsonObject>& Params)

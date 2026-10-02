@@ -20,6 +20,140 @@
 #include "Misc/PackageName.h"
 #include "Misc/SecureHash.h"
 #include "UObject/UnrealType.h"
+#include "AssetCompilingManager.h"
+#include "HAL/FileManager.h"
+#include "HAL/IConsoleManager.h"
+#include "Misc/ScopeExit.h"
+#include "TextureCompiler.h"
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMCPAssetMigrationGoodSkyTest, "UnrealMCP.AssetMigration.GoodSkyAsyncTextures",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMCPAssetMigrationGoodSkyTest::RunTest(const FString& Parameters)
+{
+    FString Root, VerifyId;
+    const bool Reload = FParse::Value(FCommandLine::Get(), TEXT("MCPGoodSkyVerify="), VerifyId);
+    if (!FParse::Value(FCommandLine::Get(), TEXT("MCPGoodSkyRoot="), Root))
+    { AddInfo(TEXT("MCPGoodSkyRoot not supplied; real-content acceptance not requested")); return true; }
+    if (!Root.StartsWith(TEXT("/Game/__Dev/AssetMigration_GoodSky_")) || !FPackageName::IsValidLongPackageName(Root))
+    { AddError(TEXT("GoodSky acceptance requires an isolated __Dev/AssetMigration_GoodSky_ root")); return false; }
+    auto Async = IConsoleManager::Get().FindConsoleVariable(TEXT("Editor.AsyncTextureCompilation"));
+    if (!TestTrue(TEXT("Asynchronous texture compilation enabled"), Async && Async->GetInt() == 1)) return false;
+    TSharedPtr<FJsonObject> Receipt;
+    auto Request = MakeShared<FJsonObject>();
+    if (Reload)
+    {
+        Request->SetStringField(TEXT("plan_id"), VerifyId);
+        Receipt = UnrealMCPAssetMigration::Status(Request);
+        if (!TestTrue(TEXT("Receipt is completed before cold verification"), Receipt->GetBoolField(TEXT("success")))) return false;
+        for (const auto& Value : Receipt->GetArrayField(TEXT("items")))
+            if (!TestTrue(TEXT("Only the isolated acceptance targets may be loaded"), Value->AsObject()->GetStringField(TEXT("destination")).StartsWith(Root + TEXT("/")))) return false;
+        auto Verification = UnrealMCPAssetMigration::Verify(Request);
+        if (!TestTrue(TEXT("Cold dependency and compilation verification"), Verification->GetBoolField(TEXT("success"))))
+        { for (const auto& Issue : Verification->GetArrayField(TEXT("issues"))) AddError(Issue->AsString()); return false; }
+        TestTrue(TEXT("Destinations first loaded in this fresh process"), Verification->GetBoolField(TEXT("fresh_reload")));
+    }
+    else
+    {
+        Request->SetArrayField(TEXT("roots"), {
+            MakeShared<FJsonValueString>(TEXT("/Game/GoodSky/Resource/Mesh/SM_GoodSky_Sphere")),
+            MakeShared<FJsonValueString>(TEXT("/Game/GoodSky/Resource/Materials/M_GoodSky_Sun_Stars")),
+            MakeShared<FJsonValueString>(TEXT("/Game/GoodSky/Resource/Textures/T_GoodSky_clouds_D"))});
+        TArray<TSharedPtr<FJsonValue>> Rules;
+        for (const auto& Pair : TMap<FString, FString>{{TEXT("Mesh"), TEXT("Meshes")},
+            {TEXT("Materials/Material_Function"), TEXT("MaterialFunctions")}, {TEXT("Materials"), TEXT("Materials")}, {TEXT("Textures"), TEXT("Textures")}})
+        {
+            auto Rule = MakeShared<FJsonObject>(); Rule->SetStringField(TEXT("source_root"), TEXT("/Game/GoodSky/Resource/") + Pair.Key);
+            Rule->SetStringField(TEXT("target_root"), Root + TEXT("/") + Pair.Value); Rules.Add(MakeShared<FJsonValueObject>(Rule));
+        }
+        Request->SetArrayField(TEXT("path_rules"), Rules);
+        auto Plan = UnrealMCPAssetMigration::Plan(Request);
+        if (!TestTrue(TEXT("Fresh GoodSky plan executable"), Plan->GetBoolField(TEXT("executable"))))
+        { for (const auto& Blocker : Plan->GetArrayField(TEXT("blockers"))) AddError(Blocker->AsString()); return false; }
+        if (!TestEqual(TEXT("Same 15-asset mixed dependency graph"), Plan->GetArrayField(TEXT("mapping")).Num(), 15)) return false;
+        Request = MakeShared<FJsonObject>(); Request->SetStringField(TEXT("plan_id"), Plan->GetStringField(TEXT("plan_id")));
+        Request->SetStringField(TEXT("confirmation_token"), Plan->GetStringField(TEXT("confirmation_token")));
+        Receipt = UnrealMCPAssetMigration::Execute(Request);
+        if (!TestTrue(TEXT("Mixed GoodSky copy completes without texture reentrant compilation"), Receipt->GetBoolField(TEXT("success"))))
+        { AddError(Receipt->GetStringField(TEXT("error"))); return false; }
+        TestEqual(TEXT("No repeat mutation on completed plan"), UnrealMCPAssetMigration::Execute(Request)->GetStringField(TEXT("state")), FString(TEXT("completed")));
+        int32 PendingCopies = 0;
+        for (const auto& Value : Receipt->GetArrayField(TEXT("items")))
+        {
+            bool Pending = false;
+            if (Value->AsObject()->TryGetBoolField(TEXT("texture_compilation_pending_after_duplicate"), Pending) && Pending) ++PendingCopies;
+        }
+        TestTrue(TEXT("Reproduction exercised actual pending texture copies"), PendingCopies > 0);
+        AddInfo(FString::Printf(TEXT("GoodSky pending texture copies: %d"), PendingCopies));
+        FString Json; FJsonSerializer::Serialize(Receipt.ToSharedRef(), TJsonWriterFactory<>::Create(&Json));
+        TestTrue(TEXT("Write acceptance receipt for cold verification"), FFileHelper::SaveStringToFile(Json, *(FPaths::ProjectSavedDir() / TEXT("AssetMigration-GoodSky-Receipt.json"))));
+    }
+    TMap<FString, FString> ObjectPaths;
+    for (const auto& Value : Receipt->GetArrayField(TEXT("items")))
+    {
+        auto Item = Value->AsObject(); const FString Source = Item->GetStringField(TEXT("source")), Destination = Item->GetStringField(TEXT("destination"));
+        ObjectPaths.Add(Source, Destination);
+        ObjectPaths.Add(Source + TEXT(".") + FPackageName::GetLongPackageAssetName(Source), Destination + TEXT(".") + FPackageName::GetLongPackageAssetName(Destination));
+        TestTrue(TEXT("Every copied item saved"), Item->GetBoolField(TEXT("saved")));
+    }
+    int32 Textures = 0;
+    for (const auto& Value : Receipt->GetArrayField(TEXT("mapping")))
+    {
+        auto Item = Value->AsObject(); const FString SourcePath = Item->GetStringField(TEXT("source"));
+        FString Filename; FPackageName::DoesPackageExist(SourcePath, &Filename);
+        TestEqual(TEXT("Original package hash unchanged: ") + SourcePath, LexToString(FMD5Hash::HashFile(*Filename)), Item->GetStringField(TEXT("source_hash")));
+        auto Source = Cast<UTexture>(UEditorAssetLibrary::LoadAsset(SourcePath));
+        if (!Source) continue;
+        auto Copy = Cast<UTexture>(UEditorAssetLibrary::LoadAsset(Item->GetStringField(TEXT("destination"))));
+        if (!TestNotNull(TEXT("Copied texture exists"), Copy)) return false;
+        FAssetCompilingManager::Get().FinishCompilationForObjects({Source, Copy});
+        auto Expected = UnrealMCPAssetMigration::SnapshotForTests(Source->GetPackage(), ObjectPaths);
+        auto Actual = UnrealMCPAssetMigration::SnapshotForTests(Copy->GetPackage());
+        auto Differences = MakeShared<FJsonObject>();
+        if (!TestTrue(TEXT("All editable texture settings preserved: ") + SourcePath, UnrealMCPAssetMigration::CheckSnapshotForTests(Expected, Actual, Differences)))
+        {
+            FString Json; FJsonSerializer::Serialize(Differences, TJsonWriterFactory<>::Create(&Json)); AddError(Json);
+        }
+        TestEqual(TEXT("Oodle SDK preserved"), Copy->OodleTextureSdkVersion, Source->OodleTextureSdkVersion);
+        TestTrue(TEXT("No outstanding destination texture build"), !Copy->IsCompiling());
+        TestFalse(TEXT("Source remains clean"), Source->GetPackage()->IsDirty());
+        TestFalse(TEXT("Saved destination remains clean"), Copy->GetPackage()->IsDirty());
+        ++Textures;
+    }
+    TestEqual(TEXT("Seven texture copies verified"), Textures, 7);
+    AddInfo(TEXT("GoodSky acceptance plan: ") + Receipt->GetStringField(TEXT("plan_id")));
+    return !HasAnyErrors();
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMCPAssetMigrationInterruptedTest, "UnrealMCP.AssetMigration.InterruptedJournal",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMCPAssetMigrationInterruptedTest::RunTest(const FString& Parameters)
+{
+    const FString Id = FGuid::NewGuid().ToString(EGuidFormats::Digits);
+    const FString Filename = FPaths::ProjectSavedDir() / TEXT("UnrealMCP/AssetMigration") / (Id + TEXT(".json"));
+    IFileManager::Get().MakeDirectory(*FPaths::GetPath(Filename), true);
+    auto Journal = MakeShared<FJsonObject>(); Journal->SetStringField(TEXT("plan_id"), Id);
+    Journal->SetStringField(TEXT("state"), TEXT("running")); Journal->SetBoolField(TEXT("success"), false);
+    auto Item = MakeShared<FJsonObject>(); Item->SetBoolField(TEXT("created"), true); Item->SetBoolField(TEXT("saved"), true);
+    Journal->SetArrayField(TEXT("items"), {MakeShared<FJsonValueObject>(Item)});
+    FString Json; FJsonSerializer::Serialize(Journal, TJsonWriterFactory<>::Create(&Json));
+    if (!TestTrue(TEXT("Write unique orphan journal fixture"), FFileHelper::SaveStringToFile(Json, *Filename))) return false;
+    ON_SCOPE_EXIT { IFileManager::Get().Delete(*Filename); };
+    auto Request = MakeShared<FJsonObject>(); Request->SetStringField(TEXT("plan_id"), Id);
+    for (bool Execute : {false, true})
+    {
+        Request->SetStringField(TEXT("confirmation_token"), TEXT("unused-old-token"));
+        auto Result = Execute ? UnrealMCPAssetMigration::Execute(Request) : UnrealMCPAssetMigration::Status(Request);
+        TestEqual(TEXT("Orphan running is interrupted, never resumed"), Result->GetStringField(TEXT("state")), FString(TEXT("interrupted_unknown")));
+        TestFalse(TEXT("Unknown outcome is not successful"), Result->GetBoolField(TEXT("success")));
+        TestTrue(TEXT("Prior item save evidence retained"), Result->GetArrayField(TEXT("items"))[0]->AsObject()->GetBoolField(TEXT("saved")));
+        TestFalse(TEXT("No false rollback claim"), Result->HasField(TEXT("modified")));
+    }
+    FString After; FFileHelper::LoadFileToString(After, *Filename);
+    TestEqual(TEXT("Original journal evidence unchanged"), After, Json);
+    return !HasAnyErrors();
+}
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMCPAssetMigrationRenamedSnapshotTest, "UnrealMCP.AssetMigration.RenamedReferenceSnapshot",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

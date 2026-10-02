@@ -4,10 +4,10 @@ Fork of [chongdashu/unreal-mcp](https://github.com/chongdashu/unreal-mcp) for AI
 
 ## Tool Surface
 
-The Python MCP server provides **138 internal operations**. Default grouped mode
+The Python MCP server provides **139 internal operations**. Default grouped mode
 exposes **70 MCP tools** before read-only/category filtering: Material, Niagara,
 UMG and Scene each have search/read/write entry points; smaller categories stay direct.
-Set `MCP_TOOL_MODE=direct` to expose all 138 operations directly.
+Set `MCP_TOOL_MODE=direct` to expose all 139 operations directly.
 
 [Scene tools](Docs/Tools/scene_tools.md) add guarded level-instance editing,
 fixed-view capture tasks, mesh/texture imports, placement manifests and controlled undo.
@@ -24,7 +24,7 @@ See the [grouped calling guide](Docs/Tools/README.md#grouped-mode-default).
 |---|---:|---|
 | Asset operations | 10 | [Editor tools](Docs/Tools/editor_tools.md#asset--level-management), [Bounded asset creation/editing](Docs/Tools/project_tools.md#set_asset_properties) |
 | Actor + Editor | 18 | [Actor tools](Docs/Tools/actor_tools.md), [Editor tools](Docs/Tools/editor_tools.md) |
-| Scene | 19 | [Scene tools](Docs/Tools/scene_tools.md) |
+| Scene | 20 | [Scene tools](Docs/Tools/scene_tools.md) |
 | Blueprint assets | 9 | [Blueprint tools](Docs/Tools/blueprint_tools.md), [reading guide](Docs/Tools/reading_blueprints.md) |
 | Blueprint nodes | 8 | [Node tools](Docs/Tools/node_tools.md) |
 | Materials | 16 | [Material tools](Docs/Tools/material_tools.md) |
