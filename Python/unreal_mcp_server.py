@@ -443,7 +443,7 @@ _CATEGORY_TOOLS = {
     "material": {
         "set_material_physical_material",
         "list_materials", "read_material", "get_material_instance_parameters",
-        "create_material", "add_material_expression", "set_material_expression_property",
+        "create_material", "add_material_expression", "delete_material_expression", "set_material_expression_property",
         "connect_material_expressions", "connect_material_to_property", "create_material_instance",
         "set_material_instance_parameters",
         "add_material_comment", "reset_material_node_layout", "set_material_property",
@@ -521,13 +521,13 @@ def info():
     return """
         # Unreal MCP Server Guidance
 
-        There are 139 internal operations. Default grouped mode exposes 70 tools
+        There are 140 internal operations. Default grouped mode exposes 70 tools
         before filtering: Material, Niagara, UMG and Scene each expose <category>_search,
         <category>_call_read and <category>_call_write. Other categories stay direct.
         Search by keywords or browse with an empty query, then search by exact tool
         name for its full schema. Call the indicated read/write endpoint with tool
         and arguments. Reuse the contract for subsequent calls; do not guess names.
-        MCP_TOOL_MODE=direct exposes all 139 operations directly after reconnecting.
+        MCP_TOOL_MODE=direct exposes all 140 operations directly after reconnecting.
         Read-only/category filters apply in both modes; search never contacts UE.
 
         Core categories: Asset, Actor/Editor, Blueprint, Blueprint Node,

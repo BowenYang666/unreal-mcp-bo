@@ -18,6 +18,8 @@
 #include "EdGraphSchema_Niagara.h"
 #include "NiagaraEditorUtilities.h"
 #include "NiagaraSystemEditorData.h"
+#include "UObject/UObjectHash.h"
+#include "ScopedTransaction.h"
 #include "NiagaraOverviewNode.h"
 #include "NiagaraRendererProperties.h"
 #include "NiagaraMeshRendererProperties.h"
@@ -1761,20 +1763,24 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleAddEmitterToSystem(cons
 		return ResultJson;
 	}
 
-	// Copy from different system using AddEmitterHandle
 	FVersionedNiagaraEmitter SourceInstance = SourceHandle->GetInstance();
 	if (!SourceInstance.Emitter)
 		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Source emitter instance is null"));
 
-	// Use the editor utility which properly rebuilds emitter nodes for compilation
-	FGuid NewHandleId = FNiagaraEditorUtilities::AddEmitterToSystem(*TargetSystem, *SourceInstance.Emitter, SourceInstance.Version);
+	SourceSystem->WaitForCompilationComplete();
+	TargetSystem->WaitForCompilationComplete();
+	TSet<FGuid> PreviousHandles;
+	for (const FNiagaraEmitterHandle& Handle : TargetSystem->GetEmitterHandles()) PreviousHandles.Add(Handle.GetId());
+	const FScopedTransaction Transaction(NSLOCTEXT("UnrealMCP", "CopySystemEmitter", "Copy Niagara system emitter"));
+	FNiagaraEditorUtilities::AddEmitterToSystem(*TargetSystem, *SourceInstance.Emitter, SourceInstance.Version);
 
-	// Find the new handle by ID and optionally rename it
 	FString ActualEmitterName;
 	for (FNiagaraEmitterHandle& Handle : TargetSystem->GetEmitterHandles())
 	{
-		if (Handle.GetId() == NewHandleId)
+		if (!PreviousHandles.Contains(Handle.GetId()))
 		{
+			if (auto EmitterData = Handle.GetEmitterData()) EmitterData->RemoveParent();
+			Handle.SetIsEnabled(SourceHandle->GetIsEnabled(), *TargetSystem, false);
 			if (!NewEmitterName.IsEmpty())
 			{
 				Handle.SetName(FName(*NewEmitterName), *TargetSystem);
@@ -1784,14 +1790,53 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleAddEmitterToSystem(cons
 		}
 	}
 
+	auto ResultJson = MakeShared<FJsonObject>();
+	ResultJson->SetStringField(TEXT("inheritance_mode"), TEXT("independent_snapshot"));
+	ResultJson->SetBoolField(TEXT("modified"), TargetSystem->GetEmitterHandles().Num() != PreviousHandles.Num());
+	ResultJson->SetBoolField(TEXT("saved"), false);
+	if (ActualEmitterName.IsEmpty() || TargetSystem->GetEmitterHandles().Num() != PreviousHandles.Num() + 1)
+	{
+		ResultJson->SetBoolField(TEXT("success"), false);
+		ResultJson->SetStringField(TEXT("error"), TEXT("Emitter copy did not produce exactly one handle; inspect target before retrying"));
+		return ResultJson;
+	}
+	TargetSystem->PostEditChange();
 	TargetSystem->RequestCompile(true);
 	TargetSystem->WaitForCompilationComplete();
 	TargetSystem->MarkPackageDirty();
-	SaveNiagaraSystemAsset(TargetSystem);
-	TargetSystem->PostEditChange();
+	TArray<UObject*> Exports;
+	GetObjectsWithOuter(TargetSystem->GetPackage(), Exports, true);
+	TArray<TSharedPtr<FJsonValue>> PrivateReferences;
+	for (UObject* Export : Exports)
+	{
+		if (Export->HasAnyFlags(RF_Transient)) continue;
+		TArray<UObject*> References;
+		FReferenceFinder Finder(References, nullptr, false, true, false, false);
+		Finder.FindReferences(Export);
+		for (UObject* Reference : References)
+			if (Reference && Reference->GetPackage() == SourceSystem->GetPackage() && !Reference->HasAnyFlags(RF_Public | RF_Transient))
+			{
+				auto Entry = MakeShared<FJsonObject>(); Entry->SetStringField(TEXT("referencer"), Export->GetPathName());
+				Entry->SetStringField(TEXT("reference"), Reference->GetPathName()); PrivateReferences.Add(MakeShared<FJsonValueObject>(Entry));
+			}
+	}
+	if (!PrivateReferences.IsEmpty())
+	{
+		ResultJson->SetBoolField(TEXT("success"), false); ResultJson->SetStringField(TEXT("stage"), TEXT("reference_preflight"));
+		ResultJson->SetStringField(TEXT("error"), TEXT("Copied emitter still references private source objects; target not saved. Inspect references before retrying"));
+		ResultJson->SetArrayField(TEXT("private_references"), PrivateReferences); return ResultJson;
+	}
+	if (!TargetSystem->IsValid() || !TargetSystem->IsReadyToRun())
+	{
+		ResultJson->SetBoolField(TEXT("success"), false); ResultJson->SetStringField(TEXT("stage"), TEXT("compile"));
+		ResultJson->SetStringField(TEXT("error"), TEXT("Copied system compilation is not ready/valid; target not saved")); return ResultJson;
+	}
+	const bool Saved = SaveNiagaraSystemAsset(TargetSystem) && !TargetSystem->GetPackage()->IsDirty();
 
-	TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
-	ResultJson->SetStringField(TEXT("status"), TEXT("success"));
+	ResultJson->SetBoolField(TEXT("success"), Saved);
+	ResultJson->SetBoolField(TEXT("saved"), Saved);
+	ResultJson->SetStringField(TEXT("status"), Saved ? TEXT("success") : TEXT("error"));
+	if (!Saved) ResultJson->SetStringField(TEXT("error"), TEXT("Emitter copied in memory but target save failed; inspect before retrying"));
 	ResultJson->SetStringField(TEXT("message"), TEXT("Emitter copied from source system"));
 	ResultJson->SetStringField(TEXT("system"), TargetSystem->GetName());
 	ResultJson->SetStringField(TEXT("source_system"), SourceSystem->GetName());
@@ -1804,6 +1849,90 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleAddEmitterToSystem(cons
 // ─────────────────────────────────────────────────────────────────────────────
 // remove_emitter_from_system
 // ─────────────────────────────────────────────────────────────────────────────
+
+#if WITH_DEV_AUTOMATION_TESTS
+#include "Misc/AutomationTest.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
+#include "Misc/SecureHash.h"
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMCPNiagaraCrossSystemCopyTest, "UnrealMCP.Niagara.CrossSystemEmitterCopy", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMCPNiagaraCrossSystemCopyTest::RunTest(const FString& Parameters)
+{
+	FString Root;
+	if (!FParse::Value(FCommandLine::Get(), TEXT("MCPEmitterCopyRoot="), Root))
+		Root = TEXT("/Game/__Dev/EmitterCopy_") + FGuid::NewGuid().ToString(EGuidFormats::Digits);
+	if (!Root.StartsWith(TEXT("/Game/__Dev/EmitterCopy_")) || !FPackageName::IsValidLongPackageName(Root)) return false;
+	const FString SourcePath = Root + TEXT("/NS_Source"), TargetPath = Root + TEXT("/NS_Target");
+	UNiagaraSystem* Source = nullptr; UNiagaraSystem* Target = nullptr;
+	const bool Reload = FParse::Param(FCommandLine::Get(), TEXT("MCPEmitterCopyReload"));
+	if (Reload)
+	{
+		Source = Cast<UNiagaraSystem>(UEditorAssetLibrary::LoadAsset(SourcePath));
+		Target = Cast<UNiagaraSystem>(UEditorAssetLibrary::LoadAsset(TargetPath));
+	}
+	else
+	{
+		if (FPackageName::DoesPackageExist(SourcePath) || FPackageName::DoesPackageExist(TargetPath))
+		{ AddError(TEXT("Fixture root occupied; nothing overwritten")); return false; }
+		FString FixtureSource = TEXT("/Niagara/DefaultAssets/DefaultSystem");
+		const bool RealSource = FParse::Value(FCommandLine::Get(), TEXT("MCPEmitterSource="), FixtureSource);
+		Source = Cast<UNiagaraSystem>(UEditorAssetLibrary::DuplicateAsset(FixtureSource, SourcePath));
+		Target = Cast<UNiagaraSystem>(UEditorAssetLibrary::DuplicateAsset(TEXT("/Niagara/DefaultAssets/DefaultSystem"), TargetPath));
+		if (!TestNotNull(TEXT("Source system"), Source) || !TestNotNull(TEXT("Target system"), Target)) return false;
+		FUnrealMCPNiagaraCommands Commands;
+		auto Add = MakeShared<FJsonObject>(); Add->SetStringField(TEXT("path"), SourcePath);
+		Add->SetStringField(TEXT("template_name"), TEXT("SimpleSpriteBurst")); Add->SetStringField(TEXT("new_emitter_name"), TEXT("Refraction"));
+		if (!RealSource)
+		{
+			auto Added = Commands.HandleCommand(TEXT("add_emitter_to_system"), Add);
+			if (!TestTrue(TEXT("Engine template added"), Added->HasField(TEXT("new_emitter")))) return false;
+		}
+		auto Selected = Source->GetEmitterHandles().FindByPredicate([](const FNiagaraEmitterHandle& Handle) { return Handle.GetName() == TEXT("Refraction"); });
+		if (!TestNotNull(TEXT("Refraction source layer"), Selected)) return false;
+		auto& SourceHandle = *Selected;
+		SourceHandle.GetInstance().Emitter->bIsInheritable = true;
+		if (!RealSource)
+		{
+			SourceHandle.GetEmitterData()->bLocalSpace = true;
+			SourceHandle.SetIsEnabled(false, *Source, false);
+		}
+		Source->PostEditChange(); Source->RequestCompile(true); Source->WaitForCompilationComplete();
+		if (!TestTrue(TEXT("Save source fixture"), SaveNiagaraSystemAsset(Source))) return false;
+		if (!TestTrue(TEXT("Save initial target"), SaveNiagaraSystemAsset(Target))) return false;
+		FString SourceFile; FPackageName::DoesPackageExist(SourcePath, &SourceFile);
+		const FMD5Hash SourceHash = FMD5Hash::HashFile(*SourceFile);
+		auto Copy = MakeShared<FJsonObject>(); Copy->SetStringField(TEXT("path"), TargetPath);
+		Copy->SetStringField(TEXT("source_system_path"), SourcePath); Copy->SetStringField(TEXT("source_emitter_name"), TEXT("Refraction"));
+		Copy->SetStringField(TEXT("new_emitter_name"), TEXT("RefractionCopy"));
+		auto Result = Commands.HandleCommand(TEXT("add_emitter_to_system"), Copy);
+		if (!TestTrue(TEXT("Cross-system copy saved without private reference fatal"), Result->GetBoolField(TEXT("success"))))
+		{ FString Error; Result->TryGetStringField(TEXT("error"), Error); AddError(Error); return false; }
+		TestTrue(TEXT("Actual save receipt"), Result->GetBoolField(TEXT("saved")));
+		TestTrue(TEXT("Original file untouched"), SourceHash == FMD5Hash::HashFile(*SourceFile));
+	}
+	if (!TestNotNull(TEXT("Source available"), Source) || !TestNotNull(TEXT("Target available"), Target)) return false;
+	Source->WaitForCompilationComplete(); Target->WaitForCompilationComplete();
+	if (!TestEqual(TEXT("Original layer plus one copied emitter"), Target->GetEmitterHandles().Num(), 2)) return false;
+	const FNiagaraEmitterHandle* CopiedHandle = Target->GetEmitterHandles().FindByPredicate([](const FNiagaraEmitterHandle& Candidate) { return Candidate.GetName() == TEXT("RefractionCopy"); });
+	const FNiagaraEmitterHandle* OriginalHandle = Source->GetEmitterHandles().FindByPredicate([](const FNiagaraEmitterHandle& Candidate) { return Candidate.GetName() == TEXT("Refraction"); });
+	if (!TestNotNull(TEXT("Copied layer found"), CopiedHandle) || !TestNotNull(TEXT("Source layer found"), OriginalHandle)) return false;
+	const auto& Handle = *CopiedHandle;
+	TestEqual(TEXT("Requested display name"), Handle.GetName(), FName(TEXT("RefractionCopy")));
+	TestEqual(TEXT("Enabled state preserved"), Handle.GetIsEnabled(), OriginalHandle->GetIsEnabled());
+	TestTrue(TEXT("Local-space setting preserved"), Handle.GetEmitterData()->bLocalSpace == OriginalHandle->GetEmitterData()->bLocalSpace);
+	TestNull(TEXT("No private source parent"), Handle.GetEmitterData()->GetParent().Emitter);
+	TestNull(TEXT("No previous-merge parent"), Handle.GetEmitterData()->GetParentAtLastMerge().Emitter);
+	TestEqual(TEXT("Copied emitter belongs to target"), Handle.GetInstance().Emitter->GetOuter(), static_cast<UObject*>(Target));
+	TestTrue(TEXT("Source still inheritable and unchanged"), OriginalHandle->GetInstance().Emitter->bIsInheritable);
+	TestTrue(TEXT("Target compiles"), Target->IsValid() && Target->IsReadyToRun());
+	TestFalse(TEXT("Target clean after save/reload"), Target->GetPackage()->IsDirty());
+	TestFalse(TEXT("Source remains clean"), Source->GetPackage()->IsDirty());
+	AddInfo(TEXT("Emitter copy fixture: ") + Root);
+	return !HasAnyErrors();
+}
+#endif
 
 TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleRemoveEmitterFromSystem(const TSharedPtr<FJsonObject>& Params)
 {

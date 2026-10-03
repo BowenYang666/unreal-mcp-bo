@@ -10,6 +10,7 @@
 #include "Materials/MaterialExpressionVectorParameter.h"
 #include "Materials/MaterialExpressionTextureBase.h"
 #include "Materials/MaterialExpressionTextureSampleParameter.h"
+#include "Materials/MaterialExpressionTextureSampleParameter2D.h"
 #include "Materials/MaterialExpressionComment.h"
 #include "Materials/MaterialExpressionCustom.h"
 #include "Materials/MaterialExpressionDynamicParameter.h"
@@ -26,6 +27,8 @@
 #include "ScopedTransaction.h"
 #include "UObject/Package.h"
 #include "ShaderCompiler.h"
+#include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphNode.h"
 
 static void AddMaterialInstanceContract(UMaterialInstanceConstant* Instance, TSharedPtr<FJsonObject> Result);
 
@@ -54,6 +57,10 @@ TSharedPtr<FJsonObject> FUnrealMCPMaterialCommands::HandleCommand(const FString&
     else if (CommandType == TEXT("add_material_expression"))
     {
         return HandleAddMaterialExpression(Params);
+    }
+    else if (CommandType == TEXT("delete_material_expression"))
+    {
+        return HandleDeleteMaterialExpression(Params);
     }
     else if (CommandType == TEXT("set_material_expression_property"))
     {
@@ -301,6 +308,7 @@ TSharedPtr<FJsonObject> FUnrealMCPMaterialCommands::HandleReadMaterial(const TSh
 
         TSharedPtr<FJsonObject> NodeObj = MakeShareable(new FJsonObject);
         NodeObj->SetNumberField(TEXT("index"), i);
+        NodeObj->SetStringField(TEXT("object_path"), Expr->GetPathName());
         NodeObj->SetStringField(TEXT("type"), Expr->GetClass()->GetName());
         NodeObj->SetStringField(TEXT("description"), Expr->GetDescription());
         NodeObj->SetNumberField(TEXT("pos_x"), Expr->MaterialExpressionEditorX);
@@ -705,6 +713,74 @@ static UMaterialExpression* GetExpressionByIndex(UMaterial* Material, int32 Node
 // ============================================================================
 // create_material
 // ============================================================================
+TSharedPtr<FJsonObject> FUnrealMCPMaterialCommands::HandleDeleteMaterialExpression(const TSharedPtr<FJsonObject>& Params)
+{
+    auto Result = MakeShared<FJsonObject>();
+    Result->SetBoolField(TEXT("success"), false); Result->SetBoolField(TEXT("modified"), false); Result->SetBoolField(TEXT("saved"), false);
+    auto Fail = [&](const FString& Error) { Result->SetStringField(TEXT("error"), Error); return Result; };
+    FString AssetPath, ExpectedPath; int32 Index; bool DryRun = true;
+    if (!GEditor || GEditor->PlayWorld || GEditor->bIsSimulatingInEditor) return Fail(TEXT("Material deletion requires editor mode outside PIE/Simulate"));
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath) || !AssetPath.StartsWith(TEXT("/Game/"))
+        || !Params->TryGetNumberField(TEXT("node_index"), Index) || !Params->TryGetStringField(TEXT("expected_node_path"), ExpectedPath) || ExpectedPath.IsEmpty()
+        || (Params->HasField(TEXT("dry_run")) && !Params->TryGetBoolField(TEXT("dry_run"), DryRun)))
+        return Fail(TEXT("Require a /Game material asset_path, integer node_index and expected_node_path from read_material; dry_run must be boolean"));
+    for (const auto& Pair : Params->Values)
+        if (Pair.Key != TEXT("asset_path") && Pair.Key != TEXT("node_index") && Pair.Key != TEXT("expected_node_path") && Pair.Key != TEXT("dry_run"))
+            return Fail(TEXT("Unknown deletion parameter: ") + Pair.Key);
+    TSharedPtr<FJsonObject> Error;
+    UMaterial* Material = LoadMaterialFromParams(Params, Error);
+    if (!Material) return Fail(TEXT("Target must be an existing base Material, not an instance or function"));
+    UMaterialExpression* Expression = GetExpressionByIndex(Material, Index, Error);
+    if (!Expression || Expression->GetOuter() != Material) return Fail(TEXT("Node index is invalid or is not owned directly by this material"));
+    if (Expression->GetPathName() != ExpectedPath) return Fail(TEXT("Node identity changed; call read_material again before deleting"));
+    auto& Expressions = Material->GetEditorOnlyData()->ExpressionCollection.Expressions;
+    const int32 BeforeCount = Expressions.Num();
+    TArray<TSharedPtr<FJsonValue>> Links;
+    for (int32 NodeIndex = 0; NodeIndex < Expressions.Num(); ++NodeIndex)
+    {
+        auto Candidate = Expressions[NodeIndex];
+        if (!Candidate || Candidate == Expression) continue;
+        for (int32 InputIndex = 0; FExpressionInput* Input = Candidate->GetInput(InputIndex); ++InputIndex)
+        {
+            if (Input && Input->Expression == Expression)
+            {
+                auto Link = MakeShared<FJsonObject>(); Link->SetNumberField(TEXT("node_index"), NodeIndex);
+                Link->SetNumberField(TEXT("input_index"), InputIndex); Links.Add(MakeShared<FJsonValueObject>(Link));
+            }
+        }
+    }
+    for (int32 Property = 0; Property < MP_MAX; ++Property)
+        if (FExpressionInput* Input = Material->GetExpressionInputForProperty(static_cast<EMaterialProperty>(Property)))
+            if (Input->Expression == Expression)
+            {
+                auto Link = MakeShared<FJsonObject>(); Link->SetNumberField(TEXT("material_property"), Property); Links.Add(MakeShared<FJsonValueObject>(Link));
+            }
+    Result->SetStringField(TEXT("asset_path"), Material->GetPathName()); Result->SetStringField(TEXT("deleted_node_path"), ExpectedPath);
+    Result->SetStringField(TEXT("node_type"), Expression->GetClass()->GetName()); Result->SetNumberField(TEXT("node_index"), Index);
+    Result->SetArrayField(TEXT("connections_to_break"), Links); Result->SetNumberField(TEXT("node_count_before"), BeforeCount);
+    Result->SetBoolField(TEXT("dry_run"), DryRun);
+    if (!DryRun)
+    {
+        const FScopedTransaction Transaction(NSLOCTEXT("UnrealMCP", "DeleteMaterialExpression", "Delete material expression"));
+        Material->Modify(); Material->GetEditorOnlyData()->Modify(); Expression->Modify();
+        for (UMaterialExpression* Candidate : Expressions) if (Candidate && Candidate != Expression) Candidate->Modify();
+        if (UEdGraphNode* Node = Expression->GraphNode)
+        {
+            Node->Modify();
+            if (UEdGraph* Graph = Node->GetGraph()) { Graph->Modify(); Graph->RemoveNode(Node); }
+        }
+        UMaterialEditingLibrary::DeleteMaterialExpression(Material, Expression);
+        UMaterialEditingLibrary::RecompileMaterial(Material);
+        Result->SetBoolField(TEXT("modified"), true);
+    }
+    const bool Success = DryRun || (Expressions.Num() == BeforeCount - 1 && !Expressions.Contains(Expression));
+    Result->SetBoolField(TEXT("success"), Success); Result->SetNumberField(TEXT("node_count_after"), Expressions.Num());
+    Result->SetBoolField(TEXT("package_dirty"), Material->GetPackage()->IsDirty());
+    Result->SetBoolField(TEXT("indices_invalidated"), !DryRun);
+    if (!Success) Result->SetStringField(TEXT("error"), TEXT("Node deletion readback failed; inspect graph before retrying"));
+    return Result;
+}
+
 TSharedPtr<FJsonObject> FUnrealMCPMaterialCommands::HandleCreateMaterial(const TSharedPtr<FJsonObject>& Params)
 {
     if (!Params->HasField(TEXT("asset_path")))
@@ -2026,6 +2102,84 @@ TSharedPtr<FJsonObject> FUnrealMCPMaterialCommands::HandleSetMaterialInstancePar
 #include "Engine/Texture2D.h"
 #include "Misc/PackageName.h"
 #include "HAL/FileManager.h"
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMCPMaterialDeleteExpressionTest, "UnrealMCP.Material.DeleteExpression", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMCPMaterialDeleteExpressionTest::RunTest(const FString& Parameters)
+{
+    FString Root;
+    if (!FParse::Value(FCommandLine::Get(), TEXT("MCPMaterialDeleteRoot="), Root))
+        Root = TEXT("/Game/__Dev/MaterialDelete_") + FGuid::NewGuid().ToString(EGuidFormats::Digits);
+    if (!Root.StartsWith(TEXT("/Game/__Dev/MaterialDelete_")) || !FPackageName::IsValidLongPackageName(Root)) return false;
+    const FString MaterialPath = Root + TEXT("/M_Test"), TexturePath = Root + TEXT("/T_Unused");
+    auto HasTextureDependency = [&]()
+    {
+        TArray<FName> Dependencies;
+        FAssetRegistryModule::GetRegistry().GetDependencies(FName(*MaterialPath), Dependencies, UE::AssetRegistry::EDependencyCategory::Package);
+        return Dependencies.Contains(FName(*TexturePath));
+    };
+    if (FParse::Param(FCommandLine::Get(), TEXT("MCPMaterialDeleteReload")))
+    {
+        auto Material = Cast<UMaterial>(UEditorAssetLibrary::LoadAsset(MaterialPath));
+        if (!TestNotNull(TEXT("Reload edited material"), Material)) return false;
+        TestEqual(TEXT("Only intended remaining node persisted"), Material->GetExpressions().Num(), 1);
+        TestFalse(TEXT("Unused texture no longer a disk dependency"), HasTextureDependency());
+        TestTrue(TEXT("Texture asset was not deleted"), FPackageName::DoesPackageExist(TexturePath));
+        return !HasAnyErrors();
+    }
+    if (FPackageName::DoesPackageExist(MaterialPath) || FPackageName::DoesPackageExist(TexturePath))
+    { AddError(TEXT("Fixture root occupied; nothing overwritten")); return false; }
+    auto Material = NewObject<UMaterial>(CreatePackage(*MaterialPath), TEXT("M_Test"), RF_Public | RF_Standalone | RF_Transactional);
+    auto Texture = NewObject<UTexture2D>(CreatePackage(*TexturePath), TEXT("T_Unused"), RF_Public | RF_Standalone | RF_Transactional);
+    FAssetRegistryModule::AssetCreated(Material); FAssetRegistryModule::AssetCreated(Texture);
+    if (!TestTrue(TEXT("Save independent texture fixture"), UEditorAssetLibrary::SaveLoadedAsset(Texture, false))) return false;
+    auto Kept = UMaterialEditingLibrary::CreateMaterialExpression(Material, UMaterialExpressionScalarParameter::StaticClass());
+    auto Removed = Cast<UMaterialExpressionTextureBase>(UMaterialEditingLibrary::CreateMaterialExpression(Material, UMaterialExpressionTextureSampleParameter2D::StaticClass()));
+    if (!TestNotNull(TEXT("Kept node"), Kept) || !TestNotNull(TEXT("Removed node"), Removed)) return false;
+    Removed->Texture = Texture;
+    if (!TestTrue(TEXT("Save material with disconnected dependency"), UEditorAssetLibrary::SaveLoadedAsset(Material, false))) return false;
+    FString Filename; FPackageName::DoesPackageExist(MaterialPath, &Filename);
+    FAssetRegistryModule::GetRegistry().ScanModifiedAssetFiles({Filename});
+    TestTrue(TEXT("Disconnected node is initially a dependency"), HasTextureDependency());
+    auto Request = MakeShared<FJsonObject>(); Request->SetStringField(TEXT("asset_path"), MaterialPath);
+    Request->SetNumberField(TEXT("node_index"), 1); Request->SetStringField(TEXT("expected_node_path"), Removed->GetPathName());
+    FUnrealMCPMaterialCommands Commands;
+    auto Preview = Commands.HandleCommand(TEXT("delete_material_expression"), Request);
+    TestTrue(TEXT("Default preview succeeds"), Preview->GetBoolField(TEXT("success")));
+    TestFalse(TEXT("Preview does not dirty material"), Material->GetPackage()->IsDirty());
+    TestEqual(TEXT("Preview preserves nodes"), Material->GetExpressions().Num(), 2);
+    Request->SetBoolField(TEXT("dry_run"), false); Request->SetStringField(TEXT("expected_node_path"), Kept->GetPathName());
+    TestFalse(TEXT("Stale index identity refuses deletion"), Commands.HandleCommand(TEXT("delete_material_expression"), Request)->GetBoolField(TEXT("success")));
+    Request->SetStringField(TEXT("expected_node_path"), Removed->GetPathName());
+    auto Deleted = Commands.HandleCommand(TEXT("delete_material_expression"), Request);
+    TestTrue(TEXT("Actual deletion succeeds"), Deleted->GetBoolField(TEXT("success")));
+    TestFalse(TEXT("Does not save automatically"), Deleted->GetBoolField(TEXT("saved")));
+    TestTrue(TEXT("Index invalidation reported"), Deleted->GetBoolField(TEXT("indices_invalidated")));
+    TestEqual(TEXT("Only the disconnected node removed"), Material->GetExpressions().Num(), 1);
+    TestTrue(TEXT("Unrelated node retained"), Material->GetExpressions().Contains(Kept));
+    GEditor->UndoTransaction();
+    TestEqual(TEXT("Undo restores removed expression"), Material->GetExpressions().Num(), 2);
+    TestTrue(TEXT("Restored expression valid"), IsValid(Removed));
+    TestTrue(TEXT("Delete after undo"), Commands.HandleCommand(TEXT("delete_material_expression"), Request)->GetBoolField(TEXT("success")));
+    TestTrue(TEXT("Save edited material explicitly"), UEditorAssetLibrary::SaveLoadedAsset(Material, false));
+    FAssetRegistryModule::GetRegistry().ScanModifiedAssetFiles({Filename});
+    TestFalse(TEXT("Saved material no longer references unused texture"), HasTextureDependency());
+    TestTrue(TEXT("Unused texture itself remains"), FPackageName::DoesPackageExist(TexturePath));
+    TestFalse(TEXT("Stale delete never removes another node"), Commands.HandleCommand(TEXT("delete_material_expression"), Request)->GetBoolField(TEXT("success")));
+    Request->SetNumberField(TEXT("node_index"), 0); Request->SetStringField(TEXT("expected_node_path"), Kept->GetPathName());
+    Material->GetEditorOnlyData()->EmissiveColor.Expression = Kept;
+    Request->SetBoolField(TEXT("dry_run"), true);
+    TestEqual(TEXT("Preview reports output connection"), Commands.HandleCommand(TEXT("delete_material_expression"), Request)->GetArrayField(TEXT("connections_to_break")).Num(), 1);
+    Request->SetBoolField(TEXT("dry_run"), false);
+    TestTrue(TEXT("Connected expression deletion"), Commands.HandleCommand(TEXT("delete_material_expression"), Request)->GetBoolField(TEXT("success")));
+    TestTrue(TEXT("Output reference broken"), Material->GetEditorOnlyData()->EmissiveColor.Expression == nullptr);
+    GEditor->UndoTransaction();
+    TestTrue(TEXT("Output connection restored by undo"), Material->GetEditorOnlyData()->EmissiveColor.Expression == Kept);
+    Material->GetEditorOnlyData()->EmissiveColor.Expression = nullptr;
+    Material->GetPackage()->SetDirtyFlag(false);
+    AddInfo(TEXT("Material deletion fixture: ") + Root);
+    return !HasAnyErrors();
+}
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FUnrealMCPMaterialInstancePreviewTest,
     "UnrealMCP.Material.InstancePreview", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

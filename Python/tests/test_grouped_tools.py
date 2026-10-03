@@ -146,7 +146,7 @@ class GroupedServerTests(unittest.IsolatedAsyncioTestCase):
         grouped = self.load_server()
         direct_tools = await direct.mcp.list_tools()
         grouped_tools = await grouped.mcp.list_tools()
-        self.assertEqual(len(direct_tools), 139)
+        self.assertEqual(len(direct_tools), 140)
         self.assertEqual(len(grouped_tools), 70)
         self.assertEqual(set().union(*direct._CATEGORY_TOOLS.values()), {tool.name for tool in direct_tools})
         size = lambda tools: len(json.dumps([tool.model_dump(exclude_none=True) for tool in tools]))

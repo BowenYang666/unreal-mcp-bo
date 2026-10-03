@@ -11,6 +11,7 @@ class MaterialInstanceParametersTests(unittest.TestCase):
     def setUp(self):
         server = FastMCP("material-instance-test")
         register_material_tools(server)
+        self.tools = server._tool_manager
         self.tool = server._tool_manager.get_tool("set_material_instance_parameters")
         self.connection = Mock()
         module = ModuleType("unreal_mcp_server")
@@ -67,6 +68,41 @@ class MaterialInstanceParametersTests(unittest.TestCase):
         self.assertTrue(result["modified"])
         self.assertEqual(result["parent"], self.parent)
         self.assertEqual(result["message"], "Save failed")
+
+    def test_delete_expression_contract_and_receipt(self):
+        tool = self.tools.get_tool("delete_material_expression")
+        self.assertEqual(tool.parameters["required"], ["asset_path", "node_index", "expected_node_path"])
+        tool.fn(None, "/Game/M_Test", 2, "/Game/M_Test.M_Test:MaterialExpressionTextureSample_0")
+        self.connection.send_command.assert_called_once_with("delete_material_expression", {
+            "asset_path": "/Game/M_Test", "node_index": 2,
+            "expected_node_path": "/Game/M_Test.M_Test:MaterialExpressionTextureSample_0", "dry_run": True})
+        self.connection.send_command.return_value = {"status": "error", "error": "Readback failed", "result": {
+            "modified": True, "saved": False, "indices_invalidated": True}}
+        result = tool.fn(None, "/Game/M_Test", 2, "exact-node", False)
+        self.assertFalse(result["success"])
+        self.assertTrue(result["modified"])
+        self.assertFalse(result["saved"])
+        self.assertTrue(result["indices_invalidated"])
+
+    def test_niagara_copy_failure_keeps_private_reference_receipt(self):
+        from tools.niagara_tools import register_niagara_tools
+        server = FastMCP("niagara-copy-test")
+        register_niagara_tools(server)
+        tool = server._tool_manager.get_tool("add_emitter_to_system")
+        self.connection.send_command.return_value = {"status": "error", "error": "Private source reference", "result": {
+            "modified": True, "saved": False, "stage": "reference_preflight", "private_references": [{"reference": "source-private"}]}}
+        result = tool.fn(None, "/Game/Target", "Refraction", source_asset_full_path="/Game/Source")
+        self.assertTrue(result["modified"])
+        self.assertFalse(result["saved"])
+        self.assertEqual(result["private_references"][0]["reference"], "source-private")
+        self.connection.send_command.assert_called_once()
+        self.connection.reset_mock()
+        self.connection.send_command.side_effect = TimeoutError("timeout")
+        result = tool.fn(None, "/Game/Target", "Refraction", source_asset_full_path="/Game/Source")
+        self.assertEqual(result["stage"], "transport")
+        self.assertNotIn("saved", result)
+        self.assertNotIn("modified", result)
+        self.connection.send_command.assert_called_once()
 
     def test_clear_override_forwarding(self):
         self.tool.fn(None, self.path, clear_scalar_params=["Roughness"], clear_vector_params=["Tint"], clear_texture_params=["MainTex"])

@@ -457,6 +457,12 @@ def register_niagara_tools(mcp: FastMCP):
 
         Use list_niagara_emitter_templates() to see available templates.
         The system is automatically recompiled after the change.
+        Cross-system copies are independent snapshots, not inheritance links to the
+        source system's private emitter. Existing target user parameter bindings are
+        not automatically imported/renamed; configure them explicitly when required.
+        Private source-object references remaining after copy cause a failure before
+        saving (for example unsupported external scratch-pad references). Inspect the
+        modified/saved receipt before retrying; partial in-memory work may remain.
 
         Args:
             ctx: The MCP context
@@ -506,10 +512,10 @@ def register_niagara_tools(mcp: FastMCP):
             response = unreal.send_command("add_emitter_to_system", params)
 
             if not response:
-                return {"success": False, "message": "No response from Unreal Engine"}
+                return {"success": False, "stage": "transport", "message": "No response; modification/save state unknown"}
 
             if response.get("status") == "error":
-                return {"success": False, "message": response.get("error", "Unknown error")}
+                return {**response.get("result", {}), "success": False, "message": response.get("error", "Unknown error")}
 
             result = response.get("result", response)
             logger.info(f"Added emitter: {result.get('new_emitter', '?')} to {result.get('system', '?')}")
@@ -517,7 +523,7 @@ def register_niagara_tools(mcp: FastMCP):
 
         except Exception as e:
             logger.error(f"Error adding emitter: {e}")
-            return {"success": False, "message": str(e)}
+            return {"success": False, "stage": "transport", "message": f"{e}; modification/save state unknown"}
 
     @mcp.tool()
     def remove_emitter_from_system(

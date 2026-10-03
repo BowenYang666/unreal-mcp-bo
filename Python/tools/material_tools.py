@@ -16,6 +16,30 @@ def register_material_tools(mcp: FastMCP):
     """Register material tools with the MCP server."""
 
     @mcp.tool()
+    def delete_material_expression(ctx: Context, asset_path: str, node_index: int,
+                                   expected_node_path: str, dry_run: bool = True) -> dict:
+        """Preview/delete one exact base-Material expression, never saves or deletes textures.
+
+        Example: asset_path='/Game/Materials/M_Ring', node_index=3,
+        expected_node_path copied from read_material.nodes[3].object_path, dry_run=True.
+        Review connections_to_break before applying with dry_run=False. A stale index
+        or mismatched path is refused; after deletion call read_material again before
+        using any node indices. Only /Game base Materials, not instances/functions.
+        Uses Unreal's expression deletion API to break referencing inputs and outputs,
+        remove the parameter entry and expression object, and request recompilation.
+        Undoable editor transaction; saved=False and package_dirty report actual state.
+        Recompile/readback does not guarantee shader work finished. Verify compilation,
+        explicitly save_asset and re-read dependencies before migrating. Another node
+        may still reference the texture; this never globally removes an asset dependency.
+        New native plugin required; old versions reject this operation. Timeout is
+        unknown: re-read the graph rather than blindly retrying the old index.
+        """
+        from tools.project_tools import call_asset_command
+        return call_asset_command("delete_material_expression", {
+            "asset_path": asset_path, "node_index": node_index,
+            "expected_node_path": expected_node_path, "dry_run": dry_run})
+
+    @mcp.tool()
     def set_material_physical_material(ctx: Context, asset_path: str, physical_material_path: str,
                                        expected_value: str = None, save: bool = True) -> dict:
         """Assign/clear the PhysicalMaterial reference on a Material or constant MI.

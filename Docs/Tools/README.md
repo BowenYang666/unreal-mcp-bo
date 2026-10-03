@@ -1,7 +1,7 @@
 # Unreal MCP Tools
 
-Index for **139 internal operations**. Default grouped mode exposes **70 MCP
-tools** before read-only/category filtering; direct compatibility mode exposes 139.
+Index for **140 internal operations**. Default grouped mode exposes **70 MCP
+tools** before read-only/category filtering; direct compatibility mode exposes 140.
 
 - [Actor Tools](actor_tools.md) (8)
 - [Scene Tools](scene_tools.md) (20) - Guarded instances, captures, imports, placement manifests, Outliner folders, temporary editor visibility and controlled undo
@@ -12,7 +12,7 @@ tools** before read-only/category filtering; direct compatibility mode exposes 1
 - [Reading Blueprints](reading_blueprints.md) - How to discover and inspect existing Blueprints
 - [Node Tools](node_tools.md) (8)
 - [Niagara Tools](niagara_tools.md) (25)
-- [Material Tools](material_tools.md) (16)
+- [Material Tools](material_tools.md) (17)
 - [UMG Tools](umg_tools.md) (20) - Widget Blueprints / in-game UI
 - [Project Tools](project_tools.md) (6) - Input mappings, reflection, Behavior Trees, Blackboards, StateTrees
 - [Navigation Tools](navigation_tools.md) (6) - NavMesh bounds, build status, point projection, and pathfinding
@@ -74,7 +74,7 @@ routing/argument errors are MCP tool errors.
 
 - `MCP_TOOL_MODE=grouped` (default): 70 public tools; original names from these
 	four categories are internal and cannot be called directly via MCP.
-- `MCP_TOOL_MODE=direct`: all 139 public operations, no grouped entry points.
+- `MCP_TOOL_MODE=direct`: all 140 public operations, no grouped entry points.
 - `UNREAL_MCP_READ_ONLY=1`: 30 public tools in grouped mode, 41 in direct mode.
 	Only approved read operations remain; hidden writes cannot be searched or run.
 - Existing `MCP_MATERIAL_ENABLED`, `MCP_NIAGARA_ENABLED`, `MCP_UMG_ENABLED`, `MCP_SCENE_ENABLED`

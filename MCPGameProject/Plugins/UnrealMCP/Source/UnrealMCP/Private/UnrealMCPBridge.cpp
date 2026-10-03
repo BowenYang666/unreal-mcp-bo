@@ -413,6 +413,7 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("get_material_instance_parameters") ||
                      CommandType == TEXT("create_material") ||
                      CommandType == TEXT("add_material_expression") ||
+                     CommandType == TEXT("delete_material_expression") ||
                      CommandType == TEXT("set_material_expression_property") ||
                      CommandType == TEXT("connect_material_expressions") ||
                      CommandType == TEXT("connect_material_to_property") ||
@@ -493,6 +494,7 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                 ResponseJson->SetStringField(TEXT("status"), TEXT("error"));
                 ResponseJson->SetStringField(TEXT("error"), ErrorMessage);
                 if (CommandType == TEXT("duplicate_asset") || CommandType == TEXT("set_material_instance_parameters")
+                    || CommandType == TEXT("delete_material_expression") || CommandType == TEXT("add_emitter_to_system")
                     || CommandType == TEXT("set_asset_properties") || CommandType == TEXT("create_data_asset")
                     || CommandType == TEXT("create_physical_material") || CommandType == TEXT("set_material_physical_material")
                     || CommandType == TEXT("set_component_physical_material") || CommandType == TEXT("set_component_property")

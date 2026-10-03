@@ -35,6 +35,7 @@ it does not update the target C++ plugin or authorize editor operations.
 |------|---------|
 | `create_material` | Create a new empty material asset |
 | `add_material_expression` | Add a node (e.g. Multiply, VectorParameter) |
+| `delete_material_expression` | Preview/delete one node using its index and expected object_path; never auto-saves |
 | `set_material_expression_property` | Set a property on a node (e.g. ParameterName, Constant) |
 | `connect_material_expressions` | Wire one node's output to another's input |
 | `connect_material_to_property` | Wire a node to a material output (BaseColor, Roughness, etc.) |
@@ -192,6 +193,7 @@ Use `set_material_instance_parameters` for later iteration instead of recreating
 6. **Comment boxes are wide, not tall**: A typical comment box is ~800-1200px wide and ~250-350px tall — it wraps a horizontal chain. If you see a comment that's taller than it is wide, something is wrong.
 
 7. **Treat node indices as a graph snapshot**: Appending nodes preserves existing indices, so recording each returned index during creation is valid. After deleting, recreating, or otherwise structurally changing nodes, call `read_material` again before further index-based edits.
+        For deletion, use `material_search(tool="delete_material_expression")`, pass `node_index` and `expected_node_path` from that node's `object_path`, and preview with `dry_run=true` before applying. A disconnected texture node can still retain a migration dependency; explicitly save and recheck dependencies after deletion. The texture asset itself is never deleted.
 
 8. **Shared nodes**: If a node (e.g. a Noise texture) feeds into multiple chains, place it between those rows at an intermediate Y position. It belongs to whichever chain you assign visually, but keep connections clear.
 

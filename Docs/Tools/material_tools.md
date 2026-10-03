@@ -2,7 +2,7 @@
 
 Tools for creating and editing Material graphs and Material Instances programmatically.
 
-The material category contains 16 operations. In default grouped mode use
+The material category contains 17 operations. In default grouped mode use
 `material_search`, then `material_call_read` or `material_call_write` with the
 operation name and its arguments. See the [calling guide](README.md#grouped-mode-default).
 The names/examples below are internal operations, or direct calls when
@@ -31,6 +31,7 @@ omitted. The `name`/`path` readers require at least one of those selectors.
 | `set_material_instance_parameters` | `asset_path`, `scalar_params=None`, `vector_params=None`, `texture_params=None`, `parent_material_path=""`, `save=False`, `clear_scalar_params=None`, `clear_vector_params=None`, `clear_texture_params=None` |
 | `set_material_physical_material` | `asset_path`, `physical_material_path`, `expected_value=None`, `save=True` |
 | `add_material_expression` | `asset_path`, `expression_type`, `pos_x=0`, `pos_y=0` |
+| `delete_material_expression` | `asset_path`, `node_index`, `expected_node_path`, `dry_run=True` |
 | `set_material_expression_property` | `asset_path`, `node_index`, `property_name`, `value=None` (supply a value appropriate for the property) |
 | `connect_material_expressions` | `asset_path`, `from_node_index`, `to_node_index`, `to_input_name`, `from_output_name=""` |
 | `connect_material_to_property` | `asset_path`, `node_index`, `material_property`, `output_name=""` |
@@ -240,6 +241,46 @@ from `Python`, and UE automation `UnrealMCP.Material.InstanceParent` (transient
 fixtures, no project assets saved).
 
 ## Graph Editing
+
+### `delete_material_expression`
+
+Delete one expression in a `/Game` base Material, not a MaterialInstance or function.
+First call `read_material`; every node now includes its exact `object_path`. Pass both
+that path as `expected_node_path` and the current `node_index`. If either identity is
+stale, deletion is refused. Always re-read indices after structural edits.
+
+```text
+material_search(tool="delete_material_expression")
+material_call_write(tool="delete_material_expression", arguments={
+  "asset_path":"/Game/Materials/M_Ring",
+  "node_index":3,
+  "expected_node_path":"/Game/Materials/M_Ring.M_Ring:MaterialExpressionTextureSample_0",
+  "dry_run":true
+})
+```
+
+These paths are illustrative: copy actual identities from inspection. Default preview
+returns `connections_to_break` (expression-input or material-output references) and
+node counts without modifying the asset. Explicit `dry_run=false` removes only the
+selected node using Unreal's expression API, removes a corresponding graph node if
+present, clears its parameter entry/referencing inputs, and requests compilation.
+An editor undo transaction restores nodes and links; it is not a Scene undo ticket.
+
+The operation never deletes the texture asset and never automatically saves. Inspect
+`success`, `modified`, `saved=false`, `package_dirty`, and `indices_invalidated`, then
+verify compilation and explicitly `save_asset` before migration. Shader work may still
+be pending. A disconnected node can carry a dependency; deleting one such node only
+removes that reference, not references from any remaining nodes or assets. Recheck the
+saved dependency graph. Unknown transport outcomes require inspection, not retrying an
+old index. Old native plugins reject this new operation; Python discovery is not proof
+of deployment.
+
+2026-10-03: native `UnrealMCP.Material.DeleteExpression` passed preview/stale-identity,
+disconnected-node removal, connected-output cleanup, undo, explicit save and fresh-
+process dependency tests in the repository fixture and SkillTest. SkillTest fixture:
+`/Game/__Dev/MaterialDelete_2577b53ff6e7416182bc4a09adfd5c96`; the texture asset remained
+present while the saved material no longer referenced it. No production wave-ring
+material or original texture was edited.
 
 ### `add_material_expression`
 Use an expression class name with or without the `MaterialExpression` prefix.

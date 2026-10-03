@@ -28,7 +28,7 @@ uv --directory ./Python run python scripts/actors/test_cube.py
 
 ## Environment Controls
 
-- `MCP_TOOL_MODE=grouped` (default): expose Material/Niagara/UMG/Scene search/read/write entry points, 70 public tools before filtering. `direct` exposes all 139 operations directly. Scene's original names are internal in grouped mode; discover contracts through `scene_search`. See the [calling guide](../Docs/Tools/README.md#grouped-mode-default).
+- `MCP_TOOL_MODE=grouped` (default): expose Material/Niagara/UMG/Scene search/read/write entry points, 70 public tools before filtering. `direct` exposes all 140 operations directly. Scene's original names are internal in grouped mode; discover contracts through `scene_search`. See the [calling guide](../Docs/Tools/README.md#grouped-mode-default).
 - `MCP_SCENE_ENABLED`: controls 20 guarded scene operations. See [scene tools](../Docs/Tools/scene_tools.md) for identity, preview, task status and save constraints. Folder parameters require native `folder_contract=1`; temporary actor hiding requires `editor_visibility_contract=1`, not merely updated Python schemas.
 - `UNREAL_MCP_PORT`: native editor TCP port, default 13090. Match `-UnrealMCPPort=<port>` when running multiple editors. Host remains loopback.
 - `UNREAL_MCP_READ_ONLY=1`: expose only the current read-only whitelist.
