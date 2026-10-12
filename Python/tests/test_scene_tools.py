@@ -51,6 +51,29 @@ class SceneToolsTests(unittest.TestCase):
         self.assertNotIn("saved", receipt)
         self.connection.send_command.assert_called_once()
 
+    def test_open_asset_world_refusal_preserves_guidance_without_retry(self):
+        from tools.editor_tools import register_editor_tools
+        server = FastMCP("open-asset-test")
+        register_editor_tools(server)
+        tool = server._tool_manager.get_tool("open_asset")
+        self.assertEqual(tool.parameters["required"], ["asset_path"])
+        self.assertIn("open_level", tool.description)
+        self.connection.send_command.return_value = {"status": "error", "error": "World/map assets must use open_level"}
+        result = tool.fn(None, "/Game/Maps/Test")
+        self.assertFalse(result["success"])
+        self.assertIn("open_level", result["message"])
+        self.connection.send_command.assert_called_once_with("open_asset", {"asset_path": "/Game/Maps/Test"})
+
+    def test_light_contribution_values_and_selectors_are_not_rewritten(self):
+        for field, value in (("IndirectLightingIntensity", 1), ("VolumetricScatteringIntensity", 0),
+                             ("VolumetricScatteringIntensity", 0.1), ("VolumetricFogStartDistance", 30)):
+            self.connection.reset_mock()
+            changes = [{"path": field, "value": value, "expected_value": 3}]
+            self.tools.get_tool("patch_scene_target").fn(None, "project", "map", "exact-actor-path", changes, "exact-component")
+            self.connection.send_command.assert_called_once_with("patch_scene_target", {
+                "project_path": "project", "level_path": "map", "actor_path": "exact-actor-path",
+                "component_name": "exact-component", "changes": changes})
+
     def test_filters_and_port(self):
         fixture = test_grouped_tools.GroupedServerTests()
         for mode in ("direct", "grouped"):

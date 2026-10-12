@@ -9,6 +9,7 @@
 #include "GameFramework/PlayerStart.h"
 #include "Editor/Transactor.h"
 #include "Components/DirectionalLightComponent.h"
+#include "Components/LightComponentBase.h"
 #include "Components/ExponentialHeightFogComponent.h"
 #include "Components/PointLightComponent.h"
 #include "Components/RectLightComponent.h"
@@ -198,6 +199,7 @@ namespace
     {
         TSet<FString> Result;
         if (Target->IsA<USceneComponent>()) Result.Append({TEXT("Mobility"), TEXT("bVisible")});
+        if (Target->IsA<ULightComponentBase>()) Result.Append({TEXT("IndirectLightingIntensity"), TEXT("VolumetricScatteringIntensity")});
         if (Target->IsA<ULightComponent>()) Result.Append({TEXT("Intensity"), TEXT("LightColor"), TEXT("Temperature"), TEXT("bUseTemperature"), TEXT("CastShadows")});
         if (Target->IsA<ULocalLightComponent>()) Result.Append({TEXT("IntensityUnits"), TEXT("AttenuationRadius")});
         if (Target->IsA<UPointLightComponent>()) Result.Append({TEXT("SourceRadius"), TEXT("SoftSourceRadius"), TEXT("SourceLength")});
@@ -207,7 +209,7 @@ namespace
         if (Target->IsA<USkyLightComponent>()) Result.Append({TEXT("Intensity"), TEXT("LightColor"), TEXT("SourceType"), TEXT("Cubemap"), TEXT("bRealTimeCapture"), TEXT("SkyDistanceThreshold")});
         if (Target->IsA<UExponentialHeightFogComponent>()) Result.Append({TEXT("FogDensity"), TEXT("FogHeightFalloff"), TEXT("StartDistance"), TEXT("FogInscatteringLuminance"),
             TEXT("bEnableVolumetricFog"), TEXT("VolumetricFogScatteringDistribution"), TEXT("VolumetricFogAlbedo"), TEXT("VolumetricFogEmissive"),
-            TEXT("VolumetricFogExtinctionScale"), TEXT("VolumetricFogDistance")});
+            TEXT("VolumetricFogExtinctionScale"), TEXT("VolumetricFogDistance"), TEXT("VolumetricFogStartDistance")});
         if (Target->IsA<USkyAtmosphereComponent>()) Result.Append({TEXT("RayleighScatteringScale"), TEXT("RayleighScattering"), TEXT("RayleighExponentialDistribution"),
             TEXT("MieScatteringScale"), TEXT("MieScattering"), TEXT("MieAbsorptionScale"), TEXT("MieAbsorption"), TEXT("MieAnisotropy"),
             TEXT("MieExponentialDistribution"), TEXT("AerialPespectiveViewDistanceScale"), TEXT("GroundAlbedo")});
@@ -262,6 +264,7 @@ namespace
     {
         if (Path == TEXT("CurrentFocalLength") || Path.StartsWith(TEXT("Filmback."))) return TEXT("mm");
         if (Path == TEXT("CurrentAperture")) return TEXT("f-stop");
+        if (Path == TEXT("IndirectLightingIntensity") || Path == TEXT("VolumetricScatteringIntensity")) return TEXT("unitless multiplier");
         if (Path == TEXT("LightColor") || Path.EndsWith(TEXT("Albedo"))) return TEXT("sRGB bytes 0..255; R/G/B/A");
         if (Path == TEXT("Intensity")) return Target->IsA<UDirectionalLightComponent>() ? TEXT("lux") : Target->IsA<ULocalLightComponent>() ? TEXT("see IntensityUnits") : TEXT("intensity scale");
         if (Path == TEXT("Temperature") || Path.EndsWith(TEXT("WhiteTemp"))) return TEXT("Kelvin");
@@ -528,7 +531,8 @@ TSharedPtr<FJsonObject> Patch(const TSharedPtr<FJsonObject>& Params)
         if (Item->Requested->Type == EJson::Number)
         {
             const double Number = Item->Requested->AsNumber();
-            if ((Path == TEXT("Intensity") || Path == TEXT("AttenuationRadius") || Path.StartsWith(TEXT("Source")) || Path == TEXT("FogDensity") || Path.EndsWith(TEXT("BlendRadius"))) && Number < 0)
+            if ((Path == TEXT("Intensity") || Path == TEXT("IndirectLightingIntensity") || Path == TEXT("VolumetricScatteringIntensity")
+                || Path == TEXT("VolumetricFogStartDistance") || Path == TEXT("AttenuationRadius") || Path.StartsWith(TEXT("Source")) || Path == TEXT("FogDensity") || Path.EndsWith(TEXT("BlendRadius"))) && Number < 0)
                 return Failure(TEXT("Negative scene magnitude: ") + Path);
             if (Path == TEXT("Temperature") && (Number < 1000 || Number > 15000)) return Failure(TEXT("Temperature requires 1000..15000 Kelvin"));
             if (Path.EndsWith(TEXT("BlendWeight")) && (Number < 0 || Number > 1)) return Failure(TEXT("BlendWeight requires 0..1"));

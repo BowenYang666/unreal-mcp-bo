@@ -350,7 +350,21 @@ but a fresh plan and an isolated destination:
 
 ### open_asset
 
-Open an asset in its default editor window.
+Open a non-map asset in its default editor window (Blueprint, Material Instance,
+Material, animation, Niagara, etc.). World/map assets are refused with guidance to
+use `open_level`. The refusal occurs before `OpenEditorForAsset`: it never reloads
+the current map or saves/discards its edits, even when the requested map is already
+open. Ordinary asset return metadata is captured before opening its editor, without
+dereferencing that asset afterward. Older native plugins do not contain this guard;
+Python description updates alone are not a crash fix.
+
+2026-10-12 validation: `UnrealMCP.Editor.OpenAssetWorldGuard` passed in the repository
+and SkillTest test editors. It checked the current map (package and object paths), a
+different map, clean/dirty current-world states, unchanged world/unsaved Actor identity,
+and ordinary Blueprint/MI opening with reliable returned metadata. The production NF
+map was not used to reproduce the crash. The reported post-open pointer lifetime was
+not debugger-proven; the fix removes the World reload path entirely and avoids any
+post-open dereference rather than assuming a null check is sufficient.
 
 **Parameters:**
 - `asset_path` (string) - Asset path to open

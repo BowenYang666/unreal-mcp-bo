@@ -1,6 +1,10 @@
 #if WITH_DEV_AUTOMATION_TESTS
 #include "Commands/UnrealMCPSceneCommands.h"
 #include "Commands/UnrealMCPSceneAssets.h"
+#include "Commands/UnrealMCPEditorCommands.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "Subsystems/AssetEditorSubsystem.h"
+#include "Materials/MaterialInstanceConstant.h"
 #include "Engine/Texture2D.h"
 #include "EditorAssetLibrary.h"
 #include "ImageUtils.h"
@@ -11,6 +15,16 @@
 #include "Exporters/StaticMeshExporterFBX.h"
 #include "Misc/Base64.h"
 #include "Components/RectLightComponent.h"
+#include "Components/SkyLightComponent.h"
+#include "Components/DirectionalLightComponent.h"
+#include "Components/SpotLightComponent.h"
+#include "Components/ExponentialHeightFogComponent.h"
+#include "Engine/SkyLight.h"
+#include "Engine/DirectionalLight.h"
+#include "Engine/SpotLight.h"
+#include "Engine/ExponentialHeightFog.h"
+#include "LightSceneProxy.h"
+#include <limits>
 #include "Engine/RectLight.h"
 #include "Engine/PostProcessVolume.h"
 #include "Engine/StaticMeshActor.h"
@@ -39,7 +53,200 @@
 #include "Misc/Parse.h"
 #include "Widgets/SViewport.h"
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMCPOpenAssetWorldGuardTest, "UnrealMCP.Editor.OpenAssetWorldGuard", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMCPOpenAssetWorldGuardTest::RunTest(const FString& Parameters)
+{
+    const FString Root = TEXT("/Game/__Dev/SceneTools/OpenAssetGuard_") + FGuid::NewGuid().ToString(EGuidFormats::Digits);
+    auto SaveTestMap = [&](const FString& Name)
+    {
+        UWorld* World = FAutomationEditorCommonUtils::CreateNewMap();
+        const FString Filename = FPackageName::LongPackageNameToFilename(Root + TEXT("/") + Name, FPackageName::GetMapPackageExtension());
+        IFileManager::Get().MakeDirectory(*FPaths::GetPath(Filename), true);
+        return TestTrue(TEXT("Save isolated map: ") + Name, FEditorFileUtils::SaveLevel(World->PersistentLevel, Filename));
+    };
+    if (!SaveTestMap(TEXT("OtherMap")) || !SaveTestMap(TEXT("CurrentMap"))) return false;
+    UWorld* World = GEditor->GetEditorWorldContext().World();
+    auto Sentinel = World->SpawnActor<AStaticMeshActor>();
+    const FVector SentinelLocation(125, 250, 500); Sentinel->SetActorLocation(SentinelLocation);
+    FUnrealMCPEditorCommands Commands;
+    auto Request = MakeShared<FJsonObject>();
+    const FString UndoBefore = UnrealMCPScene::UndoToken();
+    for (const bool Dirty : {false, true})
+    {
+        World->GetPackage()->SetDirtyFlag(Dirty);
+        for (const FString Path : {Root + TEXT("/CurrentMap"), Root + TEXT("/CurrentMap.CurrentMap"), Root + TEXT("/OtherMap")})
+        {
+            Request->SetStringField(TEXT("asset_path"), Path);
+            auto Result = Commands.HandleCommand(TEXT("open_asset"), Request);
+            FString Error; Result->TryGetStringField(TEXT("error"), Error);
+            TestTrue(TEXT("World refused with open_level guidance"), Error.Contains(TEXT("open_level")));
+            TestEqual(TEXT("No current-world replacement"), GEditor->GetEditorWorldContext().World(), World);
+            TestTrue(TEXT("No cleanup of unsaved actor"), IsValid(Sentinel) && !Sentinel->IsActorBeingDestroyed() && Sentinel->GetActorLocation().Equals(SentinelLocation));
+            TestEqual(TEXT("Original dirty state unchanged"), World->GetPackage()->IsDirty(), Dirty);
+            TestEqual(TEXT("No undo mutation"), UnrealMCPScene::UndoToken(), UndoBefore);
+        }
+    }
+    auto Blueprint = FKismetEditorUtilities::CreateBlueprint(AActor::StaticClass(), CreatePackage(*(Root + TEXT("/BP_Test"))),
+        TEXT("BP_Test"), BPTYPE_Normal, UBlueprint::StaticClass(), UBlueprintGeneratedClass::StaticClass());
+    if (!TestNotNull(TEXT("Blueprint fixture"), Blueprint)) return false;
+    FKismetEditorUtilities::CompileBlueprint(Blueprint);
+    auto Instance = NewObject<UMaterialInstanceConstant>(CreatePackage(*(Root + TEXT("/MI_Test"))), TEXT("MI_Test"), RF_Public | RF_Standalone);
+    Instance->SetParentEditorOnly(UMaterial::GetDefaultMaterial(MD_Surface)); Instance->PostEditChange();
+    auto AssetEditors = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>();
+    for (UObject* Asset : TArray<UObject*>{Blueprint, Instance})
+    {
+        FAssetRegistryModule::AssetCreated(Asset);
+        const FString Path = Asset->GetPathName(), ClassName = Asset->GetClass()->GetName();
+        Request->SetStringField(TEXT("asset_path"), Path);
+        auto Result = Commands.HandleCommand(TEXT("open_asset"), Request);
+        bool Opened = false; Result->TryGetBoolField(TEXT("success"), Opened);
+        if (TestTrue(TEXT("Non-map asset still opens: ") + ClassName, Opened))
+        {
+            TestEqual(TEXT("Returned path reliable"), Result->GetStringField(TEXT("asset_path")), Path);
+            TestEqual(TEXT("Returned class reliable"), Result->GetStringField(TEXT("asset_class")), ClassName);
+        }
+        TestEqual(TEXT("Opening asset leaves current world intact"), GEditor->GetEditorWorldContext().World(), World);
+        AssetEditors->CloseAllEditorsForAsset(Asset);
+        Asset->GetPackage()->SetDirtyFlag(false);
+    }
+    World->GetPackage()->SetDirtyFlag(false);
+    FAutomationEditorCommonUtils::CreateNewMap();
+    TestTrue(TEXT("Remove unique current-map fixture"), UEditorAssetLibrary::DeleteAsset(Root + TEXT("/CurrentMap")));
+    TestTrue(TEXT("Remove unique other-map fixture"), UEditorAssetLibrary::DeleteAsset(Root + TEXT("/OtherMap")));
+    return !HasAnyErrors();
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMCPSceneVisibilityTest, "UnrealMCP.Scene.TemporaryEditorVisibility", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMCPSceneLightContributionTest, "UnrealMCP.Scene.LightContributionFields", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMCPSceneLightContributionTest::RunTest(const FString& Parameters)
+{
+    UWorld* World = FAutomationEditorCommonUtils::CreateNewMap();
+    const FString MapPath = TEXT("/Game/__Dev/SceneTools/LightContributions_") + FGuid::NewGuid().ToString(EGuidFormats::Digits);
+    const FString Filename = FPackageName::LongPackageNameToFilename(MapPath, FPackageName::GetMapPackageExtension());
+    IFileManager::Get().MakeDirectory(*FPaths::GetPath(Filename), true);
+    if (!TestTrue(TEXT("Save unique initial fixture map"), FEditorFileUtils::SaveLevel(World->PersistentLevel, Filename))) return false;
+    auto SkyActor = World->SpawnActor<ASkyLight>(); auto Sky = SkyActor->GetLightComponent();
+    auto SunActor = World->SpawnActor<ADirectionalLight>(); auto Sun = SunActor->GetLightComponent();
+    auto SpotActor = World->SpawnActor<ASpotLight>(); auto Spot = CastChecked<USpotLightComponent>(SpotActor->GetLightComponent());
+    auto FogActor = World->SpawnActor<AExponentialHeightFog>(); auto Fog = FogActor->GetComponent();
+    const FString SkyName = SkyActor->GetName(), SunName = SunActor->GetName(), SpotName = SpotActor->GetName(), FogName = FogActor->GetName();
+    Sky->IndirectLightingIntensity = 3.f; Fog->StartDistance = 125.f; Fog->VolumetricFogStartDistance = 0.f;
+    auto Request = MakeShared<FJsonObject>();
+    Request->SetStringField(TEXT("project_path"), FPaths::ConvertRelativePathToFull(FPaths::GetProjectFilePath()));
+    Request->SetStringField(TEXT("level_path"), World->GetPackage()->GetName());
+    auto Select = [&](UActorComponent* Component)
+    {
+        Request->SetStringField(TEXT("actor_path"), Component->GetOwner()->GetPathName());
+        Request->SetStringField(TEXT("component_name"), Component->GetName());
+    };
+    auto Change = [](const FString& Path, const TSharedPtr<FJsonValue>& Value)
+    {
+        auto Item = MakeShared<FJsonObject>(); Item->SetStringField(TEXT("path"), Path); Item->SetField(TEXT("value"), Value); return Item;
+    };
+    auto SetNumber = [&](const FString& Path, double Value, double Expected)
+    {
+        auto Item = Change(Path, MakeShared<FJsonValueNumber>(Value)); Item->SetNumberField(TEXT("expected_value"), Expected);
+        Request->SetArrayField(TEXT("changes"), {MakeShared<FJsonValueObject>(Item)}); return UnrealMCPScene::Patch(Request);
+    };
+    auto CheckRead = [&](const FString& Path, double Expected)
+    {
+        auto Read = UnrealMCPScene::Inspect(Request);
+        if (!TestTrue(TEXT("Inspector succeeds: ") + Path, Read->GetBoolField(TEXT("success")))) return;
+        bool Found = false;
+        for (const auto& Value : Read->GetArrayField(TEXT("properties")))
+            if (Value->AsObject()->GetStringField(TEXT("path")) == Path)
+            {
+                Found = true;
+                TestTrue(TEXT("Field writable: ") + Path, Value->AsObject()->GetBoolField(TEXT("writable")));
+                TestTrue(TEXT("Field readback: ") + Path, FMath::IsNearlyEqual(Value->AsObject()->GetNumberField(TEXT("value")), Expected, 0.0001));
+            }
+        TestTrue(TEXT("Field included by default: ") + Path, Found);
+    };
+    World->GetPackage()->SetDirtyFlag(false); Select(Sky);
+    CheckRead(TEXT("IndirectLightingIntensity"), 3); CheckRead(TEXT("VolumetricScatteringIntensity"), 1);
+    TestFalse(TEXT("Inspection leaves map clean"), World->GetPackage()->IsDirty());
+    TestTrue(TEXT("SkyLight 3 to 1"), SetNumber(TEXT("IndirectLightingIntensity"), 1, 3)->GetBoolField(TEXT("success")));
+    CheckRead(TEXT("IndirectLightingIntensity"), 1);
+    GEditor->UndoTransaction(); TestEqual(TEXT("SkyLight undo restores 3"), Sky->IndirectLightingIntensity, 3.f);
+    TestTrue(TEXT("SkyLight reapply"), SetNumber(TEXT("IndirectLightingIntensity"), 1, 3)->GetBoolField(TEXT("success")));
+    for (ULightComponent* Light : TArray<ULightComponent*>{Sun, Spot})
+    {
+        Select(Light); Light->SetMobility(EComponentMobility::Movable);
+        const float Intensity = Light->Intensity; const FColor Color = Light->LightColor;
+        TUniquePtr<FLightSceneProxy> BeforeProxy(Light->CreateSceneProxy());
+        if (!TestNotNull(TEXT("Initial rendering proxy"), BeforeProxy.Get())) return false;
+        const FLinearColor SurfaceColor = BeforeProxy->GetColor();
+        CheckRead(TEXT("IndirectLightingIntensity"), 1); CheckRead(TEXT("VolumetricScatteringIntensity"), 1);
+        TestTrue(TEXT("0.1 below UI minimum accepted"), SetNumber(TEXT("VolumetricScatteringIntensity"), 0.1, 1)->GetBoolField(TEXT("success")));
+        TestTrue(TEXT("Zero disables volumetric contribution"), SetNumber(TEXT("VolumetricScatteringIntensity"), 0, 0.1)->GetBoolField(TEXT("success")));
+        CheckRead(TEXT("VolumetricScatteringIntensity"), 0);
+        TestEqual(TEXT("Direct intensity preserved"), Light->Intensity, Intensity);
+        TestEqual(TEXT("Direct color preserved"), Light->LightColor, Color);
+        TUniquePtr<FLightSceneProxy> AfterProxy(Light->CreateSceneProxy());
+        if (!TestNotNull(TEXT("Updated rendering proxy"), AfterProxy.Get())) return false;
+        TestEqual(TEXT("Renderer receives zero volumetric scattering"), AfterProxy->GetVolumetricScatteringIntensity(), 0.f);
+        TestTrue(TEXT("Renderer direct lighting unchanged"), AfterProxy->GetColor().Equals(SurfaceColor));
+        GEditor->UndoTransaction(); TestTrue(TEXT("Undo restores fractional scattering"), FMath::IsNearlyEqual(Light->VolumetricScatteringIntensity, 0.1f));
+        TestTrue(TEXT("Restore zero for persistence"), SetNumber(TEXT("VolumetricScatteringIntensity"), 0, 0.1)->GetBoolField(TEXT("success")));
+    }
+    Select(Spot);
+    const float Inner = Spot->InnerConeAngle, Outer = Spot->OuterConeAngle;
+    World->GetPackage()->SetDirtyFlag(false);
+    for (const auto& Bad : TArray<TSharedPtr<FJsonValue>>{MakeShared<FJsonValueString>(TEXT("0")), MakeShared<FJsonValueBoolean>(false),
+        MakeShared<FJsonValueNull>(), MakeShared<FJsonValueNumber>(std::numeric_limits<double>::quiet_NaN()),
+        MakeShared<FJsonValueNumber>(std::numeric_limits<double>::infinity()), MakeShared<FJsonValueNumber>(-1)})
+    {
+        const float Intensity = Spot->Intensity;
+        Request->SetArrayField(TEXT("changes"), {MakeShared<FJsonValueObject>(Change(TEXT("Intensity"), MakeShared<FJsonValueNumber>(Intensity + 10))),
+            MakeShared<FJsonValueObject>(Change(TEXT("VolumetricScatteringIntensity"), Bad))});
+        TestFalse(TEXT("Invalid value rejected before any writes"), UnrealMCPScene::Patch(Request)->GetBoolField(TEXT("success")));
+        TestEqual(TEXT("Earlier valid change not applied"), Spot->Intensity, Intensity);
+        TestFalse(TEXT("Rejected batch leaves map clean"), World->GetPackage()->IsDirty());
+    }
+    auto Valid = Change(TEXT("VolumetricScatteringIntensity"), MakeShared<FJsonValueNumber>(0.1));
+    Request->SetArrayField(TEXT("changes"), {MakeShared<FJsonValueObject>(Valid), MakeShared<FJsonValueObject>(Valid)});
+    TestFalse(TEXT("Duplicate fields rejected"), UnrealMCPScene::Patch(Request)->GetBoolField(TEXT("success")));
+    Request->SetArrayField(TEXT("changes"), {MakeShared<FJsonValueObject>(Valid), MakeShared<FJsonValueObject>(Change(TEXT("BogusField"), MakeShared<FJsonValueNumber>(1)))});
+    TestFalse(TEXT("Unknown field rejects batch"), UnrealMCPScene::Patch(Request)->GetBoolField(TEXT("success")));
+    Valid->SetNumberField(TEXT("expected_value"), 999);
+    Request->SetArrayField(TEXT("changes"), {MakeShared<FJsonValueObject>(Change(TEXT("Intensity"), MakeShared<FJsonValueNumber>(123))), MakeShared<FJsonValueObject>(Valid)});
+    TestFalse(TEXT("Stale expected rejects complete batch"), UnrealMCPScene::Patch(Request)->GetBoolField(TEXT("success")));
+    TestFalse(TEXT("All rejection cases remain clean"), World->GetPackage()->IsDirty());
+    TestTrue(TEXT("UI upper bound not a hard clamp"), SetNumber(TEXT("VolumetricScatteringIntensity"), 5, 0)->GetBoolField(TEXT("success")));
+    TestTrue(TEXT("Restore zero after range check"), SetNumber(TEXT("VolumetricScatteringIntensity"), 0, 5)->GetBoolField(TEXT("success")));
+    TestTrue(TEXT("Cone angles unchanged"), Spot->InnerConeAngle == Inner && Spot->OuterConeAngle == Outer);
+    Select(Fog); CheckRead(TEXT("VolumetricFogStartDistance"), 0);
+    TestTrue(TEXT("Independent volumetric fog start 0 to 30"), SetNumber(TEXT("VolumetricFogStartDistance"), 30, 0)->GetBoolField(TEXT("success")));
+    TestEqual(TEXT("Normal fog start not substituted"), Fog->StartDistance, 125.f);
+    CheckRead(TEXT("VolumetricFogStartDistance"), 30);
+    GEditor->UndoTransaction(); TestEqual(TEXT("Fog undo restores zero"), Fog->VolumetricFogStartDistance, 0.f);
+    TestTrue(TEXT("Fog reapply for persistence"), SetNumber(TEXT("VolumetricFogStartDistance"), 30, 0)->GetBoolField(TEXT("success")));
+    TestFalse(TEXT("Save requires explicit confirmation"), UnrealMCPScene::Save(Request)->GetBoolField(TEXT("success")));
+    Request->SetBoolField(TEXT("confirm_all_changes_in_map"), true);
+    if (!TestTrue(TEXT("Explicit map-only save"), UnrealMCPScene::Save(Request)->GetBoolField(TEXT("saved")))) return false;
+    FAutomationEditorCommonUtils::CreateNewMap();
+    if (!TestTrue(TEXT("Reload saved fixture"), FEditorFileUtils::LoadMap(Filename, false, false))) return false;
+    World = GEditor->GetEditorWorldContext().World();
+    auto ReloadedSky = FindObject<ASkyLight>(World->PersistentLevel, *SkyName);
+    auto ReloadedSun = FindObject<ADirectionalLight>(World->PersistentLevel, *SunName);
+    auto ReloadedSpot = FindObject<ASpotLight>(World->PersistentLevel, *SpotName);
+    auto ReloadedFog = FindObject<AExponentialHeightFog>(World->PersistentLevel, *FogName);
+    if (TestNotNull(TEXT("Reload SkyLight"), ReloadedSky)) TestEqual(TEXT("Persisted indirect multiplier"), ReloadedSky->GetLightComponent()->IndirectLightingIntensity, 1.f);
+    if (TestNotNull(TEXT("Reload DirectionalLight"), ReloadedSun)) TestEqual(TEXT("Persisted directional scattering"), ReloadedSun->GetLightComponent()->VolumetricScatteringIntensity, 0.f);
+    if (TestNotNull(TEXT("Reload SpotLight"), ReloadedSpot)) TestEqual(TEXT("Persisted spot scattering"), ReloadedSpot->GetLightComponent()->VolumetricScatteringIntensity, 0.f);
+    if (TestNotNull(TEXT("Reload fog"), ReloadedFog))
+    {
+        TestEqual(TEXT("Persisted volumetric start"), ReloadedFog->GetComponent()->VolumetricFogStartDistance, 30.f);
+        TestEqual(TEXT("Persisted normal start unchanged"), ReloadedFog->GetComponent()->StartDistance, 125.f);
+    }
+    TestFalse(TEXT("Reopened map clean"), World->GetPackage()->IsDirty());
+    World->GetPackage()->SetDirtyFlag(false); FAutomationEditorCommonUtils::CreateNewMap();
+    TestTrue(TEXT("Remove only the isolated map"), UEditorAssetLibrary::DeleteAsset(MapPath));
+    return !HasAnyErrors();
+}
 
 bool FMCPSceneVisibilityTest::RunTest(const FString& Parameters)
 {

@@ -328,6 +328,51 @@ hiding remaining visible in the receipt after the temporary flag is restored.
 
 ## Preview Edits
 
+### Light Field Update (2026-10-12)
+
+Built and deployed the light-field additions and `open_asset` World rejection to
+SkillTest, then NF with explicit user approval. No new tool or unrestricted UObject
+write API was introduced; existing grouping and permission filters remain unchanged.
+
+- Native `LightContributionFields` verified SkyLight indirect intensity 3 to 1;
+  Directional/Spot scattering 1 to 0.1 to 0; acceptance above the UI maximum; unchanged
+  direct intensity/color and rendering-proxy color with zero volumetric scattering;
+  independent volumetric fog start 0 to 30 while normal start stayed unchanged.
+- The same test covered default readable/writable fields, no-dirty inspection, invalid
+  type/null/nonfinite/negative/duplicate/unknown-field and stale-expected batch rejection,
+  undo, explicit map-only save, reload and fixture cleanup. Existing `InstancePatch`
+  regression also passed. These are renderer-parameter checks, not a screenshot-based
+  visual acceptance of the production lighting.
+- SkillTest target log: `Saved/Logs/WorldLight-DeploymentTests.log`, all three tests
+  (`OpenAssetWorldGuard`, `LightContributionFields`, `InstancePatch`) completed Success.
+  Python suite: 69 tests passed. Repository and target builds succeeded on UE 5.7.4.
+- NF's EditorCommands was patched only inside `HandleOpenAsset`; the remainder was
+  compared against its backup and retained, including local navigation fixes. Other
+  local plugin files and the separate migration module were not updated.
+- Backups: SkillTest `Saved/UnrealMCP-before-world-light-20261012-154406`; NF
+  `Saved/UnrealMCP-before-world-light-20261012-155258`. Protection manifests are
+  `Saved/UnrealMCP-WorldLight-Guard.clixml` in each project (51 and 4354 files).
+- NF had exited normally before deployment; no save/close/kill was performed by this
+  update. It was reopened on `/Game/Dev/Enemies/Maps/L_cyberpunk_start1_dev`, port 13090.
+  Real grouped MCP inspection found both multipliers on SkyLight, scattering on the
+  DirectionalLight and all three `MCPScene_DevFill_*` spots, and both fog start fields.
+  `BP_NFPlayerController` read passed; dirty packages remained empty.
+- NF production values were NOT changed: indirect intensity 1, directional scattering
+  0.1, volumetric start 0, ordinary start 3500 and fill scattering 1 were only observed.
+  Do not interpret deployment as completion of the requested artistic lighting sync.
+
+The light allowlist includes `IndirectLightingIntensity` and
+`VolumetricScatteringIntensity` through `ULightComponentBase`, covering SkyLight as
+well as Directional/Point/Spot/Rect lights. Both are nonnegative, unitless multipliers;
+0 and 0.1 are supported. UI slider metadata such as `UIMin=0.25` is not a hard bound.
+ExponentialHeightFog also exposes `VolumetricFogStartDistance` in cm, separately from
+the existing ordinary `StartDistance`. Changing one does not substitute for the other.
+These fields reuse the same typed decoding, full-batch preflight, expected-value
+guards, property-change notifications, render-state refresh and undo transaction.
+They never automatically save. `CastShadows=false` is not a substitute for reducing
+volumetric scattering. Pass the full Actor path in `actor_path` and the component
+name separately; a component path is not an Actor selector.
+
 All new scene edits are unsaved by default; they have no implicit Save All.
 `patch_scene_target` validates the entire 1..64-field batch before a transaction.
 Duplicate/unsupported fields and stale `expected_value` values fail before mutation.

@@ -986,11 +986,15 @@ def register_editor_tools(mcp: FastMCP):
         ctx: Context,
         asset_path: str
     ) -> Dict[str, Any]:
-        """Open an asset in its default editor window.
+        """Open a non-map asset in its default editor window.
 
-        Works with any asset type: Blueprint, WidgetBlueprint, Material, AnimBlueprint,
+        Supports Blueprint, WidgetBlueprint, Material, MaterialInstance, AnimBlueprint,
         AnimSequence, AnimMontage, BlendSpace, DataAsset, NiagaraSystem, Skeleton,
         SkeletalMesh, Texture, SoundCue, etc.
+        World/map assets are explicitly refused before opening an editor. Use
+        open_level for maps with an explicit map-switch/save decision; do not use
+        open_asset to refocus an already loaded map. Requires the updated native
+        plugin for this guard; an old plugin may reload the map and crash.
 
         Args:
             asset_path: Full asset path, e.g. "/Game/UI/WBP_MechHUD" or

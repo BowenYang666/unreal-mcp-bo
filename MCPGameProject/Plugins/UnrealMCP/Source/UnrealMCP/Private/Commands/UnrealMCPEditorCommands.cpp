@@ -1502,6 +1502,16 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleOpenAsset(const TSharedP
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'asset_path' parameter"));
     }
 
+    if (!GEditor)
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Editor is not available"));
+    }
+    const FAssetData AssetData = UEditorAssetLibrary::FindAssetData(AssetPath);
+    if (AssetData.AssetClassPath == UWorld::StaticClass()->GetClassPathName())
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("open_asset does not open World/map assets; use open_level with an explicit map-switch/save decision. The current map was not reloaded."));
+    }
+
     UObject* Asset = UEditorAssetLibrary::LoadAsset(AssetPath);
     if (!Asset)
     {
@@ -1509,6 +1519,11 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleOpenAsset(const TSharedP
             FString::Printf(TEXT("Failed to load asset: %s"), *AssetPath));
     }
 
+    if (Asset->IsA<UWorld>())
+    {
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("open_asset does not open World/map assets; use open_level. No asset editor was opened."));
+    }
+    const FString AssetClass = Asset->GetClass()->GetName();
     UAssetEditorSubsystem* AssetEditorSub = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>();
     if (!AssetEditorSub)
     {
@@ -1525,7 +1540,7 @@ TSharedPtr<FJsonObject> FUnrealMCPEditorCommands::HandleOpenAsset(const TSharedP
     TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
     ResultJson->SetBoolField(TEXT("success"), true);
     ResultJson->SetStringField(TEXT("asset_path"), AssetPath);
-    ResultJson->SetStringField(TEXT("asset_class"), Asset->GetClass()->GetName());
+    ResultJson->SetStringField(TEXT("asset_class"), AssetClass);
     return ResultJson;
 }
 
