@@ -61,6 +61,10 @@ class GroupedToolsTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_browse_search_and_limits(self):
         self.group()
+        schema = self.server._tool_manager.get_tool("material_search").parameters["properties"]
+        self.assertEqual(schema["limit"]["minimum"], 1)
+        self.assertEqual(schema["limit"]["maximum"], 10)
+        self.assertEqual(schema["offset"]["minimum"], 0)
         page = await self.invoke("material_search", {"limit": 1})
         self.assertEqual(page["total"], 2)
         self.assertTrue(page["has_more"])
@@ -146,7 +150,7 @@ class GroupedServerTests(unittest.IsolatedAsyncioTestCase):
         grouped = self.load_server()
         direct_tools = await direct.mcp.list_tools()
         grouped_tools = await grouped.mcp.list_tools()
-        self.assertEqual(len(direct_tools), 140)
+        self.assertEqual(len(direct_tools), 143)
         self.assertEqual(len(grouped_tools), 70)
         self.assertEqual(set().union(*direct._CATEGORY_TOOLS.values()), {tool.name for tool in direct_tools})
         size = lambda tools: len(json.dumps([tool.model_dump(exclude_none=True) for tool in tools]))
@@ -164,7 +168,7 @@ class GroupedServerTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(contract["effect"], expected_effect)
 
     async def test_readonly_and_disabled_categories(self):
-        self.assertEqual(len(await self.load_server("direct", True).mcp.list_tools()), 41)
+        self.assertEqual(len(await self.load_server("direct", True).mcp.list_tools()), 42)
         readonly = self.load_server(read_only=True)
         self.assertEqual(len(await readonly.mcp.list_tools()), 30)
         for category in ("material", "niagara", "umg", "scene"):

@@ -1,7 +1,7 @@
 # Unreal MCP Tools
 
-Index for **140 internal operations**. Default grouped mode exposes **70 MCP
-tools** before read-only/category filtering; direct compatibility mode exposes 140.
+Index for **143 internal operations**. Default grouped mode exposes **70 MCP
+tools** before read-only/category filtering; direct compatibility mode exposes 143.
 
 - [Actor Tools](actor_tools.md) (8)
 - [Scene Tools](scene_tools.md) (20) - Guarded instances, captures, imports, placement manifests, Outliner folders, temporary editor visibility and controlled undo
@@ -13,7 +13,7 @@ tools** before read-only/category filtering; direct compatibility mode exposes 1
 - [Node Tools](node_tools.md) (8)
 - [Niagara Tools](niagara_tools.md) (25)
 - [Material Tools](material_tools.md) (17)
-- [UMG Tools](umg_tools.md) (20) - Widget Blueprints / in-game UI
+- [UMG Tools](umg_tools.md) (23) - Widget Blueprints / in-game UI
 - [Project Tools](project_tools.md) (6) - Input mappings, reflection, Behavior Trees, Blackboards, StateTrees
 - [Navigation Tools](navigation_tools.md) (6) - NavMesh bounds, build status, point projection, and pathfinding
 - [Cascade Reader](cascade_tools.md) (1) - Legacy ParticleSystem emitters, LODs, modules, distributions, and references
@@ -33,6 +33,7 @@ tables in the linked domain references remain unchanged.
 | Scene | `scene_search` | `scene_call_read` | `scene_call_write` |
 
 Search parameters: `query=""`, `tool=""`, `limit=5` (1..10), `offset=0`.
+The public schema declares the limit minimum/maximum and nonnegative offset.
 An empty query browses summaries; keyword queries use case-insensitive English
 word matching, not semantic/vector search. No match? Try a shorter English query
 or browse. `has_more` and `next_offset` identify further pages.
@@ -74,8 +75,8 @@ routing/argument errors are MCP tool errors.
 
 - `MCP_TOOL_MODE=grouped` (default): 70 public tools; original names from these
 	four categories are internal and cannot be called directly via MCP.
-- `MCP_TOOL_MODE=direct`: all 140 public operations, no grouped entry points.
-- `UNREAL_MCP_READ_ONLY=1`: 30 public tools in grouped mode, 41 in direct mode.
+- `MCP_TOOL_MODE=direct`: all 143 public operations, no grouped entry points.
+- `UNREAL_MCP_READ_ONLY=1`: 30 public tools in grouped mode, 42 in direct mode.
 	Only approved read operations remain; hidden writes cannot be searched or run.
 - Existing `MCP_MATERIAL_ENABLED`, `MCP_NIAGARA_ENABLED`, `MCP_UMG_ENABLED`, `MCP_SCENE_ENABLED`
 	filters remove the whole category, including its entry points, when disabled.

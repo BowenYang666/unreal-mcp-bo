@@ -401,6 +401,9 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("set_widget_anchor") ||
                      CommandType == TEXT("set_widget_slot_property") ||
                      CommandType == TEXT("read_widget_layout") ||
+                     CommandType == TEXT("reparent_widget") ||
+                     CommandType == TEXT("get_widget_preview_settings") ||
+                     CommandType == TEXT("set_widget_preview_settings") ||
                      CommandType == TEXT("add_slider_to_widget") ||
                      CommandType == TEXT("add_combobox_to_widget") ||
                      CommandType == TEXT("set_widget_property"))
@@ -495,6 +498,7 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                 ResponseJson->SetStringField(TEXT("error"), ErrorMessage);
                 if (CommandType == TEXT("duplicate_asset") || CommandType == TEXT("set_material_instance_parameters")
                     || CommandType == TEXT("delete_material_expression") || CommandType == TEXT("add_emitter_to_system")
+                    || CommandType == TEXT("reparent_widget") || CommandType == TEXT("set_widget_preview_settings") || CommandType == TEXT("get_widget_preview_settings")
                     || CommandType == TEXT("set_asset_properties") || CommandType == TEXT("create_data_asset")
                     || CommandType == TEXT("create_physical_material") || CommandType == TEXT("set_material_physical_material")
                     || CommandType == TEXT("set_component_physical_material") || CommandType == TEXT("set_component_property")

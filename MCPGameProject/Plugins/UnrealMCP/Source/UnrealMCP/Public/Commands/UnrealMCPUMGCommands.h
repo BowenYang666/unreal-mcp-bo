@@ -20,6 +20,8 @@ public:
      * @return JSON response with results or error
      */
     TSharedPtr<FJsonObject> HandleCommand(const FString& CommandType, const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleReparentWidget(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> HandleWidgetPreviewSettings(const TSharedPtr<FJsonObject>& Params, bool Write);
 
 private:
     /**

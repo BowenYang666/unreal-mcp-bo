@@ -1,6 +1,9 @@
 """Bounded discovery and dispatch for large tool categories."""
 
 import re
+from typing import Annotated
+
+from pydantic import Field
 
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
@@ -52,7 +55,8 @@ def _register_group(server: FastMCP, category: str, operations: dict, read_only_
             "Search before calling; pass only the described arguments."
         ),
     )
-    def search(query: str = "", tool: str = "", limit: int = 5, offset: int = 0) -> dict:
+    def search(query: str = "", tool: str = "", limit: Annotated[int, Field(ge=1, le=10)] = 5,
+               offset: Annotated[int, Field(ge=0)] = 0) -> dict:
         """Find operations, e.g. query='parent'; tool='read_material' returns its contract."""
         if tool:
             if tool not in operations:

@@ -380,7 +380,7 @@ _READ_ONLY_TOOLS = {
     "list_materials",
     "read_material",
     "get_material_instance_parameters",
-    "read_widget_layout",
+    "read_widget_layout", "get_widget_preview_settings",
     "list_niagara_systems",
     "read_niagara_system",
     "get_niagara_parameters",
@@ -439,6 +439,7 @@ _CATEGORY_TOOLS = {
         "add_border_to_widget", "add_spacer_to_widget", "add_combobox_to_widget",
         "add_slider_to_widget", "read_widget_layout", "set_widget_property",
         "set_widget_slot_property", "set_widget_anchor",
+        "reparent_widget", "get_widget_preview_settings", "set_widget_preview_settings",
     },
     "material": {
         "set_material_physical_material",
@@ -521,13 +522,13 @@ def info():
     return """
         # Unreal MCP Server Guidance
 
-        There are 140 internal operations. Default grouped mode exposes 70 tools
+        There are 143 internal operations. Default grouped mode exposes 70 tools
         before filtering: Material, Niagara, UMG and Scene each expose <category>_search,
         <category>_call_read and <category>_call_write. Other categories stay direct.
         Search by keywords or browse with an empty query, then search by exact tool
         name for its full schema. Call the indicated read/write endpoint with tool
         and arguments. Reuse the contract for subsequent calls; do not guess names.
-        MCP_TOOL_MODE=direct exposes all 140 operations directly after reconnecting.
+        MCP_TOOL_MODE=direct exposes all 143 operations directly after reconnecting.
         Read-only/category filters apply in both modes; search never contacts UE.
 
         Core categories: Asset, Actor/Editor, Blueprint, Blueprint Node,

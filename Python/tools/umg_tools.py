@@ -5,6 +5,7 @@ This module provides tools for creating and manipulating UMG Widget Blueprints i
 """
 
 import logging
+import json
 from typing import Annotated, Dict, List, Any
 from pydantic import BeforeValidator
 from mcp.server.fastmcp import FastMCP, Context
@@ -15,8 +16,82 @@ CoercedStr = Annotated[str, BeforeValidator(str)]
 # Get logger
 logger = logging.getLogger("UnrealMCP")
 
+def call_widget_command(command: str, parameters: dict) -> dict:
+    """Forward finite JSON and preserve native partial-state receipts without retry."""
+    from tools.project_tools import call_asset_command
+    parameters = {key: value for key, value in parameters.items() if value is not None}
+    try:
+        json.dumps(parameters, allow_nan=False)
+    except (TypeError, ValueError) as error:
+        return {"success": False, "modified": False, "saved": False, "stage": "preflight", "error": str(error)}
+    return call_asset_command(command, parameters)
+
 def register_umg_tools(mcp: FastMCP):
     """Register UMG tools with the MCP server."""
+
+    @mcp.tool()
+    def reparent_widget(ctx: Context, path: str, widget_name: str, new_parent_name: str,
+                        insert_index: int, slot_properties: dict = None, dry_run: bool = True) -> dict:
+        """Preview/move the original Widget into a local panel or reorder it; never autosaves.
+
+        Example: path='/Game/UI/WBP_Key', widget_name='KeyText', new_parent_name='KeyOverlay',
+        insert_index=2, slot_properties={'HorizontalAlignment':'HAlign_Center',
+        'VerticalAlignment':'VAlign_Center'}, dry_run=True. Read layout first, review the
+        receipt, then explicitly apply with dry_run=False. Use exact local names, not
+        inherited/nested UserWidget trees. Native CanvasPanel/HorizontalBox/VerticalBox/
+        Overlay/SizeBox/Border source and target panels only; root changes unsupported.
+        insert_index is the final zero-based index AFTER removal; an empty target uses
+        0, appending a cross-parent child uses the target's current count. No clamping.
+        Cycles, occupied single-child containers and invalid Slot properties abort all
+        preflight. No deletion/recreation/renaming of the Widget or its subtree. Same-
+        parent reorder retains the existing Slot; cross-parent creates the right Slot.
+        Same Slot class preserves layout values, different types use native defaults.
+        slot_properties uses reflected layout names from before/requested.slot.schema:
+        Canvas LayoutData/bAutoSize/ZOrder; boxes Padding/Size/HorizontalAlignment/
+        VerticalAlignment; Overlay/SizeBox/Border Padding/HorizontalAlignment/VerticalAlignment.
+        Struct values must include all fields described by the schema; only layout fields
+        are allowed. Widget properties, fonts, brushes, property bindings and Widget
+        animation names are preserved. Cross-parent movement of an animated Slot is
+        refused BEFORE mutation; convert its tracks explicitly, never silently break it.
+        Returns before/requested/after parent, index and structured Slot data. Undo/Redo
+        uses the editor transaction stack, not Scene undo. No save or explicit full compile;
+        compile/check and save_asset explicitly after reviewing. Old native plugins
+        reject this new operation. Timeout outcome unknown: read layout before retry.
+        """
+        return call_widget_command("reparent_widget", dict(path=path, widget_name=widget_name,
+            new_parent_name=new_parent_name, insert_index=insert_index,
+            slot_properties=slot_properties, dry_run=dry_run))
+
+    @mcp.tool()
+    def get_widget_preview_settings(ctx: Context, path: str) -> dict:
+        """Read actual stored Designer preview mode/custom size without changing runtime layout.
+
+        Example: path='/Game/UI/WBP_Key'. Requires a compiled Widget Blueprint. Returns
+        settings.mode, settings.size, size_applies and supported_modes. Reads the generated
+        UserWidget CDO's EDITOR-ONLY DesignSizeMode/DesignTimeSize, not thumbnails, font
+        size, Canvas offsets or runtime desired size. Stored custom size is not live
+        arranged geometry, embedded-card bounds or the per-user screen-resolution preset.
+        FillScreen/Desired modes may ignore stored size; do not infer effective available
+        size from it. Does not implicitly compile, dirty or save the Blueprint.
+        """
+        return call_widget_command("get_widget_preview_settings", dict(path=path))
+
+    @mcp.tool()
+    def set_widget_preview_settings(ctx: Context, path: str, mode: str, size: list[float] = None,
+                                    dry_run: bool = True) -> dict:
+        """Preview/set Designer-only mode and custom size, never runtime dimensions or fonts.
+
+        Example: path='/Game/UI/WBP_Key', mode='Custom', size=[320,120], dry_run=True.
+        Modes: FillScreen, Custom, CustomOnScreen, Desired, DesiredOnScreen. size only
+        applies to Custom/CustomOnScreen; omit it for other modes. Each dimension finite,
+        positive, <=100000 Designer units. Omission retains the stored custom size.
+        Preview first; explicit dry_run=False applies one undoable editor transaction,
+        refreshes Blueprint change listeners, marks package dirty but does NOT save or
+        compile. Runtime slots, anchors, SizeBox overrides and font properties stay intact.
+        Requires a compiled local Widget Blueprint and the updated native plugin. Read
+        the before/requested/settings receipt; save_asset separately for persistence.
+        """
+        return call_widget_command("set_widget_preview_settings", dict(path=path, mode=mode, size=size, dry_run=dry_run))
 
     @mcp.tool()
     def create_umg_widget_blueprint(

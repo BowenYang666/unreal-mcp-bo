@@ -37,6 +37,13 @@
 #include "Kismet2/KismetEditorUtilities.h"
 #include "K2Node_Event.h"
 #include "Styling/SlateBrush.h"
+#include "Commands/UnrealMCPAssetProperties.h"
+#include "Components/SizeBoxSlot.h"
+#include "Components/BorderSlot.h"
+#include "ScopedTransaction.h"
+#include "UObject/StrongObjectPtr.h"
+#include "UObject/UnrealType.h"
+#include "Animation/WidgetAnimation.h"
 
 FUnrealMCPUMGCommands::FUnrealMCPUMGCommands()
 {
@@ -50,6 +57,9 @@ static UWidgetBlueprint* FindWidgetBlueprint(const FString& AssetPath)
 
 TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleCommand(const FString& CommandName, const TSharedPtr<FJsonObject>& Params)
 {
+	if (CommandName == TEXT("reparent_widget")) return HandleReparentWidget(Params);
+	if (CommandName == TEXT("get_widget_preview_settings")) return HandleWidgetPreviewSettings(Params, false);
+	if (CommandName == TEXT("set_widget_preview_settings")) return HandleWidgetPreviewSettings(Params, true);
 	if (CommandName == TEXT("create_umg_widget_blueprint"))
 	{
 		return HandleCreateUMGWidgetBlueprint(Params);
@@ -1549,6 +1559,470 @@ static TSharedPtr<FJsonObject> SerializeSlot(UPanelSlot* Slot)
 	return SlotObj;
 }
 
+static TSharedPtr<FJsonObject> UMGFailure(const FString& Error)
+{
+	auto Result = MakeShared<FJsonObject>(); Result->SetBoolField(TEXT("success"), false);
+	Result->SetBoolField(TEXT("modified"), false); Result->SetBoolField(TEXT("saved"), false);
+	Result->SetStringField(TEXT("stage"), TEXT("preflight")); Result->SetStringField(TEXT("error"), Error); return Result;
+}
+
+static UWidgetBlueprint* ResolveEditableWidgetBlueprint(const TSharedPtr<FJsonObject>& Params, FString& Error)
+{
+	FString Path;
+	if (!GEditor || GEditor->PlayWorld || GEditor->bIsSimulatingInEditor) { Error = TEXT("Requires editor mode outside PIE/Simulate"); return nullptr; }
+	if (!Params->TryGetStringField(TEXT("path"), Path) || !Path.StartsWith(TEXT("/Game/"))) { Error = TEXT("path must identify a /Game Widget Blueprint"); return nullptr; }
+	auto Blueprint = FindWidgetBlueprint(Path);
+	if (!Blueprint || !Blueprint->WidgetTree) { Error = TEXT("Widget Blueprint with a local WidgetTree not found"); return nullptr; }
+	return Blueprint;
+}
+
+static TArray<FName> MovableSlotFields(UClass* Class)
+{
+	if (Class == UCanvasPanelSlot::StaticClass()) return {TEXT("LayoutData"), TEXT("bAutoSize"), TEXT("ZOrder")};
+	if (Class == UHorizontalBoxSlot::StaticClass() || Class == UVerticalBoxSlot::StaticClass())
+		return {TEXT("Padding"), TEXT("Size"), TEXT("HorizontalAlignment"), TEXT("VerticalAlignment")};
+	if (Class == UOverlaySlot::StaticClass() || Class == USizeBoxSlot::StaticClass() || Class == UBorderSlot::StaticClass())
+		return {TEXT("Padding"), TEXT("HorizontalAlignment"), TEXT("VerticalAlignment")};
+	return {};
+}
+
+static TSharedPtr<FJsonObject> StructuredSlot(UPanelSlot* Slot)
+{
+	auto Result = MakeShared<FJsonObject>();
+	if (!Slot) return Result;
+	Result->SetStringField(TEXT("class_path"), Slot->GetClass()->GetPathName());
+	auto Values = MakeShared<FJsonObject>(); auto Schemas = MakeShared<FJsonObject>();
+	for (FName Name : MovableSlotFields(Slot->GetClass()))
+	{
+		auto Property = FindFProperty<FProperty>(Slot->GetClass(), Name); FString Error;
+		if (!Property) continue;
+		auto Value = UnrealMCPAssetProperties::EncodeValue(Property, Property->ContainerPtrToValuePtr<void>(Slot), Error);
+		if (Value) Values->SetField(Name.ToString(), Value);
+		Schemas->SetObjectField(Name.ToString(), UnrealMCPAssetProperties::DescribeValue(Property));
+	}
+	Result->SetObjectField(TEXT("properties"), Values); Result->SetObjectField(TEXT("schema"), Schemas); return Result;
+}
+
+static TSharedPtr<FJsonObject> WidgetPlacement(UWidget* Widget)
+{
+	auto Result = MakeShared<FJsonObject>(); auto Parent = Widget->GetParent();
+	Result->SetStringField(TEXT("widget_path"), Widget->GetPathName());
+	Result->SetStringField(TEXT("parent"), Parent ? Parent->GetName() : FString());
+	Result->SetNumberField(TEXT("index"), Parent ? Parent->GetChildIndex(Widget) : INDEX_NONE);
+	Result->SetObjectField(TEXT("slot"), StructuredSlot(Widget->Slot)); return Result;
+}
+
+static TSharedPtr<FJsonObject> WidgetPreviewInfo(UUserWidget* Defaults)
+{
+	auto Result = MakeShared<FJsonObject>();
+	Result->SetStringField(TEXT("mode"), StaticEnum<EDesignPreviewSizeMode>()->GetNameStringByValue(static_cast<int64>(Defaults->DesignSizeMode)));
+	Result->SetArrayField(TEXT("size"), {MakeShared<FJsonValueNumber>(Defaults->DesignTimeSize.X), MakeShared<FJsonValueNumber>(Defaults->DesignTimeSize.Y)});
+	Result->SetBoolField(TEXT("size_applies"), Defaults->DesignSizeMode == EDesignPreviewSizeMode::Custom || Defaults->DesignSizeMode == EDesignPreviewSizeMode::CustomOnScreen);
+	Result->SetBoolField(TEXT("editor_only"), true);
+	Result->SetStringField(TEXT("size_semantics"), TEXT("Stored custom Designer size; not measured live geometry, embedded-card bounds, DPI-adjusted screen resolution or runtime layout"));
+	return Result;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleWidgetPreviewSettings(const TSharedPtr<FJsonObject>& Params, bool Write)
+{
+	FString Error; auto Blueprint = ResolveEditableWidgetBlueprint(Params, Error); if (!Blueprint) return UMGFailure(Error);
+	auto Defaults = Blueprint->GeneratedClass ? Cast<UUserWidget>(Blueprint->GeneratedClass->GetDefaultObject()) : nullptr;
+	if (!Defaults) return UMGFailure(TEXT("A compiled Widget Blueprint generated class is required; no implicit compilation was performed"));
+	auto Result = MakeShared<FJsonObject>(); auto Before = WidgetPreviewInfo(Defaults);
+	Result->SetStringField(TEXT("path"), Blueprint->GetPathName());
+	TArray<TSharedPtr<FJsonValue>> Modes;
+	const TArray<FString> AllowedModes = {TEXT("FillScreen"), TEXT("Custom"), TEXT("CustomOnScreen"), TEXT("Desired"), TEXT("DesiredOnScreen")};
+	for (const FString& Mode : AllowedModes) Modes.Add(MakeShared<FJsonValueString>(Mode));
+	Result->SetArrayField(TEXT("supported_modes"), Modes);
+	for (const auto& Pair : Params->Values)
+		if (Pair.Key != TEXT("path") && (!Write || (Pair.Key != TEXT("mode") && Pair.Key != TEXT("size") && Pair.Key != TEXT("dry_run"))))
+			return UMGFailure(TEXT("Unknown preview parameter: ") + Pair.Key);
+	bool Modified = false;
+	if (Write)
+	{
+		FString Mode; bool DryRun = true;
+		if (!Params->TryGetStringField(TEXT("mode"), Mode) || !AllowedModes.Contains(Mode)
+			|| (Params->HasField(TEXT("dry_run")) && !Params->TryGetBoolField(TEXT("dry_run"), DryRun))) return UMGFailure(TEXT("mode must match a supported Designer mode; dry_run must be boolean"));
+		const auto NewMode = static_cast<EDesignPreviewSizeMode>(StaticEnum<EDesignPreviewSizeMode>()->GetValueByNameString(Mode));
+		FVector2D Size = Defaults->DesignTimeSize;
+		if (Params->HasField(TEXT("size")))
+		{
+			if (NewMode != EDesignPreviewSizeMode::Custom && NewMode != EDesignPreviewSizeMode::CustomOnScreen)
+				return UMGFailure(TEXT("size is only supported for Custom/CustomOnScreen modes"));
+			const TArray<TSharedPtr<FJsonValue>>* Values;
+			if (!Params->TryGetArrayField(TEXT("size"), Values) || Values->Num() != 2) return UMGFailure(TEXT("size must contain exactly two finite positive numbers"));
+			for (int32 Index = 0; Index < 2; ++Index)
+			{
+				double Number;
+				if (!(*Values)[Index]->TryGetNumber(Number) || !FMath::IsFinite(Number) || Number <= 0 || Number > 100000)
+					return UMGFailure(TEXT("size dimensions must be finite, >0 and <=100000 Designer units"));
+				Size[Index] = Number;
+			}
+		}
+		if ((NewMode == EDesignPreviewSizeMode::Custom || NewMode == EDesignPreviewSizeMode::CustomOnScreen) && (Size.X <= 0 || Size.Y <= 0))
+			return UMGFailure(TEXT("Custom preview requires a positive size"));
+		const bool Changed = NewMode != Defaults->DesignSizeMode || Size != Defaults->DesignTimeSize;
+		Result->SetObjectField(TEXT("before"), Before); Result->SetBoolField(TEXT("dry_run"), DryRun); Result->SetBoolField(TEXT("would_modify"), Changed);
+		auto Requested = MakeShared<FJsonObject>(); Requested->SetStringField(TEXT("mode"), Mode);
+		Requested->SetArrayField(TEXT("size"), {MakeShared<FJsonValueNumber>(Size.X), MakeShared<FJsonValueNumber>(Size.Y)}); Result->SetObjectField(TEXT("requested"), Requested);
+		if (!DryRun && Changed)
+		{
+			const FScopedTransaction Transaction(NSLOCTEXT("UnrealMCP", "WidgetPreview", "Set Widget Designer preview"));
+			Blueprint->Modify(); Defaults->SetFlags(RF_Transactional); Defaults->Modify();
+			Defaults->DesignSizeMode = NewMode; Defaults->DesignTimeSize = Size;
+			FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint); Modified = true;
+		}
+	}
+	Result->SetBoolField(TEXT("success"), true); Result->SetBoolField(TEXT("modified"), Modified); Result->SetBoolField(TEXT("saved"), false);
+	Result->SetBoolField(TEXT("package_dirty"), Blueprint->GetPackage()->IsDirty()); Result->SetObjectField(TEXT("settings"), WidgetPreviewInfo(Defaults));
+	return Result;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPUMGCommands::HandleReparentWidget(const TSharedPtr<FJsonObject>& Params)
+{
+	FString Error, WidgetName, ParentName; double IndexValue; bool DryRun = true;
+	auto Blueprint = ResolveEditableWidgetBlueprint(Params, Error); if (!Blueprint) return UMGFailure(Error);
+	if (!Params->TryGetStringField(TEXT("widget_name"), WidgetName) || WidgetName.IsEmpty()
+		|| !Params->TryGetStringField(TEXT("new_parent_name"), ParentName) || ParentName.IsEmpty()
+		|| !Params->TryGetNumberField(TEXT("insert_index"), IndexValue) || !FMath::IsFinite(IndexValue) || IndexValue < 0 || IndexValue > MAX_int32 || IndexValue != FMath::FloorToDouble(IndexValue)
+		|| (Params->HasField(TEXT("dry_run")) && !Params->TryGetBoolField(TEXT("dry_run"), DryRun))) return UMGFailure(TEXT("Require widget_name, new_parent_name and integer insert_index; dry_run must be boolean"));
+	const int32 Index = static_cast<int32>(IndexValue);
+	for (const auto& Pair : Params->Values)
+		if (Pair.Key != TEXT("path") && Pair.Key != TEXT("widget_name") && Pair.Key != TEXT("new_parent_name") && Pair.Key != TEXT("insert_index")
+			&& Pair.Key != TEXT("slot_properties") && Pair.Key != TEXT("dry_run")) return UMGFailure(TEXT("Unknown reparent parameter: ") + Pair.Key);
+	auto Widget = Blueprint->WidgetTree->FindWidget(FName(*WidgetName));
+	auto Parent = Cast<UPanelWidget>(Blueprint->WidgetTree->FindWidget(FName(*ParentName)));
+	if (!Widget || Widget->GetOuter() != Blueprint->WidgetTree || !Parent || Parent->GetOuter() != Blueprint->WidgetTree)
+		return UMGFailure(TEXT("Select existing widgets owned by this WidgetTree; inherited/nested user-widget trees are not supported"));
+	auto OldParent = Widget->GetParent(); auto OldSlot = Widget->Slot;
+	if (Widget == Blueprint->WidgetTree->RootWidget || !OldParent || !OldSlot || OldParent->GetOuter() != Blueprint->WidgetTree)
+		return UMGFailure(TEXT("Only locally parented non-root widgets can be moved"));
+	const TSet<UClass*> Panels = {UCanvasPanel::StaticClass(), UHorizontalBox::StaticClass(), UVerticalBox::StaticClass(), UOverlay::StaticClass(), USizeBox::StaticClass(), UBorder::StaticClass()};
+	if (!Panels.Contains(Parent->GetClass()) || !Panels.Contains(OldParent->GetClass())) return UMGFailure(TEXT("Supported source/target panels: CanvasPanel, HorizontalBox, VerticalBox, Overlay, SizeBox, Border (native classes)"));
+	for (UWidget* Ancestor = Parent; Ancestor; Ancestor = Ancestor->GetParent())
+		if (Ancestor == Widget) return UMGFailure(TEXT("Reparent would create a cycle"));
+	const bool SameParent = Parent == OldParent;
+	if (!SameParent)
+		for (auto Animation : Blueprint->Animations)
+			if (Animation) for (const auto& Binding : Animation->GetBindings())
+				if (!Binding.SlotWidgetName.IsNone() && (Binding.WidgetName == Widget->GetFName() || Binding.SlotWidgetName == Widget->GetFName()))
+					return UMGFailure(TEXT("Widget has an animated Slot binding; reparenting would replace that Slot. Migrate its animation tracks explicitly before moving"));
+	const int32 OldIndex = OldParent->GetChildIndex(Widget), MaxIndex = Parent->GetChildrenCount() - (SameParent ? 1 : 0);
+	if (OldIndex == INDEX_NONE || Index < 0 || Index > MaxIndex) return UMGFailure(TEXT("insert_index must be a final zero-based index after removal, within target children; appending is allowed"));
+	if (!SameParent && !Parent->CanAddMoreChildren()) return UMGFailure(TEXT("Target single-content container is full; no content is replaced"));
+	TStrongObjectPtr<UPanelSlot> Candidate(NewObject<UPanelSlot>(GetTransientPackage(), Parent->GetSlotClass(), NAME_None, RF_Transient));
+	if (SameParent || OldSlot->GetClass() == Candidate->GetClass())
+		for (FName Name : MovableSlotFields(Candidate->GetClass()))
+			if (auto Property = FindFProperty<FProperty>(Candidate->GetClass(), Name))
+				Property->CopyCompleteValue(Property->ContainerPtrToValuePtr<void>(Candidate.Get()), Property->ContainerPtrToValuePtr<void>(OldSlot));
+	const TSharedPtr<FJsonObject>* Properties;
+	if (Params->HasField(TEXT("slot_properties")))
+	{
+		if (!Params->TryGetObjectField(TEXT("slot_properties"), Properties)) return UMGFailure(TEXT("slot_properties must be an object"));
+		for (const auto& Pair : (*Properties)->Values)
+		{
+			if (!MovableSlotFields(Candidate->GetClass()).Contains(FName(*Pair.Key))) return UMGFailure(TEXT("Unsupported slot property: ") + Pair.Key);
+			auto Property = FindFProperty<FProperty>(Candidate->GetClass(), *Pair.Key);
+			if (!Property || !UnrealMCPAssetProperties::DecodeValue(Property, Property->ContainerPtrToValuePtr<void>(Candidate.Get()), Pair.Value, Error))
+				return UMGFailure(Pair.Key + TEXT(": ") + Error);
+		}
+	}
+	bool SlotChanged = false;
+	if (SameParent) for (FName Name : MovableSlotFields(Candidate->GetClass()))
+	{
+		auto Property = FindFProperty<FProperty>(Candidate->GetClass(), Name);
+		SlotChanged |= !Property->Identical_InContainer(OldSlot, Candidate.Get());
+	}
+	const bool Changed = !SameParent || OldIndex != Index || SlotChanged;
+	auto Result = MakeShared<FJsonObject>(); Result->SetObjectField(TEXT("before"), WidgetPlacement(Widget));
+	auto Requested = MakeShared<FJsonObject>(); Requested->SetStringField(TEXT("parent"), ParentName); Requested->SetNumberField(TEXT("index"), Index);
+	Requested->SetObjectField(TEXT("slot"), StructuredSlot(Candidate.Get())); Result->SetObjectField(TEXT("requested"), Requested);
+	if (!DryRun && Changed)
+	{
+		TStrongObjectPtr<UPanelSlot> OldTemplate(NewObject<UPanelSlot>(GetTransientPackage(), OldSlot->GetClass(), NAME_None, RF_Transient));
+		for (FName Name : MovableSlotFields(OldSlot->GetClass()))
+		{
+			auto Property = FindFProperty<FProperty>(OldSlot->GetClass(), Name);
+			Property->CopyCompleteValue(Property->ContainerPtrToValuePtr<void>(OldTemplate.Get()), Property->ContainerPtrToValuePtr<void>(OldSlot));
+		}
+		const bool DirtyBefore = Blueprint->GetPackage()->IsDirty();
+		FScopedTransaction Transaction(NSLOCTEXT("UnrealMCP", "ReparentWidget", "Reparent widget"));
+		for (UObject* Object : TArray<UObject*>{Blueprint, Blueprint->WidgetTree, Widget, OldParent, Parent, OldSlot})
+		{ Object->SetFlags(RF_Transactional); Object->Modify(); }
+		if (SameParent)
+		{
+			Parent->ShiftChild(Index, Widget);
+			for (FName Name : MovableSlotFields(Candidate->GetClass()))
+			{
+				auto Property = FindFProperty<FProperty>(Candidate->GetClass(), Name);
+				Property->CopyCompleteValue(Property->ContainerPtrToValuePtr<void>(OldSlot), Property->ContainerPtrToValuePtr<void>(Candidate.Get()));
+			}
+			OldSlot->SynchronizeProperties();
+		}
+		else if (!Parent->InsertChildAt(Index, Widget, Candidate.Get()))
+		{
+			if (Widget->GetParent() != OldParent) OldParent->InsertChildAt(OldIndex, Widget, OldTemplate.Get());
+			const bool Restored = Widget->GetParent() == OldParent && OldParent->GetChildIndex(Widget) == OldIndex;
+			Transaction.Cancel();
+			if (Restored) Blueprint->GetPackage()->SetDirtyFlag(DirtyBefore);
+			auto Failure = UMGFailure(TEXT("Insertion failed; original placement restoration attempted"));
+			Failure->SetStringField(TEXT("stage"), TEXT("apply")); Failure->SetBoolField(TEXT("rolled_back"), Restored);
+			Failure->SetBoolField(TEXT("modified"), !Restored); Failure->SetObjectField(TEXT("after"), WidgetPlacement(Widget)); return Failure;
+		}
+		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+	}
+	Result->SetBoolField(TEXT("success"), true); Result->SetBoolField(TEXT("dry_run"), DryRun); Result->SetBoolField(TEXT("would_modify"), Changed);
+	Result->SetBoolField(TEXT("modified"), !DryRun && Changed); Result->SetBoolField(TEXT("saved"), false);
+	Result->SetBoolField(TEXT("package_dirty"), Blueprint->GetPackage()->IsDirty()); Result->SetObjectField(TEXT("after"), WidgetPlacement(Widget)); return Result;
+}
+
+#if WITH_DEV_AUTOMATION_TESTS
+#include "Misc/AutomationTest.h"
+#include "Editor/Transactor.h"
+#include "Misc/Paths.h"
+#include "Misc/PackageName.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
+#include "Misc/FileHelper.h"
+#include "Serialization/JsonSerializer.h"
+#include <limits>
+
+static UWidgetBlueprint* MakeUMGFixture(const FString& Path)
+{
+	auto Factory = NewObject<UWidgetBlueprintFactory>();
+	auto Blueprint = Cast<UWidgetBlueprint>(Factory->FactoryCreateNew(UWidgetBlueprint::StaticClass(), CreatePackage(*Path),
+		FName(*FPackageName::GetLongPackageAssetName(Path)), RF_Public | RF_Standalone | RF_Transactional, nullptr, GWarn));
+	if (Blueprint) FAssetRegistryModule::AssetCreated(Blueprint);
+	return Blueprint;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMCPUMGReparentTest, "UnrealMCP.UMG.ReparentWidget", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMCPUMGReparentTest::RunTest(const FString& Parameters)
+{
+	const FString Path = TEXT("/Game/__Dev/UMGReparent_") + FGuid::NewGuid().ToString(EGuidFormats::Digits) + TEXT("/WBP_Test");
+	auto Blueprint = MakeUMGFixture(Path);
+	if (!TestNotNull(TEXT("Widget Blueprint fixture"), Blueprint)) return false;
+	auto Tree = Blueprint->WidgetTree;
+	auto Root = Tree->ConstructWidget<UCanvasPanel>(UCanvasPanel::StaticClass(), TEXT("Root")); Tree->RootWidget = Root;
+	auto Text = Tree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("KeyText")); Root->AddChild(Text);
+	Text->SetText(FText::FromString(TEXT("F"))); auto Font = Text->GetFont(); Font.Size = 24; Text->SetFont(Font);
+	auto Image = Tree->ConstructWidget<UImage>(UImage::StaticClass(), TEXT("KeyFrame")); Root->AddChild(Image);
+	UObject* Texture = UEditorAssetLibrary::LoadAsset(TEXT("/Engine/EngineResources/DefaultTexture"));
+	FSlateBrush Brush; Brush.SetResourceObject(Texture); Image->SetBrush(Brush);
+	TArray<UPanelWidget*> Parents;
+	for (UClass* Class : TArray<UClass*>{UHorizontalBox::StaticClass(), UVerticalBox::StaticClass(), UOverlay::StaticClass(), USizeBox::StaticClass(), UBorder::StaticClass(), UCanvasPanel::StaticClass()})
+	{
+		auto Panel = Cast<UPanelWidget>(Tree->ConstructWidget<UWidget>(Class, FName(*Class->GetName())));
+		Root->AddChild(Panel); Parents.Add(Panel);
+	}
+	FKismetEditorUtilities::CompileBlueprint(Blueprint);
+	FDelegateEditorBinding DelegateBinding; DelegateBinding.ObjectName = TEXT("KeyText"); DelegateBinding.PropertyName = TEXT("Text"); DelegateBinding.FunctionName = TEXT("GetKeyText");
+	Blueprint->Bindings.Add(DelegateBinding);
+	auto Animation = NewObject<UWidgetAnimation>(Blueprint, TEXT("KeyPulse"), RF_Transactional);
+	FWidgetAnimationBinding AnimationBinding; AnimationBinding.WidgetName = Text->GetFName(); AnimationBinding.AnimationGuid = FGuid::NewGuid(); AnimationBinding.bIsRootWidget = false;
+	Animation->AnimationBindings.Add(AnimationBinding); Blueprint->Animations.Add(Animation);
+	Blueprint->OnVariableAdded(Animation->GetFName());
+	FUnrealMCPUMGCommands Commands;
+	auto Request = MakeShared<FJsonObject>(); Request->SetStringField(TEXT("path"), Path); Request->SetStringField(TEXT("widget_name"), TEXT("KeyText")); Request->SetNumberField(TEXT("insert_index"), 0);
+	const FString ObjectPath = Text->GetPathName(); auto OriginalSlot = Text->Slot;
+	auto OriginalLayout = CastChecked<UCanvasPanelSlot>(OriginalSlot)->GetLayout();
+	for (UPanelWidget* Parent : Parents)
+	{
+		Request->SetStringField(TEXT("new_parent_name"), Parent->GetName()); Request->SetBoolField(TEXT("dry_run"), true);
+		Blueprint->GetPackage()->SetDirtyFlag(false);
+		auto Preview = Commands.HandleCommand(TEXT("reparent_widget"), Request);
+		if (!TestTrue(TEXT("Preview supported panel: ") + Parent->GetName(), Preview->GetBoolField(TEXT("success"))))
+		{ AddError(Preview->GetStringField(TEXT("error"))); return false; }
+		TestFalse(TEXT("Preview leaves package clean"), Blueprint->GetPackage()->IsDirty());
+		TestEqual(TEXT("Preview leaves original parent"), Text->GetParent(), static_cast<UPanelWidget*>(Root));
+		TestEqual(TEXT("Preview leaves original Slot"), Text->Slot.Get(), OriginalSlot.Get());
+		auto SlotValues = Preview->GetObjectField(TEXT("requested"))->GetObjectField(TEXT("slot"))->GetObjectField(TEXT("properties"));
+		if (Parent->GetClass() != UCanvasPanel::StaticClass())
+		{
+			SlotValues->SetStringField(TEXT("HorizontalAlignment"), TEXT("HAlign_Center")); SlotValues->SetStringField(TEXT("VerticalAlignment"), TEXT("VAlign_Center"));
+		}
+		Request->SetObjectField(TEXT("slot_properties"), SlotValues); Request->SetBoolField(TEXT("dry_run"), false);
+		auto Applied = Commands.HandleCommand(TEXT("reparent_widget"), Request);
+		if (!TestTrue(TEXT("Move to panel: ") + Parent->GetName(), Applied->GetBoolField(TEXT("success"))))
+		{ AddError(Applied->GetStringField(TEXT("error"))); return false; }
+		TestEqual(TEXT("Original widget pointer preserved"), Tree->FindWidget(TEXT("KeyText")), static_cast<UWidget*>(Text));
+		TestEqual(TEXT("Original widget path preserved"), Text->GetPathName(), ObjectPath);
+		TestEqual(TEXT("New parent"), Text->GetParent(), Parent); TestEqual(TEXT("Correct slot type"), Text->Slot->GetClass(), Parent->GetSlotClass());
+		TestEqual(TEXT("Font unchanged"), Text->GetFont().Size, 24.f); TestEqual(TEXT("Text unchanged"), Text->GetText().ToString(), FString(TEXT("F")));
+		TestTrue(TEXT("Property binding unchanged"), Blueprint->Bindings.Num() == 1 && Blueprint->Bindings[0].FunctionName == TEXT("GetKeyText"));
+		TestTrue(TEXT("Animation references unchanged"), Blueprint->Animations[0] == Animation && Animation->AnimationBindings[0] == AnimationBinding);
+		TestEqual(TEXT("Unmoved image texture unchanged"), Image->GetBrush().GetResourceObject(), Texture);
+		GEditor->UndoTransaction();
+		TestEqual(TEXT("Undo restores original parent"), Text->GetParent(), static_cast<UPanelWidget*>(Root));
+		TestEqual(TEXT("Undo restores original slot identity"), Text->Slot.Get(), OriginalSlot.Get());
+		TestTrue(TEXT("Undo restores Canvas layout"), CastChecked<UCanvasPanelSlot>(Text->Slot)->GetLayout() == OriginalLayout);
+		GEditor->RedoTransaction(); TestEqual(TEXT("Redo restores requested parent"), Text->GetParent(), Parent);
+		GEditor->UndoTransaction();
+		Request->RemoveField(TEXT("slot_properties"));
+	}
+	Blueprint->GetPackage()->SetDirtyFlag(false);
+	const FString BeforeUndo = GEditor->Trans->GetUndoContext().TransactionId.ToString();
+	for (const FString Invalid : {TEXT("Missing"), TEXT("KeyText"), TEXT("KeyFrame")})
+	{
+		Request->SetStringField(TEXT("new_parent_name"), Invalid);
+		TestFalse(TEXT("Invalid/noncontainer parent refused"), Commands.HandleCommand(TEXT("reparent_widget"), Request)->GetBoolField(TEXT("success")));
+	}
+	Request->SetStringField(TEXT("new_parent_name"), Parents[0]->GetName()); Request->SetNumberField(TEXT("insert_index"), 9);
+	TestFalse(TEXT("Out of range index refused"), Commands.HandleCommand(TEXT("reparent_widget"), Request)->GetBoolField(TEXT("success")));
+	Request->SetNumberField(TEXT("insert_index"), 0.5);
+	TestFalse(TEXT("Fractional index refused rather than truncated"), Commands.HandleCommand(TEXT("reparent_widget"), Request)->GetBoolField(TEXT("success")));
+	Request->SetNumberField(TEXT("insert_index"), 0);
+	auto InvalidProperties = MakeShared<FJsonObject>(); InvalidProperties->SetStringField(TEXT("HorizontalAlignment"), TEXT("Bogus")); Request->SetObjectField(TEXT("slot_properties"), InvalidProperties);
+	TestFalse(TEXT("Invalid Slot enum refused before removal"), Commands.HandleCommand(TEXT("reparent_widget"), Request)->GetBoolField(TEXT("success")));
+	InvalidProperties->SetBoolField(TEXT("Content"), true);
+	TestFalse(TEXT("Non-layout Slot fields refused"), Commands.HandleCommand(TEXT("reparent_widget"), Request)->GetBoolField(TEXT("success")));
+	Request->RemoveField(TEXT("slot_properties"));
+	auto Border = Parents[4]; auto Occupant = Tree->ConstructWidget<USpacer>(); Border->AddChild(Occupant); Blueprint->OnVariableAdded(Occupant->GetFName());
+	Blueprint->GetPackage()->SetDirtyFlag(false); Request->SetStringField(TEXT("new_parent_name"), Border->GetName());
+	TestFalse(TEXT("Full single-child Border refused"), Commands.HandleCommand(TEXT("reparent_widget"), Request)->GetBoolField(TEXT("success")));
+	Request->SetStringField(TEXT("widget_name"), TEXT("Root")); Request->SetStringField(TEXT("new_parent_name"), Parents[0]->GetName());
+	TestFalse(TEXT("Root move refused"), Commands.HandleCommand(TEXT("reparent_widget"), Request)->GetBoolField(TEXT("success")));
+	auto Nested = Tree->ConstructWidget<UOverlay>(UOverlay::StaticClass(), TEXT("Nested")); Parents[0]->AddChild(Nested);
+	Blueprint->OnVariableAdded(Nested->GetFName());
+	Blueprint->GetPackage()->SetDirtyFlag(false); Request->SetStringField(TEXT("widget_name"), Parents[0]->GetName()); Request->SetStringField(TEXT("new_parent_name"), TEXT("Nested"));
+	TestFalse(TEXT("Cycle refused"), Commands.HandleCommand(TEXT("reparent_widget"), Request)->GetBoolField(TEXT("success")));
+	Request->SetStringField(TEXT("widget_name"), TEXT("KeyText")); Request->SetStringField(TEXT("new_parent_name"), Parents[0]->GetName());
+	FWidgetAnimationBinding SlotBinding = AnimationBinding; SlotBinding.SlotWidgetName = TEXT("CanvasPanelSlot"); Animation->AnimationBindings.Add(SlotBinding);
+	TestFalse(TEXT("Animated Slot refuses replacement"), Commands.HandleCommand(TEXT("reparent_widget"), Request)->GetBoolField(TEXT("success")));
+	Animation->AnimationBindings.Pop();
+	TestEqual(TEXT("Failed requests preserve original Widget parent"), Text->GetParent(), static_cast<UPanelWidget*>(Root));
+	TestEqual(TEXT("Failed requests preserve original Widget Slot"), Text->Slot.Get(), OriginalSlot.Get());
+	TestFalse(TEXT("Failed preflight leaves package clean"), Blueprint->GetPackage()->IsDirty());
+	TestEqual(TEXT("Failed requests do not add undo"), GEditor->Trans->GetUndoContext().TransactionId.ToString(), BeforeUndo);
+	Request->SetStringField(TEXT("new_parent_name"), TEXT("Root")); Request->SetNumberField(TEXT("insert_index"), Root->GetChildrenCount() - 1);
+	TestTrue(TEXT("Same-parent reorder succeeds"), Commands.HandleCommand(TEXT("reparent_widget"), Request)->GetBoolField(TEXT("success")));
+	TestEqual(TEXT("Same-parent keeps Slot identity"), Text->Slot.Get(), OriginalSlot.Get());
+	TestEqual(TEXT("Final-index semantics"), Root->GetChildIndex(Text), Root->GetChildrenCount() - 1);
+	TestFalse(TEXT("Repeated identical request is no-op"), Commands.HandleCommand(TEXT("reparent_widget"), Request)->GetBoolField(TEXT("modified")));
+	GEditor->UndoTransaction(); TestEqual(TEXT("Reorder undo"), Root->GetChildIndex(Text), 0);
+	Blueprint->GetPackage()->SetDirtyFlag(false);
+	return !HasAnyErrors();
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMCPUMGPreviewTest, "UnrealMCP.UMG.PreviewSettings", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMCPUMGPreviewTest::RunTest(const FString& Parameters)
+{
+	const FString Path = TEXT("/Game/__Dev/UMGPreview_") + FGuid::NewGuid().ToString(EGuidFormats::Digits) + TEXT("/WBP_Test");
+	auto Blueprint = MakeUMGFixture(Path); if (!TestNotNull(TEXT("Preview Blueprint fixture"), Blueprint)) return false;
+	auto Root = Blueprint->WidgetTree->ConstructWidget<UCanvasPanel>(); Blueprint->WidgetTree->RootWidget = Root;
+	auto Text = Blueprint->WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("Text")); Root->AddChild(Text);
+	auto Font = Text->GetFont(); Font.Size = 37; Text->SetFont(Font);
+	FKismetEditorUtilities::CompileBlueprint(Blueprint);
+	auto Defaults = CastChecked<UUserWidget>(Blueprint->GeneratedClass->GetDefaultObject());
+	const auto OriginalMode = Defaults->DesignSizeMode; const auto OriginalSize = Defaults->DesignTimeSize;
+	FUnrealMCPUMGCommands Commands; auto Request = MakeShared<FJsonObject>(); Request->SetStringField(TEXT("path"), Path);
+	Blueprint->GetPackage()->SetDirtyFlag(false);
+	auto Read = Commands.HandleCommand(TEXT("get_widget_preview_settings"), Request);
+	TestTrue(TEXT("Read preview"), Read->GetBoolField(TEXT("success"))); TestFalse(TEXT("Read not dirty"), Blueprint->GetPackage()->IsDirty());
+	Request->SetStringField(TEXT("mode"), TEXT("Custom")); Request->SetArrayField(TEXT("size"), {MakeShared<FJsonValueNumber>(320), MakeShared<FJsonValueNumber>(120)});
+	auto Preview = Commands.HandleCommand(TEXT("set_widget_preview_settings"), Request);
+	TestFalse(TEXT("Preview defaults to no modification"), Preview->GetBoolField(TEXT("modified")));
+	TestTrue(TEXT("Preview leaves existing size"), Defaults->DesignTimeSize == OriginalSize);
+	Request->SetBoolField(TEXT("dry_run"), false);
+	for (double Bad : {-1., 0., std::numeric_limits<double>::infinity(), std::numeric_limits<double>::quiet_NaN()})
+	{
+		Request->SetArrayField(TEXT("size"), {MakeShared<FJsonValueNumber>(Bad), MakeShared<FJsonValueNumber>(120)});
+		TestFalse(TEXT("Bad preview size refused"), Commands.HandleCommand(TEXT("set_widget_preview_settings"), Request)->GetBoolField(TEXT("success")));
+	}
+	Request->SetArrayField(TEXT("size"), {MakeShared<FJsonValueNumber>(320), MakeShared<FJsonValueNumber>(120)});
+	auto Applied = Commands.HandleCommand(TEXT("set_widget_preview_settings"), Request);
+	TestTrue(TEXT("Set custom preview"), Applied->GetBoolField(TEXT("success"))); TestFalse(TEXT("Preview settings never autosave"), Applied->GetBoolField(TEXT("saved")));
+	TestTrue(TEXT("CDO custom size set"), Defaults->DesignTimeSize == FVector2D(320,120));
+	TestTrue(TEXT("CDO custom mode set"), Defaults->DesignSizeMode == EDesignPreviewSizeMode::Custom);
+	TestEqual(TEXT("Font unchanged"), Text->GetFont().Size, 37.f); TestEqual(TEXT("Root unchanged"), Blueprint->WidgetTree->RootWidget.Get(), static_cast<UWidget*>(Root));
+	GEditor->UndoTransaction(); TestTrue(TEXT("Preview mode/size Undo"), Defaults->DesignSizeMode == OriginalMode && Defaults->DesignTimeSize == OriginalSize);
+	GEditor->RedoTransaction(); TestTrue(TEXT("Preview Redo"), Defaults->DesignSizeMode == EDesignPreviewSizeMode::Custom && Defaults->DesignTimeSize == FVector2D(320,120));
+	TestFalse(TEXT("Preview no-op"), Commands.HandleCommand(TEXT("set_widget_preview_settings"), Request)->GetBoolField(TEXT("modified")));
+	Request->SetStringField(TEXT("mode"), TEXT("Desired"));
+	TestFalse(TEXT("No silently ignored size in Desired mode"), Commands.HandleCommand(TEXT("set_widget_preview_settings"), Request)->GetBoolField(TEXT("success")));
+	Request->RemoveField(TEXT("size"));
+	for (const FString Mode : {TEXT("FillScreen"), TEXT("Desired"), TEXT("DesiredOnScreen"), TEXT("CustomOnScreen"), TEXT("Custom")})
+	{
+		Request->SetStringField(TEXT("mode"), Mode); TestTrue(TEXT("Supported mode: ") + Mode, Commands.HandleCommand(TEXT("set_widget_preview_settings"), Request)->GetBoolField(TEXT("success")));
+	}
+	FKismetEditorUtilities::CompileBlueprint(Blueprint);
+	Defaults = CastChecked<UUserWidget>(Blueprint->GeneratedClass->GetDefaultObject());
+	TestTrue(TEXT("Editor settings survive compile"), Defaults->DesignSizeMode == EDesignPreviewSizeMode::Custom && Defaults->DesignTimeSize == FVector2D(320,120));
+	Blueprint->GetPackage()->SetDirtyFlag(false);
+	return !HasAnyErrors();
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMCPUMGPersistenceTest, "UnrealMCP.UMG.Persistence", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMCPUMGPersistenceTest::RunTest(const FString& Parameters)
+{
+	FString Path;
+	if (!FParse::Value(FCommandLine::Get(), TEXT("UMGPersistencePath="), Path))
+	{
+		AddInfo(TEXT("Persistence requires a unique -UMGPersistencePath=/Game/__Dev/.../WBP_Test and a second process with -UMGPersistenceReload"));
+		return true;
+	}
+	if (!TestTrue(TEXT("Persistence fixture restricted to __Dev"), Path.StartsWith(TEXT("/Game/__Dev/")) && FPackageName::IsValidLongPackageName(Path))) return false;
+	const bool Reload = FParse::Param(FCommandLine::Get(), TEXT("UMGPersistenceReload"));
+	UWidgetBlueprint* Blueprint = nullptr;
+	FUnrealMCPUMGCommands Commands;
+	if (!Reload)
+	{
+		if (!TestFalse(TEXT("Never overwrite an existing fixture"), UEditorAssetLibrary::DoesAssetExist(Path))) return false;
+		Blueprint = MakeUMGFixture(Path);
+		if (!TestNotNull(TEXT("Persistence fixture"), Blueprint)) return false;
+		auto Tree = Blueprint->WidgetTree;
+		auto Root = Tree->ConstructWidget<UCanvasPanel>(UCanvasPanel::StaticClass(), TEXT("Root")); Tree->RootWidget = Root;
+		auto Text = Tree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("KeyText")); Root->AddChild(Text);
+		Text->SetText(FText::FromString(TEXT("F"))); auto Font = Text->GetFont(); Font.Size = 37; Text->SetFont(Font);
+		auto Image = Tree->ConstructWidget<UImage>(UImage::StaticClass(), TEXT("KeyFrame")); Root->AddChild(Image);
+		FSlateBrush Brush; Brush.SetResourceObject(UEditorAssetLibrary::LoadAsset(TEXT("/Engine/EngineResources/DefaultTexture"))); Image->SetBrush(Brush);
+		auto Overlay = Tree->ConstructWidget<UOverlay>(UOverlay::StaticClass(), TEXT("KeyOverlay")); Root->AddChild(Overlay);
+		FKismetEditorUtilities::CompileBlueprint(Blueprint);
+		auto Move = MakeShared<FJsonObject>(); Move->SetStringField(TEXT("path"), Path); Move->SetStringField(TEXT("new_parent_name"), TEXT("KeyOverlay"));
+		Move->SetBoolField(TEXT("dry_run"), false);
+		auto Layout = MakeShared<FJsonObject>(); Layout->SetStringField(TEXT("HorizontalAlignment"), TEXT("HAlign_Center")); Layout->SetStringField(TEXT("VerticalAlignment"), TEXT("VAlign_Center"));
+		Move->SetObjectField(TEXT("slot_properties"), Layout);
+		for (const FString Name : {TEXT("KeyFrame"), TEXT("KeyText")})
+		{
+			Move->SetStringField(TEXT("widget_name"), Name); Move->SetNumberField(TEXT("insert_index"), Overlay->GetChildrenCount());
+			if (!TestTrue(TEXT("Persistence move: ") + Name, Commands.HandleCommand(TEXT("reparent_widget"), Move)->GetBoolField(TEXT("success")))) return false;
+		}
+		auto Preview = MakeShared<FJsonObject>(); Preview->SetStringField(TEXT("path"), Path); Preview->SetStringField(TEXT("mode"), TEXT("Custom")); Preview->SetBoolField(TEXT("dry_run"), false);
+		Preview->SetArrayField(TEXT("size"), {MakeShared<FJsonValueNumber>(320), MakeShared<FJsonValueNumber>(120)});
+		if (!TestTrue(TEXT("Persistence preview apply"), Commands.HandleCommand(TEXT("set_widget_preview_settings"), Preview)->GetBoolField(TEXT("success")))) return false;
+		FKismetEditorUtilities::CompileBlueprint(Blueprint);
+		if (!TestTrue(TEXT("Explicit save succeeds"), UEditorAssetLibrary::SaveLoadedAsset(Blueprint, false))) return false;
+	}
+	else Blueprint = Cast<UWidgetBlueprint>(UEditorAssetLibrary::LoadAsset(Path));
+	if (!TestNotNull(TEXT("Persisted Blueprint available"), Blueprint)) return false;
+	auto Text = Cast<UTextBlock>(Blueprint->WidgetTree->FindWidget(TEXT("KeyText")));
+	auto Image = Cast<UImage>(Blueprint->WidgetTree->FindWidget(TEXT("KeyFrame")));
+	auto Overlay = Cast<UOverlay>(Blueprint->WidgetTree->FindWidget(TEXT("KeyOverlay")));
+	if (!TestNotNull(TEXT("Persisted text"), Text) || !TestNotNull(TEXT("Persisted image"), Image) || !TestNotNull(TEXT("Persisted parent"), Overlay)) return false;
+	TestEqual(TEXT("Persisted child count"), Overlay->GetChildrenCount(), 2);
+	TestEqual(TEXT("Persisted first image"), Overlay->GetChildAt(0), static_cast<UWidget*>(Image));
+	TestEqual(TEXT("Persisted second text"), Overlay->GetChildAt(1), static_cast<UWidget*>(Text));
+	auto Slot = Cast<UOverlaySlot>(Text->Slot);
+	if (!TestNotNull(TEXT("Persisted OverlaySlot"), Slot)) return false;
+	TestTrue(TEXT("Persisted centered slot"), Slot->GetHorizontalAlignment() == HAlign_Center && Slot->GetVerticalAlignment() == VAlign_Center);
+	TestEqual(TEXT("Persisted font size"), Text->GetFont().Size, 37.f);
+	TestEqual(TEXT("Persisted text value"), Text->GetText().ToString(), FString(TEXT("F")));
+	TestEqual(TEXT("Persisted texture reference"), Image->GetBrush().GetResourceObject(), UEditorAssetLibrary::LoadAsset(TEXT("/Engine/EngineResources/DefaultTexture")));
+	auto Read = MakeShared<FJsonObject>(); Read->SetStringField(TEXT("path"), Path);
+	auto Settings = Commands.HandleCommand(TEXT("get_widget_preview_settings"), Read);
+	if (!TestTrue(TEXT("Persisted preview readable"), Settings->GetBoolField(TEXT("success")))) return false;
+	TestEqual(TEXT("Persisted Designer mode"), Settings->GetObjectField(TEXT("settings"))->GetStringField(TEXT("mode")), FString(TEXT("Custom")));
+	const auto Size = Settings->GetObjectField(TEXT("settings"))->GetArrayField(TEXT("size"));
+	TestTrue(TEXT("Persisted Designer dimensions"), Size.Num() == 2 && Size[0]->AsNumber() == 320 && Size[1]->AsNumber() == 120);
+	TestFalse(TEXT("Persisted Blueprint clean"), Blueprint->GetPackage()->IsDirty());
+	AddInfo(FString::Printf(TEXT("%s persistence fixture %s"), Reload ? TEXT("Cold-read") : TEXT("Wrote"), *Path));
+	return !HasAnyErrors();
+}
+#endif
+
 // Serialize widget-type-specific properties — safe, no UPropertyToJsonValue.
 static TSharedPtr<FJsonObject> SerializeWidgetProperties(UWidget* Widget)
 {
@@ -1663,6 +2137,7 @@ static TSharedPtr<FJsonObject> SerializeWidgetTree(UWidget* Widget, UWidgetBluep
 
 	// Slot info (safe manual extraction)
 	TSharedPtr<FJsonObject> SlotObj = SerializeSlot(Widget->Slot);
+	Node->SetObjectField(TEXT("placement"), WidgetPlacement(Widget));
 	if (SlotObj)
 	{
 		Node->SetObjectField(TEXT("slot"), SlotObj);
