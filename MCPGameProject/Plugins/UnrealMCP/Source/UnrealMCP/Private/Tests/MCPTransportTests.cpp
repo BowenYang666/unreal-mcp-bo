@@ -1,10 +1,14 @@
 #if WITH_DEV_AUTOMATION_TESTS
 #include "MCPServerRunnable.h"
+#include "MCPCommandQueue.h"
 #include "UnrealMCPBridge.h"
 #include "Async/Async.h"
+#include "Async/TaskGraphInterfaces.h"
 #include "Editor.h"
 #include "HAL/RunnableThread.h"
 #include "Misc/AutomationTest.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
 #include "SocketSubsystem.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
@@ -107,5 +111,115 @@ bool FMCPTransportSocketTest::RunTest(const FString& Parameters)
     });
     ADD_LATENT_AUTOMATION_COMMAND(FMCPAwaitTransport(State, this));
     return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMCPCommandQueueTest, "UnrealMCP.Transport.CommandQueue",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMCPCommandQueueTest::RunTest(const FString& Parameters)
+{
+    FMCPCommandQueue Queue;
+    TArray<int32> Order;
+    auto First = Queue.Submit([&]() -> FString
+    {
+        Order.Add(1);
+        TestFalse(TEXT("Nested dispatch cannot start the next command"), Queue.RunNext(true));
+        FTaskGraphInterface::Get().ProcessThreadUntilIdle(ENamedThreads::GameThread);
+        TestEqual(TEXT("Task pumping did not nest another command"), Order.Num(), 1);
+        return TEXT("first");
+    });
+    auto Second = Queue.Submit([&]() -> FString { Order.Add(2); return TEXT("second"); });
+    FTaskGraphInterface::Get().ProcessThreadUntilIdle(ENamedThreads::GameThread);
+    TestTrue(TEXT("Task pumping cannot execute queued editor work"), Order.IsEmpty());
+    TestFalse(TEXT("Unsafe frame defers without mutation"), Queue.RunNext(false));
+    TestFalse(TEXT("Deferred request still pending"), First->Future.IsReady());
+    TestTrue(TEXT("First safe boundary runs one command"), Queue.RunNext(true));
+    TestEqual(TEXT("First response preserved"), First->Future.Get(), FString(TEXT("first")));
+    TestFalse(TEXT("One command per boundary"), Second->Future.IsReady());
+    TestTrue(TEXT("Next boundary runs second command"), Queue.RunNext(true));
+    TestEqual(TEXT("FIFO response"), Second->Future.Get(), FString(TEXT("second")));
+    TestTrue(TEXT("FIFO execution"), Order == TArray<int32>({1, 2}));
+    auto Expired = Queue.Submit([&]() -> FString { Order.Add(3); return TEXT("unexpected"); }, 0);
+    TestFalse(TEXT("Expired work never starts"), Queue.RunNext(true));
+    TestTrue(TEXT("Expired request completed"), Expired->Future.IsReady());
+    TestTrue(TEXT("Expired receipt distinguishes not started"), Expired->Future.Get().Contains(TEXT("not_started")));
+    auto Cancelled = Queue.Submit([&]() -> FString { Order.Add(4); return TEXT("unexpected"); });
+    TestTrue(TEXT("Transport can cancel work that has not started"), Queue.CancelPending(Cancelled, TEXT("dispatch_timeout")));
+    TestFalse(TEXT("Cannot fulfill a cancelled promise twice"), Queue.CancelPending(Cancelled, TEXT("dispatch_timeout")));
+    TestTrue(TEXT("Cancellation releases waiter"), Cancelled->Future.IsReady());
+    auto Stopped = Queue.Submit([&]() -> FString { Order.Add(5); return TEXT("unexpected"); });
+    Queue.Stop();
+    TestTrue(TEXT("Stop resolves pending promise before joining server"), Stopped->Future.IsReady());
+    TestTrue(TEXT("Stop receipt"), Stopped->Future.Get().Contains(TEXT("server_stopped")));
+    auto Late = Queue.Submit([]() -> FString { return TEXT("unexpected"); });
+    TestTrue(TEXT("Submission racing shutdown is immediately rejected"), Late->Future.IsReady());
+    TestFalse(TEXT("Stopped queue cannot execute"), Queue.RunNext(true));
+    TestEqual(TEXT("Cancelled/expired/stopped commands did not mutate"), Order.Num(), 2);
+    Queue.Start();
+    auto Restarted = Queue.Submit([]() -> FString { return TEXT("restarted"); });
+    TestTrue(TEXT("Queue supports explicit server restart"), Queue.RunNext(true));
+    TestEqual(TEXT("Restarted response"), Restarted->Future.Get(), FString(TEXT("restarted")));
+    TFuture<FString> ActiveWaiter;
+    auto Active = Queue.Submit([&]() -> FString
+    {
+        Queue.Stop();
+        TestTrue(TEXT("Reentrant stop releases the active waiter before a server join"), ActiveWaiter.WaitFor(FTimespan::FromSeconds(5)));
+        return TEXT("finished after stop");
+    });
+    ActiveWaiter = Async(EAsyncExecution::ThreadPool, [Active]() { return Active->Future.Get(); });
+    TestTrue(TEXT("Active command finishes without double-completing its promise"), Queue.RunNext(true));
+    if (ActiveWaiter.IsReady())
+    {
+        const FString Receipt = ActiveWaiter.Get();
+        TestTrue(TEXT("Active cancellation is outcome unknown"), Receipt.Contains(TEXT("server_stopped_during_execution")));
+        TestFalse(TEXT("Active cancellation never claims no modification"), Receipt.Contains(TEXT("\"modified\"")));
+        TestFalse(TEXT("Active cancellation never claims not saved"), Receipt.Contains(TEXT("\"saved\"")));
+    }
+    return !HasAnyErrors();
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMCPFrameDispatchTest, "UnrealMCP.Transport.FrameDispatchSafety",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMCPFrameDispatchTest::RunTest(const FString& Parameters)
+{
+    if (!FParse::Param(FCommandLine::Get(), TEXT("UnrealMCPNoServer")))
+    {
+        AddError(TEXT("Frame dispatch shutdown regression requires an isolated -UnrealMCPNoServer process"));
+        return false;
+    }
+    auto Bridge = GEditor->GetEditorSubsystem<UUnrealMCPBridge>();
+    if (!TestNotNull(TEXT("Editor Bridge"), Bridge)) return false;
+    bool Executed = false;
+    auto Request = Bridge->CommandQueue->Submit([&]() -> FString
+    {
+        Executed = true;
+        return Bridge->ExecuteCommandOnGameThread(TEXT("ping"), MakeShared<FJsonObject>());
+    });
+    {
+        TGuardValue<bool> SlowTask(GIsSlowTask, true);
+        FTaskGraphInterface::Get().ProcessThreadUntilIdle(ENamedThreads::GameThread);
+        Bridge->DrainCommands();
+        TestFalse(TEXT("Slow task and task pumping cannot start queued work"), Executed);
+        TestFalse(TEXT("Slow-task deferral leaves promise pending"), Request->Future.IsReady());
+    }
+    {
+        TGuardValue<bool> Saving(GIsSavingPackage, true);
+        Bridge->DrainCommands();
+        TestFalse(TEXT("Saving cannot start queued work"), Executed);
+    }
+    Bridge->DrainCommands();
+    TestTrue(TEXT("Safe boundary starts the command"), Executed);
+    TestTrue(TEXT("Safe command result resolved"), Request->Future.IsReady());
+    if (Request->Future.IsReady()) TestTrue(TEXT("Normal response preserved"), Request->Future.Get().Contains(TEXT("pong")));
+    TestTrue(TEXT("A GT caller cannot recursively execute or deadlock"),
+        Bridge->ExecuteCommand(TEXT("ping"), MakeShared<FJsonObject>()).Contains(TEXT("dispatch_requires_external_thread")));
+    auto Pending = Bridge->CommandQueue->Submit([]() -> FString { return TEXT("must not execute"); });
+    auto Waiter = Async(EAsyncExecution::ThreadPool, [Pending]() { return Pending->Future.Get(); });
+    Bridge->StopServer();
+    if (TestTrue(TEXT("Stop releases a waiting external thread without GT pumping"), Waiter.WaitFor(FTimespan::FromSeconds(5))))
+        TestTrue(TEXT("Stopped request explicitly did not start"), Waiter.Get().Contains(TEXT("not_started")));
+    Bridge->CommandQueue->Start();
+    return !HasAnyErrors();
 }
 #endif

@@ -4,6 +4,9 @@
 #include "Commands/UnrealMCPSceneAssets.h"
 #include "Commands/UnrealMCPPhysicalMaterialCommands.h"
 #include "MCPServerRunnable.h"
+#include "MCPCommandQueue.h"
+#include "Misc/CoreDelegates.h"
+#include "Framework/Application/SlateApplication.h"
 #include "Sockets.h"
 #include "SocketSubsystem.h"
 #include "HAL/RunnableThread.h"
@@ -71,6 +74,7 @@
 
 UUnrealMCPBridge::UUnrealMCPBridge()
 {
+    CommandQueue = MakeShared<FMCPCommandQueue, ESPMode::ThreadSafe>();
     EditorCommands = MakeShared<FUnrealMCPEditorCommands>();
     BlueprintCommands = MakeShared<FUnrealMCPBlueprintCommands>();
     BlueprintNodeCommands = MakeShared<FUnrealMCPBlueprintNodeCommands>();
@@ -112,6 +116,7 @@ void UUnrealMCPBridge::Initialize(FSubsystemCollectionBase& Collection)
         }
     }
     FIPv4Address::Parse(MCP_SERVER_HOST, ServerAddress);
+    BeginFrameHandle = FCoreDelegates::OnBeginFrame.AddUObject(this, &UUnrealMCPBridge::DrainCommands);
 
     // Start the server automatically
     if (!FParse::Param(FCommandLine::Get(), TEXT("UnrealMCPNoServer")))
@@ -124,6 +129,7 @@ void UUnrealMCPBridge::Initialize(FSubsystemCollectionBase& Collection)
 void UUnrealMCPBridge::Deinitialize()
 {
     UE_LOG(LogTemp, Display, TEXT("UnrealMCPBridge: Shutting down"));
+    FCoreDelegates::OnBeginFrame.Remove(BeginFrameHandle);
     StopServer();
 }
 
@@ -172,6 +178,7 @@ void UUnrealMCPBridge::StartServer()
     }
 
     ListenerSocket = NewListenerSocket;
+    CommandQueue->Start();
     bIsRunning = true;
     UE_LOG(LogTemp, Display, TEXT("UnrealMCPBridge: Server started on %s:%d"), *ServerAddress.ToString(), Port);
 
@@ -193,6 +200,7 @@ void UUnrealMCPBridge::StartServer()
 // Stop the MCP server
 void UUnrealMCPBridge::StopServer()
 {
+    CommandQueue->Stop();
     if (!bIsRunning)
     {
         return;
@@ -227,20 +235,39 @@ void UUnrealMCPBridge::StopServer()
 // Execute a command received from a client
 FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TSharedPtr<FJsonObject>& Params)
 {
+    if (IsInGameThread())
+    {
+        return FMCPCommandQueue::Rejection(TEXT("dispatch_requires_external_thread"), TEXT("Editor commands must enter through the frame-boundary queue, not execute recursively on the game thread"));
+    }
+    const auto Queue = CommandQueue;
+    auto Request = Queue->Submit([this, CommandType, Params]() { return ExecuteCommandOnGameThread(CommandType, Params); });
+    if (!Request->Future.WaitFor(FTimespan::FromSeconds(20))) Queue->CancelPending(Request, TEXT("dispatch_timeout"));
+    return Request->Future.Get();
+}
+
+void UUnrealMCPBridge::DrainCommands()
+{
+    if (IsEngineExitRequested())
+    {
+        CommandQueue->Stop();
+        return;
+    }
+    const bool Safe = !GIsSavingPackage && !IsGarbageCollecting() && !GIsSlowTask
+        && !(FSlateApplication::IsInitialized() && FSlateApplication::Get().GetActiveModalWindow().IsValid());
+    CommandQueue->RunNext(Safe);
+}
+
+FString UUnrealMCPBridge::ExecuteCommandOnGameThread(const FString& CommandType, const TSharedPtr<FJsonObject>& Params)
+{
+    check(IsInGameThread());
     UE_LOG(LogTemp, Display, TEXT("UnrealMCPBridge: Executing command: %s"), *CommandType);
-    
-    // Create a promise to wait for the result
-    TPromise<FString> Promise;
-    TFuture<FString> Future = Promise.GetFuture();
-    
-    // Queue execution on Game Thread
-    AsyncTask(ENamedThreads::GameThread, [this, CommandType, Params, Promise = MoveTemp(Promise)]() mutable
     {
         TSharedPtr<FJsonObject> ResponseJson = MakeShareable(new FJsonObject);
         
         try
         {
             TSharedPtr<FJsonObject> ResultJson;
+            bool NiagaraCommand = false;
             const FString BeforeSceneTransaction = UnrealMCPScene::UndoToken();
             
             if ((UnrealMCPScene::IsBusy() || UnrealMCPSceneAssets::IsBusy()) && CommandType != TEXT("ping") && CommandType != TEXT("get_editor_context")
@@ -456,6 +483,7 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                      CommandType == TEXT("remove_renderer_from_emitter") ||
                      CommandType == TEXT("set_mesh_renderer_mesh"))
             {
+                NiagaraCommand = true;
                 ResultJson = NiagaraCommands->HandleCommand(CommandType, Params);
             }
             else
@@ -466,8 +494,7 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                 FString ResultString;
                 TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&ResultString);
                 FJsonSerializer::Serialize(ResponseJson.ToSharedRef(), Writer);
-                Promise.SetValue(ResultString);
-                return;
+                return ResultString;
             }
             
             // Check if the result contains an error
@@ -496,7 +523,7 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
                 // Set error status and include the error message
                 ResponseJson->SetStringField(TEXT("status"), TEXT("error"));
                 ResponseJson->SetStringField(TEXT("error"), ErrorMessage);
-                if (CommandType == TEXT("duplicate_asset") || CommandType == TEXT("set_material_instance_parameters")
+                if (NiagaraCommand || CommandType == TEXT("duplicate_asset") || CommandType == TEXT("set_material_instance_parameters")
                     || CommandType == TEXT("delete_material_expression") || CommandType == TEXT("add_emitter_to_system")
                     || CommandType == TEXT("reparent_widget") || CommandType == TEXT("set_widget_preview_settings") || CommandType == TEXT("get_widget_preview_settings")
                     || CommandType == TEXT("set_asset_properties") || CommandType == TEXT("create_data_asset")
@@ -519,8 +546,6 @@ FString UUnrealMCPBridge::ExecuteCommand(const FString& CommandType, const TShar
         FString ResultString;
         TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&ResultString);
         FJsonSerializer::Serialize(ResponseJson.ToSharedRef(), Writer);
-        Promise.SetValue(ResultString);
-    });
-    
-    return Future.Get();
+        return ResultString;
+    }
 }

@@ -18,6 +18,7 @@
 #include "UnrealMCPBridge.generated.h"
 
 class FMCPServerRunnable;
+class FMCPCommandQueue;
 
 /**
  * Editor subsystem for MCP Bridge
@@ -47,6 +48,14 @@ public:
 	FString ExecuteCommand(const FString& CommandType, const TSharedPtr<FJsonObject>& Params);
 
 private:
+#if WITH_DEV_AUTOMATION_TESTS
+	friend class FMCPFrameDispatchTest;
+#endif
+	void DrainCommands();
+	FString ExecuteCommandOnGameThread(const FString& CommandType, const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FMCPCommandQueue, ESPMode::ThreadSafe> CommandQueue;
+	FDelegateHandle BeginFrameHandle;
+
 	// Server state
 	bool bIsRunning;
 	TSharedPtr<FSocket> ListenerSocket;

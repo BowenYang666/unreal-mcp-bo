@@ -104,6 +104,44 @@ class MaterialInstanceParametersTests(unittest.TestCase):
         self.assertNotIn("modified", result)
         self.connection.send_command.assert_called_once()
 
+    def test_niagara_save_and_dispatch_failures_keep_receipts(self):
+        from tools.niagara_tools import register_niagara_tools
+        server = FastMCP("niagara-save-test")
+        register_niagara_tools(server)
+        tools = server._tool_manager
+        calls = [
+            ("enable_module_input", dict(asset_full_path="/Game/Test", emitter_name="Layer",
+                                        module_name="InitializeParticle", input_name="Lifetime", initial_value=1.2)),
+            ("set_module_static_switch", dict(asset_full_path="/Game/Test", emitter_name="Layer",
+                                             module_name="InitializeParticle", switch_name="Color Mode", value="Direct Set")),
+        ]
+        for name, arguments in calls:
+            for modified, stage in ((True, "save"), (False, "dispatch")):
+                with self.subTest(tool=name, stage=stage):
+                    self.connection.reset_mock()
+                    self.connection.send_command.return_value = {"status": "error", "error": "Not saved", "result": {
+                        "modified": modified, "saved": False, "stage": stage,
+                        "execution_state": "complete" if modified else "not_started", "package_dirty": modified}}
+                    result = tools.get_tool(name).fn(None, **arguments)
+                    self.assertFalse(result["success"])
+                    self.assertEqual(result["modified"], modified)
+                    self.assertFalse(result["saved"])
+                    self.assertEqual(result["stage"], stage)
+                    self.assertEqual(result["package_dirty"], modified)
+                    self.connection.send_command.assert_called_once()
+            for error in (TimeoutError("timeout"), ConnectionResetError("reset")):
+                with self.subTest(tool=name, error=type(error).__name__):
+                    self.connection.reset_mock()
+                    self.connection.send_command.side_effect = error
+                    result = tools.get_tool(name).fn(None, **arguments)
+                    self.assertFalse(result["success"])
+                    self.assertEqual(result["stage"], "transport")
+                    self.assertEqual(result["execution_state"], "unknown")
+                    self.assertNotIn("saved", result)
+                    self.assertNotIn("modified", result)
+                    self.connection.send_command.assert_called_once()
+            self.connection.send_command.side_effect = None
+
     def test_clear_override_forwarding(self):
         self.tool.fn(None, self.path, clear_scalar_params=["Roughness"], clear_vector_params=["Tint"], clear_texture_params=["MainTex"])
         self.connection.send_command.assert_called_with("set_material_instance_parameters", {

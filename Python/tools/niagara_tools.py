@@ -12,6 +12,17 @@ from mcp.server.fastmcp import FastMCP, Context
 logger = logging.getLogger("UnrealMCP")
 
 
+def _niagara_error(response: dict) -> dict:
+    result = dict(response.get("result")) if isinstance(response.get("result"), dict) else {}
+    result["success"] = False
+    result.setdefault("message", response.get("error", "Unknown error"))
+    return result
+
+
+def _niagara_transport_error(message: str) -> dict:
+    return {"success": False, "message": message, "stage": "transport", "execution_state": "unknown"}
+
+
 def register_niagara_tools(mcp: FastMCP):
     """Register Niagara tools with the MCP server."""
 
@@ -60,10 +71,10 @@ def register_niagara_tools(mcp: FastMCP):
             response = unreal.send_command("list_niagara_systems", params)
 
             if not response:
-                return {"success": False, "message": "No response from Unreal Engine"}
+                return _niagara_transport_error("No response from Unreal Engine")
 
             if response.get("status") == "error":
-                return {"success": False, "message": response.get("error", "Unknown error")}
+                return _niagara_error(response)
 
             result = response.get("result", response)
             logger.info(f"Found {result.get('count', 0)} Niagara systems")
@@ -71,7 +82,7 @@ def register_niagara_tools(mcp: FastMCP):
 
         except Exception as e:
             logger.error(f"Error listing Niagara systems: {e}")
-            return {"success": False, "message": str(e)}
+            return _niagara_transport_error(str(e))
 
     @mcp.tool()
     def read_niagara_system(
@@ -98,10 +109,10 @@ def register_niagara_tools(mcp: FastMCP):
             response = unreal.send_command("read_niagara_system", params)
 
             if not response:
-                return {"success": False, "message": "No response from Unreal Engine"}
+                return _niagara_transport_error("No response from Unreal Engine")
 
             if response.get("status") == "error":
-                return {"success": False, "message": response.get("error", "Unknown error")}
+                return _niagara_error(response)
 
             result = response.get("result", response)
             logger.info(f"Read Niagara system: {result.get('name', '?')} with {result.get('emitter_count', 0)} emitters")
@@ -109,7 +120,7 @@ def register_niagara_tools(mcp: FastMCP):
 
         except Exception as e:
             logger.error(f"Error reading Niagara system: {e}")
-            return {"success": False, "message": str(e)}
+            return _niagara_transport_error(str(e))
 
     @mcp.tool()
     def set_niagara_parameter(
@@ -168,17 +179,17 @@ def register_niagara_tools(mcp: FastMCP):
             response = unreal.send_command("set_niagara_parameter", params)
 
             if not response:
-                return {"success": False, "message": "No response from Unreal Engine"}
+                return _niagara_transport_error("No response from Unreal Engine")
 
             if response.get("status") == "error":
-                return {"success": False, "message": response.get("error", "Unknown error")}
+                return _niagara_error(response)
 
             result = response.get("result", response)
             return result
 
         except Exception as e:
             logger.error(f"Error setting Niagara parameter: {e}")
-            return {"success": False, "message": str(e)}
+            return _niagara_transport_error(str(e))
 
     @mcp.tool()
     def get_niagara_parameters(
@@ -212,10 +223,10 @@ def register_niagara_tools(mcp: FastMCP):
             response = unreal.send_command("get_niagara_parameters", {"actor_name": actor_name})
 
             if not response:
-                return {"success": False, "message": "No response from Unreal Engine"}
+                return _niagara_transport_error("No response from Unreal Engine")
 
             if response.get("status") == "error":
-                return {"success": False, "message": response.get("error", "Unknown error")}
+                return _niagara_error(response)
 
             result = response.get("result", response)
             logger.info(f"Got {result.get('parameter_count', 0)} Niagara parameters from '{actor_name}'")
@@ -223,7 +234,7 @@ def register_niagara_tools(mcp: FastMCP):
 
         except Exception as e:
             logger.error(f"Error getting Niagara parameters: {e}")
-            return {"success": False, "message": str(e)}
+            return _niagara_transport_error(str(e))
 
     @mcp.tool()
     def create_niagara_system(
@@ -266,10 +277,10 @@ def register_niagara_tools(mcp: FastMCP):
             response = unreal.send_command("create_niagara_system", params)
 
             if not response:
-                return {"success": False, "message": "No response from Unreal Engine"}
+                return _niagara_transport_error("No response from Unreal Engine")
 
             if response.get("status") == "error":
-                return {"success": False, "message": response.get("error", "Unknown error")}
+                return _niagara_error(response)
 
             result = response.get("result", response)
             logger.info(f"Created Niagara system: {result.get('path', '?')}")
@@ -277,7 +288,7 @@ def register_niagara_tools(mcp: FastMCP):
 
         except Exception as e:
             logger.error(f"Error creating Niagara system: {e}")
-            return {"success": False, "message": str(e)}
+            return _niagara_transport_error(str(e))
 
     @mcp.tool()
     def set_niagara_rapid_parameter(
@@ -350,10 +361,10 @@ def register_niagara_tools(mcp: FastMCP):
             response = unreal.send_command("set_niagara_rapid_parameter", params)
 
             if not response:
-                return {"success": False, "message": "No response from Unreal Engine"}
+                return _niagara_transport_error("No response from Unreal Engine")
 
             if response.get("status") == "error":
-                return {"success": False, "message": response.get("error", "Unknown error")}
+                return _niagara_error(response)
 
             result = response.get("result", response)
             logger.info(f"Set rapid parameter: {result.get('parameter', '?')} = {result.get('new_value', '?')}")
@@ -361,7 +372,7 @@ def register_niagara_tools(mcp: FastMCP):
 
         except Exception as e:
             logger.error(f"Error setting rapid parameter: {e}")
-            return {"success": False, "message": str(e)}
+            return _niagara_transport_error(str(e))
 
     @mcp.tool()
     def modify_emitter_properties(
@@ -426,10 +437,10 @@ def register_niagara_tools(mcp: FastMCP):
             response = unreal.send_command("modify_emitter_properties", params)
 
             if not response:
-                return {"success": False, "message": "No response from Unreal Engine"}
+                return _niagara_transport_error("No response from Unreal Engine")
 
             if response.get("status") == "error":
-                return {"success": False, "message": response.get("error", "Unknown error")}
+                return _niagara_error(response)
 
             result = response.get("result", response)
             logger.info(f"Modified emitter properties: {result.get('emitter', '?')} ({result.get('changes_count', 0)} changes)")
@@ -437,7 +448,7 @@ def register_niagara_tools(mcp: FastMCP):
 
         except Exception as e:
             logger.error(f"Error modifying emitter properties: {e}")
-            return {"success": False, "message": str(e)}
+            return _niagara_transport_error(str(e))
 
     @mcp.tool()
     def add_emitter_to_system(
@@ -565,10 +576,10 @@ def register_niagara_tools(mcp: FastMCP):
             response = unreal.send_command("remove_emitter_from_system", params)
 
             if not response:
-                return {"success": False, "message": "No response from Unreal Engine"}
+                return _niagara_transport_error("No response from Unreal Engine")
 
             if response.get("status") == "error":
-                return {"success": False, "message": response.get("error", "Unknown error")}
+                return _niagara_error(response)
 
             result = response.get("result", response)
             logger.info(f"Removed emitter: {emitter_name} from {result.get('system', '?')}")
@@ -576,7 +587,7 @@ def register_niagara_tools(mcp: FastMCP):
 
         except Exception as e:
             logger.error(f"Error removing emitter: {e}")
-            return {"success": False, "message": str(e)}
+            return _niagara_transport_error(str(e))
 
     @mcp.tool()
     def list_niagara_emitter_templates(
@@ -615,10 +626,10 @@ def register_niagara_tools(mcp: FastMCP):
             response = unreal.send_command("list_niagara_emitter_templates", params)
 
             if not response:
-                return {"success": False, "message": "No response from Unreal Engine"}
+                return _niagara_transport_error("No response from Unreal Engine")
 
             if response.get("status") == "error":
-                return {"success": False, "message": response.get("error", "Unknown error")}
+                return _niagara_error(response)
 
             result = response.get("result", response)
             logger.info(f"Found {result.get('count', 0)} emitter templates")
@@ -626,7 +637,7 @@ def register_niagara_tools(mcp: FastMCP):
 
         except Exception as e:
             logger.error(f"Error listing emitter templates: {e}")
-            return {"success": False, "message": str(e)}
+            return _niagara_transport_error(str(e))
 
     @mcp.tool()
     def add_module_to_emitter(
@@ -685,10 +696,10 @@ def register_niagara_tools(mcp: FastMCP):
             response = unreal.send_command("add_module_to_emitter", params)
 
             if not response:
-                return {"success": False, "message": "No response from Unreal Engine"}
+                return _niagara_transport_error("No response from Unreal Engine")
 
             if response.get("status") == "error":
-                return {"success": False, "message": response.get("error", "Unknown error")}
+                return _niagara_error(response)
 
             result = response.get("result", response)
             logger.info(f"Added module {module_name} to {emitter_name}/{script_type}")
@@ -696,7 +707,7 @@ def register_niagara_tools(mcp: FastMCP):
 
         except Exception as e:
             logger.error(f"Error adding module: {e}")
-            return {"success": False, "message": str(e)}
+            return _niagara_transport_error(str(e))
 
     @mcp.tool()
     def remove_module_from_emitter(
@@ -739,10 +750,10 @@ def register_niagara_tools(mcp: FastMCP):
             response = unreal.send_command("remove_module_from_emitter", params)
 
             if not response:
-                return {"success": False, "message": "No response from Unreal Engine"}
+                return _niagara_transport_error("No response from Unreal Engine")
 
             if response.get("status") == "error":
-                return {"success": False, "message": response.get("error", "Unknown error")}
+                return _niagara_error(response)
 
             result = response.get("result", response)
             logger.info(f"Removed module {module_name} from {emitter_name}/{script_type}")
@@ -750,7 +761,7 @@ def register_niagara_tools(mcp: FastMCP):
 
         except Exception as e:
             logger.error(f"Error removing module: {e}")
-            return {"success": False, "message": str(e)}
+            return _niagara_transport_error(str(e))
 
     @mcp.tool()
     def set_niagara_renderer_property(
@@ -817,10 +828,10 @@ def register_niagara_tools(mcp: FastMCP):
             response = unreal.send_command("set_niagara_renderer_property", params)
 
             if not response:
-                return {"success": False, "message": "No response from Unreal Engine"}
+                return _niagara_transport_error("No response from Unreal Engine")
 
             if response.get("status") == "error":
-                return {"success": False, "message": response.get("error", "Unknown error")}
+                return _niagara_error(response)
 
             result = response.get("result", response)
             logger.info(f"Set renderer property {property_name} on {emitter_name}")
@@ -828,7 +839,7 @@ def register_niagara_tools(mcp: FastMCP):
 
         except Exception as e:
             logger.error(f"Error setting renderer property: {e}")
-            return {"success": False, "message": str(e)}
+            return _niagara_transport_error(str(e))
 
     @mcp.tool()
     def list_module_inputs(
@@ -864,10 +875,10 @@ def register_niagara_tools(mcp: FastMCP):
             response = unreal.send_command("list_module_inputs", params)
 
             if not response:
-                return {"success": False, "message": "No response from Unreal Engine"}
+                return _niagara_transport_error("No response from Unreal Engine")
 
             if response.get("status") == "error":
-                return {"success": False, "message": response.get("error", "Unknown error")}
+                return _niagara_error(response)
 
             result = response.get("result", response)
             logger.info(f"Listed {result.get('input_count', 0)} inputs of module {module_name}")
@@ -875,7 +886,7 @@ def register_niagara_tools(mcp: FastMCP):
 
         except Exception as e:
             logger.error(f"Error listing module inputs: {e}")
-            return {"success": False, "message": str(e)}
+            return _niagara_transport_error(str(e))
 
     @mcp.tool()
     def enable_module_input(
@@ -919,10 +930,10 @@ def register_niagara_tools(mcp: FastMCP):
             response = unreal.send_command("enable_module_input", params)
 
             if not response:
-                return {"success": False, "message": "No response from Unreal Engine"}
+                return _niagara_transport_error("No response from Unreal Engine")
 
             if response.get("status") == "error":
-                return {"success": False, "message": response.get("error", "Unknown error")}
+                return _niagara_error(response)
 
             result = response.get("result", response)
             logger.info(f"Enabled module input {module_name}.{input_name} -> {result.get('parameter_name', '?')}")
@@ -930,7 +941,7 @@ def register_niagara_tools(mcp: FastMCP):
 
         except Exception as e:
             logger.error(f"Error enabling module input: {e}")
-            return {"success": False, "message": str(e)}
+            return _niagara_transport_error(str(e))
 
     @mcp.tool()
     def list_module_static_switches(
@@ -967,10 +978,10 @@ def register_niagara_tools(mcp: FastMCP):
             response = unreal.send_command("list_module_static_switches", params)
 
             if not response:
-                return {"success": False, "message": "No response from Unreal Engine"}
+                return _niagara_transport_error("No response from Unreal Engine")
 
             if response.get("status") == "error":
-                return {"success": False, "message": response.get("error", "Unknown error")}
+                return _niagara_error(response)
 
             result = response.get("result", response)
             logger.info(f"Listed {result.get('switch_count', 0)} static switches of module {module_name}")
@@ -978,7 +989,7 @@ def register_niagara_tools(mcp: FastMCP):
 
         except Exception as e:
             logger.error(f"Error listing module static switches: {e}")
-            return {"success": False, "message": str(e)}
+            return _niagara_transport_error(str(e))
 
     @mcp.tool()
     def set_module_static_switch(
@@ -1020,10 +1031,10 @@ def register_niagara_tools(mcp: FastMCP):
             response = unreal.send_command("set_module_static_switch", params)
 
             if not response:
-                return {"success": False, "message": "No response from Unreal Engine"}
+                return _niagara_transport_error("No response from Unreal Engine")
 
             if response.get("status") == "error":
-                return {"success": False, "message": response.get("error", "Unknown error")}
+                return _niagara_error(response)
 
             result = response.get("result", response)
             logger.info(f"Set static switch {module_name}.{switch_name} = {result.get('new_value', '?')}")
@@ -1031,7 +1042,7 @@ def register_niagara_tools(mcp: FastMCP):
 
         except Exception as e:
             logger.error(f"Error setting module static switch: {e}")
-            return {"success": False, "message": str(e)}
+            return _niagara_transport_error(str(e))
 
     @mcp.tool()
     def bind_module_input_datainterface(
@@ -1082,10 +1093,10 @@ def register_niagara_tools(mcp: FastMCP):
             response = unreal.send_command("bind_module_input_datainterface", params)
 
             if not response:
-                return {"success": False, "message": "No response from Unreal Engine"}
+                return _niagara_transport_error("No response from Unreal Engine")
 
             if response.get("status") == "error":
-                return {"success": False, "message": response.get("error", "Unknown error")}
+                return _niagara_error(response)
 
             result = response.get("result", response)
             logger.info(f"Bound DI input {module_name}.{input_name} -> {result.get('resolved_binding', '?')}")
@@ -1093,7 +1104,7 @@ def register_niagara_tools(mcp: FastMCP):
 
         except Exception as e:
             logger.error(f"Error binding module input data interface: {e}")
-            return {"success": False, "message": str(e)}
+            return _niagara_transport_error(str(e))
 
     @mcp.tool()
     def read_ns_curve(
@@ -1133,10 +1144,10 @@ def register_niagara_tools(mcp: FastMCP):
             response = unreal.send_command("read_curve", params)
 
             if not response:
-                return {"success": False, "message": "No response from Unreal Engine"}
+                return _niagara_transport_error("No response from Unreal Engine")
 
             if response.get("status") == "error":
-                return {"success": False, "message": response.get("error", "Unknown error")}
+                return _niagara_error(response)
 
             result = response.get("result", response)
             logger.info(f"Read curve {module_name}.{input_name} ({result.get('type', '?')})")
@@ -1144,7 +1155,7 @@ def register_niagara_tools(mcp: FastMCP):
 
         except Exception as e:
             logger.error(f"Error reading curve: {e}")
-            return {"success": False, "message": str(e)}
+            return _niagara_transport_error(str(e))
 
     @mcp.tool()
     def set_ns_curve_keys(
@@ -1201,10 +1212,10 @@ def register_niagara_tools(mcp: FastMCP):
             response = unreal.send_command("set_curve_keys", params)
 
             if not response:
-                return {"success": False, "message": "No response from Unreal Engine"}
+                return _niagara_transport_error("No response from Unreal Engine")
 
             if response.get("status") == "error":
-                return {"success": False, "message": response.get("error", "Unknown error")}
+                return _niagara_error(response)
 
             result = response.get("result", response)
             logger.info(f"Set curve keys {module_name}.{input_name} -> {result.get('applied_key_counts', '?')}")
@@ -1212,7 +1223,7 @@ def register_niagara_tools(mcp: FastMCP):
 
         except Exception as e:
             logger.error(f"Error setting curve keys: {e}")
-            return {"success": False, "message": str(e)}
+            return _niagara_transport_error(str(e))
 
     @mcp.tool()
     def set_module_dynamic_input(
@@ -1256,10 +1267,10 @@ def register_niagara_tools(mcp: FastMCP):
             response = unreal.send_command("set_module_dynamic_input", params)
 
             if not response:
-                return {"success": False, "message": "No response from Unreal Engine"}
+                return _niagara_transport_error("No response from Unreal Engine")
 
             if response.get("status") == "error":
-                return {"success": False, "message": response.get("error", "Unknown error")}
+                return _niagara_error(response)
 
             result = response.get("result", response)
             logger.info(f"Set dynamic input {module_name}.{input_name} = {dynamic_input_name}")
@@ -1267,7 +1278,7 @@ def register_niagara_tools(mcp: FastMCP):
 
         except Exception as e:
             logger.error(f"Error setting module dynamic input: {e}")
-            return {"success": False, "message": str(e)}
+            return _niagara_transport_error(str(e))
 
     @mcp.tool()
     def add_renderer_to_emitter(
@@ -1302,10 +1313,10 @@ def register_niagara_tools(mcp: FastMCP):
             response = unreal.send_command("add_renderer_to_emitter", params)
 
             if not response:
-                return {"success": False, "message": "No response from Unreal Engine"}
+                return _niagara_transport_error("No response from Unreal Engine")
 
             if response.get("status") == "error":
-                return {"success": False, "message": response.get("error", "Unknown error")}
+                return _niagara_error(response)
 
             result = response.get("result", response)
             logger.info(f"Added {renderer_type} renderer to {emitter_name} -> index {result.get('renderer_index', '?')}")
@@ -1313,7 +1324,7 @@ def register_niagara_tools(mcp: FastMCP):
 
         except Exception as e:
             logger.error(f"Error adding renderer: {e}")
-            return {"success": False, "message": str(e)}
+            return _niagara_transport_error(str(e))
 
     @mcp.tool()
     def remove_renderer_from_emitter(
@@ -1346,10 +1357,10 @@ def register_niagara_tools(mcp: FastMCP):
             response = unreal.send_command("remove_renderer_from_emitter", params)
 
             if not response:
-                return {"success": False, "message": "No response from Unreal Engine"}
+                return _niagara_transport_error("No response from Unreal Engine")
 
             if response.get("status") == "error":
-                return {"success": False, "message": response.get("error", "Unknown error")}
+                return _niagara_error(response)
 
             result = response.get("result", response)
             logger.info(f"Removed renderer {renderer_index} from {emitter_name}")
@@ -1357,7 +1368,7 @@ def register_niagara_tools(mcp: FastMCP):
 
         except Exception as e:
             logger.error(f"Error removing renderer: {e}")
-            return {"success": False, "message": str(e)}
+            return _niagara_transport_error(str(e))
 
     @mcp.tool()
     def list_renderer_types(ctx: Context) -> Dict[str, Any]:
@@ -1423,10 +1434,10 @@ def register_niagara_tools(mcp: FastMCP):
             response = unreal.send_command("set_mesh_renderer_mesh", params)
 
             if not response:
-                return {"success": False, "message": "No response from Unreal Engine"}
+                return _niagara_transport_error("No response from Unreal Engine")
 
             if response.get("status") == "error":
-                return {"success": False, "message": response.get("error", "Unknown error")}
+                return _niagara_error(response)
 
             result = response.get("result", response)
             logger.info(f"Configured mesh renderer on {emitter_name}: mesh={static_mesh_path or '-'} mat={override_material_path or '-'}")
@@ -1434,4 +1445,4 @@ def register_niagara_tools(mcp: FastMCP):
 
         except Exception as e:
             logger.error(f"Error setting mesh renderer mesh: {e}")
-            return {"success": False, "message": str(e)}
+            return _niagara_transport_error(str(e))

@@ -1209,9 +1209,16 @@ static UNiagaraSystem* LoadNiagaraSystemByNameOrPath(const TSharedPtr<FJsonObjec
 }
 
 // Helper: auto-save a Niagara system asset after modification
+#if WITH_DEV_AUTOMATION_TESTS
+static bool FailNiagaraSaveForTest = false;
+#endif
+
 static bool SaveNiagaraSystemAsset(UNiagaraSystem* System)
 {
-	if (!System) return false;
+	if (!System || GIsSavingPackage || IsGarbageCollecting() || GIsSlowTask) return false;
+#if WITH_DEV_AUTOMATION_TESTS
+	if (FailNiagaraSaveForTest) return false;
+#endif
 	UPackage* Package = System->GetOutermost();
 	if (!Package) return false;
 
@@ -1221,7 +1228,20 @@ static bool SaveNiagaraSystemAsset(UNiagaraSystem* System)
 
 	FSavePackageArgs SaveArgs;
 	SaveArgs.TopLevelFlags = RF_Standalone;
-	return UPackage::SavePackage(Package, System, *PackageFilename, SaveArgs);
+	return UPackage::SavePackage(Package, System, *PackageFilename, SaveArgs) && !Package->IsDirty();
+}
+
+static TSharedPtr<FJsonObject> NiagaraSaveFailure(UNiagaraSystem* System)
+{
+	auto Result = FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Niagara changes were applied but automatic save failed or was unsafe; inspect the asset before retrying"));
+	Result->SetBoolField(TEXT("success"), false);
+	Result->SetBoolField(TEXT("modified"), true);
+	Result->SetBoolField(TEXT("saved"), false);
+	Result->SetStringField(TEXT("stage"), TEXT("save"));
+	Result->SetStringField(TEXT("error_code"), TEXT("niagara_save_failed"));
+	Result->SetStringField(TEXT("asset_path"), System->GetPathName());
+	Result->SetBoolField(TEXT("package_dirty"), System->GetPackage()->IsDirty());
+	return Result;
 }
 
 // Helper: synchronize the System Overview graph with emitter handles
@@ -1425,7 +1445,7 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleSetNiagaraRapidParamete
 
 	// Save the asset
 	System->MarkPackageDirty();
-	SaveNiagaraSystemAsset(System);
+	if (!SaveNiagaraSystemAsset(System)) return NiagaraSaveFailure(System);
 	System->PostEditChange();
 
 	ResultJson->SetStringField(TEXT("status"), TEXT("success"));
@@ -1552,7 +1572,7 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleModifyEmitterProperties
 	System->RequestCompile(true);
 	System->WaitForCompilationComplete();
 	System->MarkPackageDirty();
-	SaveNiagaraSystemAsset(System);
+	if (!SaveNiagaraSystemAsset(System)) return NiagaraSaveFailure(System);
 	System->PostEditChange();
 
 	ResultJson->SetStringField(TEXT("status"), TEXT("success"));
@@ -1692,7 +1712,7 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleAddEmitterToSystem(cons
 		TargetSystem->RequestCompile(true);
 		TargetSystem->WaitForCompilationComplete();
 		TargetSystem->MarkPackageDirty();
-		SaveNiagaraSystemAsset(TargetSystem);
+		if (!SaveNiagaraSystemAsset(TargetSystem)) return NiagaraSaveFailure(TargetSystem);
 		TargetSystem->PostEditChange();
 
 		TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
@@ -1751,7 +1771,7 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleAddEmitterToSystem(cons
 		TargetSystem->RequestCompile(true);
 		TargetSystem->WaitForCompilationComplete();
 		TargetSystem->MarkPackageDirty();
-		SaveNiagaraSystemAsset(TargetSystem);
+		if (!SaveNiagaraSystemAsset(TargetSystem)) return NiagaraSaveFailure(TargetSystem);
 		TargetSystem->PostEditChange();
 
 		TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
@@ -1932,6 +1952,40 @@ bool FMCPNiagaraCrossSystemCopyTest::RunTest(const FString& Parameters)
 	AddInfo(TEXT("Emitter copy fixture: ") + Root);
 	return !HasAnyErrors();
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMCPNiagaraSaveFailureTest, "UnrealMCP.Niagara.SaveFailure", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMCPNiagaraSaveFailureTest::RunTest(const FString& Parameters)
+{
+	const FString Path = TEXT("/Game/__Dev/NiagaraSave_") + FGuid::NewGuid().ToString(EGuidFormats::Digits) + TEXT("/NS_Test");
+	auto System = Cast<UNiagaraSystem>(UEditorAssetLibrary::DuplicateAsset(TEXT("/Niagara/DefaultAssets/DefaultSystem"), Path));
+	if (!TestNotNull(TEXT("Isolated saved Niagara fixture"), System) || !TestTrue(TEXT("Default emitter available"), !System->GetEmitterHandles().IsEmpty())) return false;
+	System->WaitForCompilationComplete();
+	if (!TestTrue(TEXT("Initial fixture explicitly saved"), SaveNiagaraSystemAsset(System))) return false;
+	FString Filename;
+	if (!TestTrue(TEXT("Fixture file exists"), FPackageName::DoesPackageExist(Path, &Filename))) return false;
+	const FMD5Hash Before = FMD5Hash::HashFile(*Filename);
+	const FName EmitterName = System->GetEmitterHandles()[0].GetName();
+	const bool LocalSpace = !System->GetEmitterHandles()[0].GetEmitterData()->bLocalSpace;
+	auto Request = MakeShared<FJsonObject>(); Request->SetStringField(TEXT("path"), Path);
+	Request->SetStringField(TEXT("emitter_name"), EmitterName.ToString()); Request->SetBoolField(TEXT("local_space"), LocalSpace);
+	FUnrealMCPNiagaraCommands Commands;
+	{
+		TGuardValue<bool> Failure(FailNiagaraSaveForTest, true);
+		auto Result = Commands.HandleCommand(TEXT("modify_emitter_properties"), Request);
+		TestFalse(TEXT("Save failure cannot return success"), Result->GetBoolField(TEXT("success")));
+		TestTrue(TEXT("Failure truthfully reports memory modification"), Result->GetBoolField(TEXT("modified")));
+		TestFalse(TEXT("Failure truthfully reports not saved"), Result->GetBoolField(TEXT("saved")));
+		TestEqual(TEXT("Failure stage"), Result->GetStringField(TEXT("stage")), FString(TEXT("save")));
+		TestTrue(TEXT("Unsaveable edit remains dirty"), System->GetPackage()->IsDirty());
+		TestTrue(TEXT("Disk did not silently change"), Before == FMD5Hash::HashFile(*Filename));
+		TestEqual(TEXT("Applied property remains inspectable"), System->GetEmitterHandles()[0].GetEmitterData()->bLocalSpace, LocalSpace);
+	}
+	TestTrue(TEXT("Explicit inspected recovery can save"), SaveNiagaraSystemAsset(System));
+	TestFalse(TEXT("Successful save leaves package clean"), System->GetPackage()->IsDirty());
+	AddInfo(TEXT("Niagara save failure fixture: ") + Path);
+	return !HasAnyErrors();
+}
 #endif
 
 TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleRemoveEmitterFromSystem(const TSharedPtr<FJsonObject>& Params)
@@ -1969,7 +2023,7 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleRemoveEmitterFromSystem
 	System->RequestCompile(true);
 	System->WaitForCompilationComplete();
 	System->MarkPackageDirty();
-	SaveNiagaraSystemAsset(System);
+	if (!SaveNiagaraSystemAsset(System)) return NiagaraSaveFailure(System);
 	System->PostEditChange();
 
 	TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
@@ -2147,7 +2201,7 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleAddModuleToEmitter(cons
 	System->RequestCompile(true);
 	System->WaitForCompilationComplete();
 	System->MarkPackageDirty();
-	SaveNiagaraSystemAsset(System);
+	if (!SaveNiagaraSystemAsset(System)) return NiagaraSaveFailure(System);
 	System->PostEditChange();
 
 	TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
@@ -2290,7 +2344,7 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleRemoveModuleFromEmitter
 	System->RequestCompile(true);
 	System->WaitForCompilationComplete();
 	System->MarkPackageDirty();
-	SaveNiagaraSystemAsset(System);
+	if (!SaveNiagaraSystemAsset(System)) return NiagaraSaveFailure(System);
 	System->PostEditChange();
 
 	TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
@@ -2404,7 +2458,7 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleSetNiagaraRendererPrope
 	System->RequestCompile(true);
 	System->WaitForCompilationComplete();
 	System->MarkPackageDirty();
-	SaveNiagaraSystemAsset(System);
+	if (!SaveNiagaraSystemAsset(System)) return NiagaraSaveFailure(System);
 	System->PostEditChange();
 
 	TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
@@ -2954,7 +3008,7 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleEnableModuleInput(const
 	System->RequestCompile(true);
 	System->WaitForCompilationComplete();
 	System->MarkPackageDirty();
-	SaveNiagaraSystemAsset(System);
+	if (!SaveNiagaraSystemAsset(System)) return NiagaraSaveFailure(System);
 	System->PostEditChange();
 
 	TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
@@ -3254,7 +3308,7 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleSetModuleStaticSwitch(c
 	System->RequestCompile(true);
 	System->WaitForCompilationComplete();
 	System->MarkPackageDirty();
-	SaveNiagaraSystemAsset(System);
+	if (!SaveNiagaraSystemAsset(System)) return NiagaraSaveFailure(System);
 	System->PostEditChange();
 
 	// Re-read visible value pins after the switch change (they become usable now).
@@ -3450,7 +3504,7 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleBindModuleInputDataInte
 	System->RequestCompile(true);
 	System->WaitForCompilationComplete();
 	System->MarkPackageDirty();
-	SaveNiagaraSystemAsset(System);
+	if (!SaveNiagaraSystemAsset(System)) return NiagaraSaveFailure(System);
 	System->PostEditChange();
 
 	TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
@@ -3889,7 +3943,7 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleSetCurveKeys(const TSha
 	System->RequestCompile(true);
 	System->WaitForCompilationComplete();
 	System->MarkPackageDirty();
-	SaveNiagaraSystemAsset(System);
+	if (!SaveNiagaraSystemAsset(System)) return NiagaraSaveFailure(System);
 	System->PostEditChange();
 
 	TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
@@ -4008,7 +4062,7 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleSetModuleDynamicInput(c
 	System->RequestCompile(true);
 	System->WaitForCompilationComplete();
 	System->MarkPackageDirty();
-	SaveNiagaraSystemAsset(System);
+	if (!SaveNiagaraSystemAsset(System)) return NiagaraSaveFailure(System);
 	System->PostEditChange();
 
 	TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
@@ -4099,7 +4153,7 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleAddRendererToEmitter(co
 	System->RequestCompile(true);
 	System->WaitForCompilationComplete();
 	System->MarkPackageDirty();
-	SaveNiagaraSystemAsset(System);
+	if (!SaveNiagaraSystemAsset(System)) return NiagaraSaveFailure(System);
 	System->PostEditChange();
 
 	FVersionedNiagaraEmitterData* EmitterData = VersionedEmitter.GetEmitterData();
@@ -4147,7 +4201,7 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleRemoveRendererFromEmitt
 	System->RequestCompile(true);
 	System->WaitForCompilationComplete();
 	System->MarkPackageDirty();
-	SaveNiagaraSystemAsset(System);
+	if (!SaveNiagaraSystemAsset(System)) return NiagaraSaveFailure(System);
 	System->PostEditChange();
 
 	TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
@@ -4305,7 +4359,7 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleSetMeshRendererMesh(con
 	System->RequestCompile(true);
 	System->WaitForCompilationComplete();
 	System->MarkPackageDirty();
-	SaveNiagaraSystemAsset(System);
+	if (!SaveNiagaraSystemAsset(System)) return NiagaraSaveFailure(System);
 	System->PostEditChange();
 
 	ResultJson->SetStringField(TEXT("status"), TEXT("success"));

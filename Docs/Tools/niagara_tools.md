@@ -7,6 +7,41 @@ Default grouped mode exposes `niagara_search`, `niagara_call_read` and
 entry points, or called directly with `MCP_TOOL_MODE=direct`.
 See the [calling guide](README.md#grouped-mode-default).
 
+## Execution And Save Failures
+
+The 2026-10-22 frame-boundary dispatcher has been **built and deployed to SkillTest
+and NodeFall**. It addresses the execution-timing defect in the
+[Niagara save reentrancy report](../reported-issues/niagara-save-reentrancy-crash.md).
+Python updates or visible schemas alone do not update a running native plugin.
+
+With the matching native build, external commands enter a bounded FIFO queue and
+run one at a time from the main loop's `OnBeginFrame`, not a pumpable GameThread
+task. Saving, GC, slow tasks and modal windows defer execution. Pending requests
+expire after 20 seconds without editing; shutdown releases pending waiters before
+joining the server thread. A command already executing is not rolled back merely
+because its connection or server stops.
+
+- Dispatch refusal/cancellation: `stage=dispatch`, `execution_state=not_started`,
+	`modified=false`, `saved=false`. No late execution of the cancelled request.
+- Stop after execution started: `execution_state=unknown`; no false claim that
+	nothing changed or nothing saved. Read back before any retry.
+- Niagara automatic-save failure: `stage=save`, `modified=true`, `saved=false`,
+	`error_code=niagara_save_failed`, `asset_path`, `package_dirty`. Changes may
+	remain in memory. Automatic saving is retained, not silently removed.
+- Transport timeout/reset/no response: failure with unknown outcome, not proof of
+	rollback or nonexecution. Python preserves available native receipts and never
+	retries these authoring operations automatically.
+
+Six relevant native tests and 74 Python regressions passed in the repository
+test project. The deployed SkillTest plugin also passed those six native tests,
+a separate-process emitter-copy cold reload and real MCP reads; NF built and
+passed read-only MCP smoke tests without changing business assets. Existing
+client configurations/permissions were retained; reconnect clients to load the
+shared Python changes. NF Claude project trust approval remains user-controlled.
+Real validation/render-wait reproduction, the equivalent continuous authoring
+batch and its cold reload are still pending SkillTest acceptance; deployment
+alone is not a claim that the reported production D3D12 crash has been eliminated.
+
 ## System Management
 
 ### `create_niagara_system`
