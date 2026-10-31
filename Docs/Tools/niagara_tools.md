@@ -55,6 +55,100 @@ List Niagara systems with optional `path`, `include_engine_content`, and `name_f
 ### `read_niagara_system`
 Read a Niagara system's emitters, module stacks, rapid iteration parameters, and renderer properties. Identify it with `asset_full_path`.
 
+Native `reader_contract=2` retains all legacy fields and adds `scalability` on the
+System, each Emitter and each Renderer. These are **loaded authored settings**,
+including defaults, not disk-forensic values or resolved runtime eligibility.
+Check `package_dirty` when inspecting unsaved authoring. Top-level
+`scalability_complete` aggregates the supported layers; each section provides
+`contract_version=1`, `complete`, `unsupported`, `field_states` and
+`matches_engine_default`. Equality to a class/struct default does not prove a
+field was explicitly serialized or its override is active. Null with state
+`unbound` is distinct from an unsupported field; false and empty arrays are
+actual readable values, not missing-data substitutes.
+
+System fields include `EffectType` reference/null, `effect_type_details`,
+`Platforms`, `bOverrideScalabilitySettings`, ordered `SystemScalabilityOverrides`,
+and the local-player culling override switch/value. The expanded Effect Type
+remains its saved rules, not a System's final effective settings.
+
+Emitter fields retain display `name` and legacy authoring `enabled`. Added
+`handle_id`, `scalability.display_name`, `unique_name`, `mode`, object path,
+selected/resolved version GUIDs and exposed-default status identify the actual
+Handle instance. `GetEmitterData` uses that Handle's selection, never a forced
+latest-version upgrade. Stateful Platforms and every ordered ScalabilityOverride
+row include both switches and values. Stateless rules explicitly report
+unsupported/`complete=false`; no false defaults are synthesized.
+
+Renderer `enabled`, materials, bindings and legacy `platforms` remain. Added
+`renderer_index` is the original source slot, not a filtered list index;
+`renderer_slot_count` and `null_renderer_indices` preserve gaps. Disabled
+renderers are retained. The canonical `renderer.scalability.Platforms` uses the
+same structure as every other layer; it never replaces parent constraints.
+
+All Platform sets retain native `QualityLevelMask`, `DeviceProfileStates` and
+`CVarConditions`. Signed negative masks such as -1/-29/-4 are valid and preserved.
+`quality_levels` expands current engine quality names/indices, not a hardcoded
+five-level list. Device entries retain uint32 masks and add saved
+`quality_states` Default/Enabled/Disabled. Default means inheritance, not false.
+Conditions retain native names, bounds, switches and Pass/Fail responses without
+evaluating CVars or selecting device profiles. Mask bits alone are not eligibility.
+
+Module records add call node/graph paths and GUIDs, full script path, saved and
+resolved version GUIDs, version numbers and exposed-default status. Unversioned,
+unresolved and no-script cases are explicit. `input_pins` records saved defaults,
+types and link identities, not evaluated input bindings or symbolic data flow.
+Use the existing static-switch/input readers for their inventories. Graph call
+enumeration is not a proof of output-stack execution order or of whether a
+module consumes SpawnCountScale. No module-name behavior table is embedded.
+
+### `read_niagara_effect_type`
+
+Required: `asset_path`, e.g. `/Game/Effects/EffectTypes/EffectType_World_Portal`.
+Discover through `niagara_search(tool="read_niagara_effect_type")`, then the
+returned read endpoint. This is read-only and respects Niagara/category filters.
+
+Returns the actual asset/class, UpdateFrequency, CullReaction, local-player policy,
+SignificanceHandler reference/class/readable settings and all ordered System and
+Emitter settings rows. Native reflected field names retain every supported
+flag/value, platform condition, visibility/pre-culling/proxy/budget structure and
+curve keys. External float curves expand to their typed keys; unbound references
+are null. Unsupported types or bounds are listed explicitly and make the section
+incomplete; no ExportText fallback masquerades as typed data.
+
+### Read Boundaries And Acceptance
+
+The saved-configuration contract does not implement arbitrary requested-context
+resolution or instance diagnostics. It does not set/restore global quality CVars,
+Device Profiles, authoring enabled flags, preview quality or culling state.
+`read_context` samples active profile and quality CVar values/source flags;
+`editor_preview_override_bound` records only delegate presence, not a preview
+quality value. The reader does not execute that delegate. Load-triggered engine
+work is possible, but the reader never explicitly compiles, saves or modifies assets.
+
+Large results use reliable JSON spill (`overflow`, `file_path`, real counts).
+The full file includes all rules, field states and curve keys. A preview is not
+the complete result. Older native plugins preserve legacy reads but explicitly
+report missing scalability capability; Python schemas alone do not update a DLL.
+
+2026-10-31: 77 Python regressions and three native tests passed in the repository
+and the deployed SkillTest plugin: Platforms, SavedRules, ReadCompatibility.
+Lyra's six fixed systems and four Effect Types passed public grouped-read
+acceptance, including signed masks, Sparkle 0.1/disabled-default rows and SpawnRate
+selected identity. Dirty state, package/config hashes and quality/Profile context
+were unchanged. This used the existing UI/export oracle, not a new text export
+substituted for MCP or a manual post-fix UI/performance/particle-count test.
+
+Later the same day, NF's matching native reader was built and deployed, preserving
+its local plugin customizations and client settings. Five fixed systems and
+NET_Gameplay_Burst passed public grouped reads: complete layers, selected emitter
+identity, three actual Effect Type associations, signed masks and saved
+0.3/0.6/0.8 rows. Dirty state, sample hashes and sampled quality/Profile context
+were unchanged. These are saved settings, not proof of runtime spawn scaling.
+Existing clients need reconnecting; Claude project approval remains user-controlled.
+
+See the [resolution record](../reported-issues/niagara-scalability-reading.md)
+and [repeatable acceptance script](../../Python/scripts/niagara/verify_scalability_read.py).
+
 ## Emitter Management
 
 ### `add_emitter_to_system`

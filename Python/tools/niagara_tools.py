@@ -23,6 +23,21 @@ def _niagara_transport_error(message: str) -> dict:
     return {"success": False, "message": message, "stage": "transport", "execution_state": "unknown"}
 
 
+def _spill_niagara_read(result: dict, operation: str) -> dict:
+    from unreal_mcp_server import spill_if_oversized
+    from uuid import uuid4
+
+    spilled = spill_if_oversized(result, operation, uuid4().hex,
+        preview_keys=("name", "path", "asset_path", "class_path", "reader_contract", "scalability_complete", "contract_version", "complete", "scope"),
+        count_keys=("emitters", "user_parameters", "unsupported"),
+        hint="Read the complete JSON file for all saved rules, field states, versions and curve keys. A preview is not the full result.")
+    if spilled is not result and spilled.get("overflow"):
+        for key in ("success", "reader_contract", "scalability_complete", "contract_version", "complete", "scope", "read_context", "scalability_status"):
+            if key in result:
+                spilled[key] = result[key]
+    return spilled
+
+
 def register_niagara_tools(mcp: FastMCP):
     """Register Niagara tools with the MCP server."""
 
@@ -89,12 +104,27 @@ def register_niagara_tools(mcp: FastMCP):
         ctx: Context,
         asset_full_path: str
     ) -> Dict[str, Any]:
-        """Read a Niagara system: emitters, User parameters, and per-emitter renderers.
+        """Read saved Niagara system/emitter/renderer scalability, modules and User parameters.
 
-        asset_full_path: full path ("/Game/VFX/NS_Explosion") or short name.
-        Returns name, path, emitters (name, sim_target, local_space, module stacks) and
-        each emitter's renderers with fully reflected properties (Sprite/Mesh/Ribbon/Light:
-        material, sub_image_size, alignment, facing_mode, sort_mode, etc.).
+        Example: asset_full_path='/Game/Effects/Particles/Environmental/NS_WallPortal'.
+        Old fields/signature retained. Native reader_contract=2 adds scalability sections
+        (contract_version=1) for System, each selected Emitter version and each Renderer,
+        including the referenced Effect Type's saved rows. Native property names retain
+        all platform conditions, override flags, values, curve keys and original row order.
+        QualityLevelMask is signed; negative values are valid. quality_levels expands
+        the actual engine names/indices, NOT final eligibility. DeviceProfile masks and
+        Default/Enabled/Disabled states preserve inheritance intent; CVars not evaluated.
+        enabled remains AUTHORING enabled, not active/cull state. Stateless data explicitly
+        unsupported; inspect complete/unsupported/field_states and scalability_complete.
+        Stored inactive/default values are not active overrides. matches_engine_default
+        only reports value equality, not whether a value was explicitly serialized.
+        Handles/nodes/renderer indices and selected/resolved GUIDs identify actual objects;
+        module input_pins retain saved defaults/links, not algorithm/data-flow conclusions.
+        No automatic module upgrade or latest-version substitution. No global quality,
+        Device Profile or preview switching; read_context only samples current settings.
+        Large results spill to file_path with real counts and overflow=True: read the FULL
+        JSON before claiming completeness. Old native DLLs keep legacy data but explicitly
+        report missing scalability capability; Python schemas alone do not deploy native code.
         """
         from unreal_mcp_server import get_unreal_connection
 
@@ -116,11 +146,40 @@ def register_niagara_tools(mcp: FastMCP):
 
             result = response.get("result", response)
             logger.info(f"Read Niagara system: {result.get('name', '?')} with {result.get('emitter_count', 0)} emitters")
-            return result
+            if result.get("reader_contract", 0) < 2:
+                result["scalability_complete"] = False
+                result["scalability_status"] = "native_capability_missing; update the target plugin for saved scalability contract v1"
+            return _spill_niagara_read(result, "read_niagara_system")
 
         except Exception as e:
             logger.error(f"Error reading Niagara system: {e}")
             return _niagara_transport_error(str(e))
+
+    @mcp.tool()
+    def read_niagara_effect_type(ctx: Context, asset_path: str) -> dict:
+        """Read an Effect Type's typed saved scalability rules without resolving or changing them.
+
+        Example: asset_path='/Game/Effects/EffectTypes/EffectType_World_Portal'. Requires
+        updated native plugin. Returns contract_version=1, complete/unsupported/field_states,
+        asset/class paths, UpdateFrequency, CullReaction, local-player policy, SignificanceHandler
+        reference/class/readable settings and ALL ordered System/EmitterScalabilitySettings.
+        Retains each Platforms condition, switch/value, Visibility/Proxy/BudgetScaling and
+        curve keys. Null means unbound only when field_states says unbound; unsupported is
+        explicit and never promoted to complete. These are Effect Type saved rules, NOT a
+        System's effective limits or instance cull state. No arbitrary-context resolver,
+        CVar/Profile switching, asset writes, compile or save. Large results reliably spill
+        to a complete JSON file; inspect overflow/file_path and actual counts.
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            response = get_unreal_connection().send_command("read_niagara_effect_type", {"asset_path": asset_path})
+            if not response:
+                return _niagara_transport_error("No response from Unreal Engine")
+            if response.get("status") == "error":
+                return _niagara_error(response)
+            return _spill_niagara_read(response.get("result", response), "read_niagara_effect_type")
+        except Exception as error:
+            return _niagara_transport_error(str(error))
 
     @mcp.tool()
     def set_niagara_parameter(

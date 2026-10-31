@@ -1,5 +1,6 @@
 #include "Commands/UnrealMCPNiagaraCommands.h"
 #include "Commands/UnrealMCPCommonUtils.h"
+#include "Commands/UnrealMCPNiagaraScalability.h"
 
 // Niagara includes
 #include "NiagaraSystem.h"
@@ -122,7 +123,7 @@ static TArray<TSharedPtr<FJsonValue>> GetModulesFromScript(UNiagaraScript* Scrip
 	TArray<TSharedPtr<FJsonValue>> ModuleArray;
 	if (!Script) return ModuleArray;
 
-	UNiagaraScriptSource* Source = Cast<UNiagaraScriptSource>(Script->GetLatestSource());
+	UNiagaraScriptSource* Source = Cast<UNiagaraScriptSource>(Script->GetSource(FGuid()));
 	if (!Source || !Source->NodeGraph) return ModuleArray;
 
 	TArray<TObjectPtr<UEdGraphNode>>& AllNodes = Source->NodeGraph->Nodes;
@@ -134,10 +135,60 @@ static TArray<TSharedPtr<FJsonValue>> GetModulesFromScript(UNiagaraScript* Scrip
 		TSharedPtr<FJsonObject> ModObj = MakeShared<FJsonObject>();
 		ModObj->SetStringField(TEXT("name"), FuncNode->GetNodeTitle(ENodeTitleType::ListView).ToString());
 		ModObj->SetBoolField(TEXT("enabled"), FuncNode->IsNodeEnabled());
+		ModObj->SetStringField(TEXT("node_guid"), FuncNode->NodeGuid.ToString(EGuidFormats::DigitsWithHyphens));
+		ModObj->SetStringField(TEXT("node_path"), FuncNode->GetPathName());
+		ModObj->SetStringField(TEXT("graph_path"), Source->NodeGraph->GetPathName());
+		ModObj->SetStringField(TEXT("graph_scope"), TEXT("Function-call nodes in the container script exposed/default source graph; not proof of output-stack execution order"));
+		ModObj->SetStringField(TEXT("selected_version_guid"), FuncNode->SelectedScriptVersion.ToString(EGuidFormats::DigitsWithHyphens));
+		TArray<TSharedPtr<FJsonValue>> InputPins;
+		for (const UEdGraphPin* Pin : FuncNode->Pins)
+		{
+			if (!Pin || Pin->Direction != EGPD_Input) continue;
+			auto Input = MakeShared<FJsonObject>();
+			Input->SetStringField(TEXT("name"), Pin->PinName.ToString());
+			Input->SetStringField(TEXT("pin_id"), Pin->PinId.ToString(EGuidFormats::DigitsWithHyphens));
+			Input->SetStringField(TEXT("category"), Pin->PinType.PinCategory.ToString());
+			Input->SetStringField(TEXT("subcategory"), Pin->PinType.PinSubCategory.ToString());
+			Input->SetStringField(TEXT("default_value"), Pin->DefaultValue);
+			Input->SetStringField(TEXT("default_text_value"), Pin->DefaultTextValue.ToString());
+			if (Pin->DefaultObject) Input->SetStringField(TEXT("default_object"), Pin->DefaultObject->GetPathName());
+			else Input->SetField(TEXT("default_object"), MakeShared<FJsonValueNull>());
+			TArray<TSharedPtr<FJsonValue>> Links;
+			for (const UEdGraphPin* Linked : Pin->LinkedTo)
+			{
+				if (!Linked) continue;
+				auto Link = MakeShared<FJsonObject>();
+				Link->SetStringField(TEXT("node_guid"), Linked->GetOwningNode()->NodeGuid.ToString(EGuidFormats::DigitsWithHyphens));
+				Link->SetStringField(TEXT("node_path"), Linked->GetOwningNode()->GetPathName());
+				Link->SetStringField(TEXT("pin_name"), Linked->PinName.ToString());
+				Link->SetStringField(TEXT("pin_id"), Linked->PinId.ToString(EGuidFormats::DigitsWithHyphens));
+				Links.Add(MakeShared<FJsonValueObject>(Link));
+			}
+			Input->SetArrayField(TEXT("links"), Links); InputPins.Add(MakeShared<FJsonValueObject>(Input));
+		}
+		ModObj->SetArrayField(TEXT("input_pins"), InputPins);
+		ModObj->SetStringField(TEXT("input_semantics"), TEXT("Saved call pins/defaults/links, including static-typed pins; not evaluated bindings or a proof of module data flow. Existing list_module_static_switches provides switch inventory."));
 
 		if (FuncNode->FunctionScript)
 		{
 			ModObj->SetStringField(TEXT("script_name"), FuncNode->FunctionScript->GetName());
+			ModObj->SetStringField(TEXT("script_asset_path"), FuncNode->FunctionScript->GetPathName());
+			ModObj->SetBoolField(TEXT("versioning_enabled"), FuncNode->FunctionScript->IsVersioningEnabled());
+			ModObj->SetBoolField(TEXT("uses_exposed_default"), !FuncNode->SelectedScriptVersion.IsValid());
+			const auto* Version = FuncNode->FunctionScript->GetScriptData(FuncNode->SelectedScriptVersion);
+			ModObj->SetStringField(TEXT("version_status"), Version ? (FuncNode->FunctionScript->IsVersioningEnabled() ? TEXT("resolved") : TEXT("unversioned")) : TEXT("unresolved"));
+			if (Version)
+			{
+				ModObj->SetStringField(TEXT("resolved_version_guid"), Version->Version.VersionGuid.ToString(EGuidFormats::DigitsWithHyphens));
+				ModObj->SetNumberField(TEXT("version_major"), Version->Version.MajorVersion);
+				ModObj->SetNumberField(TEXT("version_minor"), Version->Version.MinorVersion);
+				ModObj->SetBoolField(TEXT("selected_is_exposed_version"), Version->Version.VersionGuid == FuncNode->FunctionScript->GetExposedVersion().VersionGuid);
+			}
+		}
+		else
+		{
+			ModObj->SetField(TEXT("script_asset_path"), MakeShared<FJsonValueNull>());
+			ModObj->SetStringField(TEXT("version_status"), TEXT("not_applicable_no_script"));
 		}
 
 		ModuleArray.Add(MakeShared<FJsonValueObject>(ModObj));
@@ -151,6 +202,7 @@ FUnrealMCPNiagaraCommands::FUnrealMCPNiagaraCommands()
 
 TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleCommand(const FString& CommandType, const TSharedPtr<FJsonObject>& Params)
 {
+	if (CommandType == TEXT("read_niagara_effect_type")) return UnrealMCPNiagaraScalability::ReadEffectTypeAsset(Params);
 	if (CommandType == TEXT("list_niagara_systems"))
 	{
 		return HandleListNiagaraSystems(Params);
@@ -548,6 +600,9 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleReadNiagaraSystem(const
 	TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
 	ResultJson->SetStringField(TEXT("name"), System->GetName());
 	ResultJson->SetStringField(TEXT("path"), System->GetPathName());
+	ResultJson->SetStringField(TEXT("class_path"), System->GetClass()->GetPathName());
+	ResultJson->SetNumberField(TEXT("reader_contract"), 2);
+	ResultJson->SetObjectField(TEXT("scalability"), UnrealMCPNiagaraScalability::System(System));
 	ResultJson->SetBoolField(TEXT("needs_warm_up"), System->NeedsWarmup());
 	ResultJson->SetNumberField(TEXT("warm_up_time"), System->GetWarmupTime());
 	ResultJson->SetBoolField(TEXT("fixed_bounds"), System->GetFixedBounds().IsValid != 0);
@@ -562,6 +617,9 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleReadNiagaraSystem(const
 		EmitterObj->SetStringField(TEXT("name"), Handle.GetName().ToString());
 		EmitterObj->SetBoolField(TEXT("enabled"), Handle.GetIsEnabled());
 		EmitterObj->SetStringField(TEXT("unique_name"), Handle.GetUniqueInstanceName());
+		EmitterObj->SetStringField(TEXT("handle_id"), Handle.GetId().ToString(EGuidFormats::DigitsWithHyphens));
+		EmitterObj->SetStringField(TEXT("enabled_semantics"), TEXT("authoring_enabled_not_runtime_eligibility"));
+		EmitterObj->SetObjectField(TEXT("scalability"), UnrealMCPNiagaraScalability::Emitter(Handle));
 
 		// Get the versioned emitter data
 		FVersionedNiagaraEmitterData* EmitterData = Handle.GetEmitterData();
@@ -600,13 +658,19 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleReadNiagaraSystem(const
 			// Renderers
 			const TArray<UNiagaraRendererProperties*>& Renderers = EmitterData->GetRenderers();
 			TArray<TSharedPtr<FJsonValue>> RendererArray;
+			TArray<TSharedPtr<FJsonValue>> NullRendererIndices;
+			int32 RendererIndex = 0;
 			for (const UNiagaraRendererProperties* Renderer : Renderers)
 			{
-				if (!Renderer) continue;
+				const int32 Index = RendererIndex++;
+				if (!Renderer) { NullRendererIndices.Add(MakeShared<FJsonValueNumber>(Index)); continue; }
 				TSharedPtr<FJsonObject> RendObj = MakeShared<FJsonObject>();
 				const FString RendClassName = Renderer->GetClass()->GetName();
 				RendObj->SetStringField(TEXT("type"), RendClassName);
 				RendObj->SetBoolField(TEXT("enabled"), Renderer->GetIsEnabled());
+				RendObj->SetNumberField(TEXT("renderer_index"), Index);
+				RendObj->SetStringField(TEXT("object_path"), Renderer->GetPathName());
+				RendObj->SetObjectField(TEXT("scalability"), UnrealMCPNiagaraScalability::Renderer(Renderer));
 
 				// Base-class fields common to every renderer type
 				AddNiagaraRendererProp(RendObj, Renderer, TEXT("motion_vector_setting"), TEXT("MotionVectorSetting"));
@@ -668,6 +732,8 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleReadNiagaraSystem(const
 				RendererArray.Add(MakeShared<FJsonValueObject>(RendObj));
 			}
 			EmitterObj->SetArrayField(TEXT("renderers"), RendererArray);
+			EmitterObj->SetNumberField(TEXT("renderer_slot_count"), Renderers.Num());
+			EmitterObj->SetArrayField(TEXT("null_renderer_indices"), NullRendererIndices);
 		}
 
 		EmitterArray.Add(MakeShared<FJsonValueObject>(EmitterObj));
@@ -753,6 +819,20 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleReadNiagaraSystem(const
 
 	ResultJson->SetNumberField(TEXT("user_parameter_count"), ParamArray.Num());
 	ResultJson->SetArrayField(TEXT("user_parameters"), ParamArray);
+	bool ScalabilityComplete = ResultJson->GetObjectField(TEXT("scalability"))->GetBoolField(TEXT("complete"));
+	for (const auto& Value : EmitterArray)
+	{
+		const auto Emitter = Value->AsObject();
+		ScalabilityComplete &= Emitter->GetObjectField(TEXT("scalability"))->GetBoolField(TEXT("complete"));
+		const TArray<TSharedPtr<FJsonValue>>* Renderers = nullptr;
+		if (Emitter->TryGetArrayField(TEXT("renderers"), Renderers))
+			for (const auto& Renderer : *Renderers) ScalabilityComplete &= Renderer->AsObject()->GetObjectField(TEXT("scalability"))->GetBoolField(TEXT("complete"));
+		const TArray<TSharedPtr<FJsonValue>>* NullSlots = nullptr;
+		if (Emitter->TryGetArrayField(TEXT("null_renderer_indices"), NullSlots) && !NullSlots->IsEmpty()) ScalabilityComplete = false;
+	}
+	ResultJson->SetBoolField(TEXT("scalability_complete"), ScalabilityComplete);
+	ResultJson->SetObjectField(TEXT("read_context"), UnrealMCPNiagaraScalability::Context());
+	ResultJson->SetBoolField(TEXT("modified"), false); ResultJson->SetBoolField(TEXT("saved"), false);
 
 	return ResultJson;
 }

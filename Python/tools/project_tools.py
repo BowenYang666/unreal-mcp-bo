@@ -48,6 +48,70 @@ def register_project_tools(mcp: FastMCP):
     """Register project tools with the MCP server."""
 
     @mcp.tool()
+    def create_string_table(ctx: Context, asset_path: str, namespace: str,
+                            dry_run: bool = True, save: bool = False) -> dict:
+        """Preview/create a String Table; never overwrite existing assets.
+
+        Example: asset_path='/Game/Data/Localization/Text/ST_UI_Status', namespace='ST_UI_Status'.
+        Package paths only. Defaults to dry_run=True; explicitly apply with dry_run=False.
+        save=True saves only this asset. No translation columns or automatic PO edits.
+        New native plugin required; Python discovery is not deployment. No retry on timeout.
+        """
+        return call_asset_command("create_string_table", dict(asset_path=asset_path, namespace=namespace, dry_run=dry_run, save=save))
+
+    @mcp.tool()
+    def read_string_table(ctx: Context, asset_path: str) -> dict:
+        """Read actual Table ID, Namespace, every Key/SourceString and per-entry metadata.
+
+        Example: asset_path='/Game/Data/Localization/Text/ST_UI_Status'. Returns entries
+        with key/source_string/metadata, not reflected UObject properties or just a count.
+        Does not compile, dirty or save. Values are source strings, not translated FText.
+        """
+        return call_asset_command("read_string_table", dict(asset_path=asset_path))
+
+    @mcp.tool()
+    def update_string_table_entries(ctx: Context, asset_path: str, expected_namespace: str,
+                                    entries: list[dict] = None, delete_keys: list[str] = None,
+                                    dry_run: bool = True, save: bool = False) -> dict:
+        """Patch sources/metadata by exact Key, retaining unspecified entries and metadata.
+
+        Example: asset_path='/Game/Data/Localization/Text/ST_UI_Status', expected_namespace='ST_UI_Status',
+        entries=[{'key':'Status.Slowed','source_string':'Slowed','metadata':{'Comment':'HUD label'}}].
+        New keys require source_string; metadata-only edits may omit it. Metadata null removes
+        that named field; delete_keys explicitly removes whole entries. Duplicate/overlapping
+        keys and invalid values reject the whole batch. No rename/namespace migration; changing
+        source text may require translation review. Preview added_keys/updated_keys/deleted_keys,
+        then dry_run=False applies one undoable edit. Preexisting dirty assets refuse apply even
+        with save=False; save existing edits separately first. Default save=False, never Save All.
+        Save/readback failure may leave applied changes: inspect after/modified/saved, never retry
+        blindly. Timeout is unknown execution state. Requires updated native plugin.
+        """
+        return call_asset_command("update_string_table_entries", dict(asset_path=asset_path, expected_namespace=expected_namespace,
+            entries=[] if entries is None else entries, delete_keys=[] if delete_keys is None else delete_keys,
+            dry_run=dry_run, save=save))
+
+    @mcp.tool()
+    def import_string_table_csv(ctx: Context, asset_path: str, expected_namespace: str, csv_path: str,
+                                mode: str, allow_delete: bool = False,
+                                dry_run: bool = True, save: bool = False) -> dict:
+        """Preview/import a source CSV with UE's native String Table importer, not a translation sheet.
+
+        Example: asset_path='/Game/Data/Localization/Text/ST_UI_Status', expected_namespace='ST_UI_Status',
+        csv_path='C:/Temp/status.csv', mode='merge'. Existing table required; create separately.
+        CSV requires Key,SourceString headers and 1..4096 unique nonempty keys, at most 1 MiB.
+        Additional columns are native metadata, NEVER language columns: Chinese translations
+        belong in PO Import/Compile, not this CSV. The input file is only read, never rewritten.
+        mode must explicitly be merge or replace. Merge retains unspecified keys/metadata and
+        ignores empty imported metadata cells. Replace uses only CSV keys and metadata, removing
+        old data; dry-run shows exact changes, and deleting any key requires allow_delete=True
+        on apply. Namespace is never changed. Preexisting dirty tables refuse apply. Defaults
+        dry_run=True/save=False; one Editor transaction, target-only optional save. Save failure
+        returns modified/saved truthfully; timeout means unknown. Never auto-retry.
+        """
+        return call_asset_command("import_string_table_csv", dict(asset_path=asset_path, expected_namespace=expected_namespace,
+            csv_path=csv_path, mode=mode, allow_delete=allow_delete, dry_run=dry_run, save=save))
+
+    @mcp.tool()
     def plan_asset_migration(ctx: Context, roots: list[str], path_rules: list[dict],
                              rebind_assets: list[str] = None, retain_roots: list[str] = None) -> dict:
         """Preview recursive dependency copies and explicit existing-NS rebinding without saving assets.

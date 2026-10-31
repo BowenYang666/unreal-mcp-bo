@@ -1,5 +1,6 @@
 #include "UnrealMCPBridge.h"
 #include "Commands/UnrealMCPAssetMigration.h"
+#include "Commands/UnrealMCPStringTableCommands.h"
 #include "Commands/UnrealMCPSceneCommands.h"
 #include "Commands/UnrealMCPSceneAssets.h"
 #include "Commands/UnrealMCPPhysicalMaterialCommands.h"
@@ -310,6 +311,11 @@ FString UUnrealMCPBridge::ExecuteCommandOnGameThread(const FString& CommandType,
                 ResultJson = MakeShareable(new FJsonObject);
                 ResultJson->SetStringField(TEXT("message"), TEXT("pong"));
             }
+            else if (CommandType == TEXT("read_string_table") || CommandType == TEXT("create_string_table")
+                || CommandType == TEXT("update_string_table_entries") || CommandType == TEXT("import_string_table_csv"))
+            {
+                ResultJson = UnrealMCPStringTables::Handle(CommandType, Params);
+            }
             else if (CommandType == TEXT("plan_asset_migration"))
             {
                 ResultJson = UnrealMCPAssetMigration::Plan(Params);
@@ -459,6 +465,7 @@ FString UUnrealMCPBridge::ExecuteCommandOnGameThread(const FString& CommandType,
             }
             // Niagara Commands
             else if (CommandType == TEXT("list_niagara_systems") ||
+                     CommandType == TEXT("read_niagara_effect_type") ||
                      CommandType == TEXT("read_niagara_system") ||
                      CommandType == TEXT("set_niagara_parameter") ||
                      CommandType == TEXT("get_niagara_parameters") ||
@@ -523,7 +530,7 @@ FString UUnrealMCPBridge::ExecuteCommandOnGameThread(const FString& CommandType,
                 // Set error status and include the error message
                 ResponseJson->SetStringField(TEXT("status"), TEXT("error"));
                 ResponseJson->SetStringField(TEXT("error"), ErrorMessage);
-                if (NiagaraCommand || CommandType == TEXT("duplicate_asset") || CommandType == TEXT("set_material_instance_parameters")
+                if (NiagaraCommand || CommandType.Contains(TEXT("string_table")) || CommandType == TEXT("duplicate_asset") || CommandType == TEXT("set_material_instance_parameters")
                     || CommandType == TEXT("delete_material_expression") || CommandType == TEXT("add_emitter_to_system")
                     || CommandType == TEXT("reparent_widget") || CommandType == TEXT("set_widget_preview_settings") || CommandType == TEXT("get_widget_preview_settings")
                     || CommandType == TEXT("set_asset_properties") || CommandType == TEXT("create_data_asset")

@@ -35,6 +35,47 @@ class AssetPropertiesTests(unittest.TestCase):
         self.addCleanup(context.stop)
         self.connection.send_command.return_value = {"status": "success", "result": {"success": True, "saved": True}}
 
+    def test_string_table_contracts_and_partial_receipts(self):
+        path = "/Game/Data/Localization/Text/ST_UI_Status"
+        create = self.tools.get_tool("create_string_table")
+        self.assertEqual(create.parameters["required"], ["asset_path", "namespace"])
+        create.fn(None, path, "ST_UI_Status")
+        self.connection.send_command.assert_called_with("create_string_table", {
+            "asset_path": path, "namespace": "ST_UI_Status", "dry_run": True, "save": False})
+        update = self.tools.get_tool("update_string_table_entries")
+        update.fn(None, path, "ST_UI_Status", delete_keys=["Obsolete"])
+        self.connection.send_command.assert_called_with("update_string_table_entries", {
+            "asset_path": path, "expected_namespace": "ST_UI_Status", "entries": [],
+            "delete_keys": ["Obsolete"], "dry_run": True, "save": False})
+        importer = self.tools.get_tool("import_string_table_csv")
+        self.assertIn("mode", importer.parameters["required"])
+        importer.fn(None, path, "ST_UI_Status", "C:/Temp/status.csv", "replace")
+        self.connection.send_command.assert_called_with("import_string_table_csv", {
+            "asset_path": path, "expected_namespace": "ST_UI_Status", "csv_path": "C:/Temp/status.csv",
+            "mode": "replace", "allow_delete": False, "dry_run": True, "save": False})
+        self.connection.send_command.return_value = {"status": "error", "error": "Save failed", "result": {
+            "modified": True, "saved": False, "stage": "save", "after": {"namespace": "ST_UI_Status"}}}
+        result = update.fn(None, path, "ST_UI_Status", [], dry_run=False, save=True)
+        self.assertFalse(result["success"])
+        self.assertTrue(result["modified"])
+        self.assertFalse(result["saved"])
+        self.assertEqual(result["after"]["namespace"], "ST_UI_Status")
+        self.connection.reset_mock()
+        self.connection.send_command.side_effect = TimeoutError("timeout")
+        result = update.fn(None, path, "ST_UI_Status", [])
+        self.assertEqual(result["stage"], "transport")
+        self.assertNotIn("modified", result)
+        self.connection.send_command.assert_called_once()
+
+    def test_string_table_permission_filtering(self):
+        readonly = test_grouped_tools.GroupedServerTests().load_server(read_only=True)
+        self.assertIsNotNone(readonly.mcp._tool_manager.get_tool("read_string_table"))
+        disabled = test_grouped_tools.GroupedServerTests().load_server(disabled=("asset",))
+        for name in ("create_string_table", "read_string_table", "update_string_table_entries", "import_string_table_csv"):
+            self.assertIsNone(disabled.mcp._tool_manager.get_tool(name))
+            if name != "read_string_table":
+                self.assertIsNone(readonly.mcp._tool_manager.get_tool(name))
+
     def test_patch_schema_and_forwarding(self):
         self.assertEqual(self.write.parameters["required"], ["asset_path", "changes"])
         changes = [{"path": "Stats.Health", "value": 150, "expected_value": 100}]

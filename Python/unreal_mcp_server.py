@@ -358,6 +358,7 @@ register_scene_tools(mcp)
 _read_only = os.environ.get("UNREAL_MCP_READ_ONLY", "").strip() in ("1", "true", "yes")
 
 _READ_ONLY_TOOLS = {
+    "read_string_table",
     "get_editor_context", "list_scene_actors", "inspect_scene_target",
     "get_scene_mesh", "get_scene_viewport", "get_scene_task_status",
     "inspect_scene_asset", "get_scene_import_status",
@@ -383,6 +384,7 @@ _READ_ONLY_TOOLS = {
     "read_widget_layout", "get_widget_preview_settings",
     "list_niagara_systems",
     "read_niagara_system",
+    "read_niagara_effect_type",
     "get_niagara_parameters",
     "list_module_inputs",
     "list_module_static_switches",
@@ -428,6 +430,7 @@ _CATEGORY_TOOLS = {
     },
     "cascade": {"read_cascade_system"},
     "asset": {
+        "create_string_table", "read_string_table", "update_string_table_entries", "import_string_table_csv",
         "rename_asset", "move_asset", "duplicate_asset", "set_asset_properties", "create_data_asset", "create_physical_material",
         "plan_asset_migration", "execute_asset_migration", "get_asset_migration_status", "verify_asset_migration",
     },
@@ -451,6 +454,7 @@ _CATEGORY_TOOLS = {
         "add_custom_hlsl_expression", "set_expression_position",
     },
     "niagara": {
+        "read_niagara_effect_type",
         "list_niagara_systems", "read_niagara_system", "set_niagara_parameter",
         "get_niagara_parameters", "create_niagara_system", "set_niagara_rapid_parameter",
         "modify_emitter_properties", "list_niagara_emitter_templates", "add_emitter_to_system",
@@ -522,13 +526,13 @@ def info():
     return """
         # Unreal MCP Server Guidance
 
-        There are 143 internal operations. Default grouped mode exposes 70 tools
+        There are 148 internal operations. Default grouped mode exposes 74 tools
         before filtering: Material, Niagara, UMG and Scene each expose <category>_search,
         <category>_call_read and <category>_call_write. Other categories stay direct.
         Search by keywords or browse with an empty query, then search by exact tool
         name for its full schema. Call the indicated read/write endpoint with tool
         and arguments. Reuse the contract for subsequent calls; do not guess names.
-        MCP_TOOL_MODE=direct exposes all 143 operations directly after reconnecting.
+        MCP_TOOL_MODE=direct exposes all 148 operations directly after reconnecting.
         Read-only/category filters apply in both modes; search never contacts UE.
 
         Core categories: Asset, Actor/Editor, Blueprint, Blueprint Node,

@@ -142,6 +142,32 @@ class MaterialInstanceParametersTests(unittest.TestCase):
                     self.connection.send_command.assert_called_once()
             self.connection.send_command.side_effect = None
 
+    def test_niagara_scalability_read_contract_and_spill(self):
+        from tools.niagara_tools import register_niagara_tools
+        server = FastMCP("niagara-scalability")
+        register_niagara_tools(server)
+        module = sys.modules["unreal_mcp_server"]
+        module.spill_if_oversized = Mock(side_effect=lambda result, *args, **kwargs: result)
+        tool = server._tool_manager.get_tool("read_niagara_effect_type")
+        self.assertEqual(tool.parameters["required"], ["asset_path"])
+        self.connection.send_command.return_value = {"status": "success", "result": {
+            "contract_version": 1, "complete": False, "unsupported": [{"path": "test"}], "scope": "saved"}}
+        result = tool.fn(None, "/Game/Effects/EffectTypes/Test")
+        self.assertFalse(result["complete"])
+        self.connection.send_command.assert_called_once_with("read_niagara_effect_type", {"asset_path": "/Game/Effects/EffectTypes/Test"})
+        module.spill_if_oversized.return_value = {"success": True, "overflow": True, "file_path": "full.json"}
+        module.spill_if_oversized.side_effect = None
+        result = tool.fn(None, "/Game/Test")
+        self.assertFalse(result["complete"])
+        self.assertEqual(result["contract_version"], 1)
+        self.assertTrue(result["overflow"])
+        module.spill_if_oversized.side_effect = lambda result, *args, **kwargs: result
+        self.connection.send_command.return_value = {"status": "success", "result": {"name": "Legacy", "emitters": []}}
+        result = server._tool_manager.get_tool("read_niagara_system").fn(None, "/Game/Legacy")
+        self.assertEqual(result["name"], "Legacy")
+        self.assertFalse(result["scalability_complete"])
+        self.assertIn("native_capability_missing", result["scalability_status"])
+
     def test_clear_override_forwarding(self):
         self.tool.fn(None, self.path, clear_scalar_params=["Roughness"], clear_vector_params=["Tint"], clear_texture_params=["MainTex"])
         self.connection.send_command.assert_called_with("set_material_instance_parameters", {

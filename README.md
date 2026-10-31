@@ -4,10 +4,10 @@ Fork of [chongdashu/unreal-mcp](https://github.com/chongdashu/unreal-mcp) for AI
 
 ## Tool Surface
 
-The Python MCP server provides **143 internal operations**. Default grouped mode
-exposes **70 MCP tools** before read-only/category filtering: Material, Niagara,
+The Python MCP server provides **148 internal operations**. Default grouped mode
+exposes **74 MCP tools** before read-only/category filtering: Material, Niagara,
 UMG and Scene each have search/read/write entry points; smaller categories stay direct.
-Set `MCP_TOOL_MODE=direct` to expose all 143 operations directly.
+Set `MCP_TOOL_MODE=direct` to expose all 148 operations directly.
 
 [Scene tools](Docs/Tools/scene_tools.md) add guarded level-instance editing,
 fixed-view capture tasks, mesh/texture imports, placement manifests and controlled undo.
@@ -22,14 +22,14 @@ See the [grouped calling guide](Docs/Tools/README.md#grouped-mode-default).
 
 | Category | Internal Operations | Reference |
 |---|---:|---|
-| Asset operations | 10 | [Editor tools](Docs/Tools/editor_tools.md#asset--level-management), [Bounded asset creation/editing](Docs/Tools/project_tools.md#set_asset_properties) |
+| Asset operations | 14 | [Editor tools](Docs/Tools/editor_tools.md#asset--level-management), [Bounded asset creation/editing](Docs/Tools/project_tools.md#set_asset_properties), [String Tables](Docs/Tools/project_tools.md#string-table-assets) |
 | Actor + Editor | 18 | [Actor tools](Docs/Tools/actor_tools.md), [Editor tools](Docs/Tools/editor_tools.md) |
 | Scene | 20 | [Scene tools](Docs/Tools/scene_tools.md) |
 | Blueprint assets | 9 | [Blueprint tools](Docs/Tools/blueprint_tools.md), [reading guide](Docs/Tools/reading_blueprints.md) |
 | Blueprint nodes | 8 | [Node tools](Docs/Tools/node_tools.md) |
 | Materials | 17 | [Material tools](Docs/Tools/material_tools.md) |
 | UMG / Widgets | 23 | [UMG tools](Docs/Tools/umg_tools.md) |
-| Niagara | 25 | [Niagara tools](Docs/Tools/niagara_tools.md) |
+| Niagara | 26 | [Niagara tools](Docs/Tools/niagara_tools.md) |
 | Project / AI assets | 6 | [Project tools](Docs/Tools/project_tools.md) |
 | Navigation | 6 | [Navigation tools](Docs/Tools/navigation_tools.md) |
 | Cascade (legacy VFX) | 1 | [Cascade reader](Docs/Tools/cascade_tools.md) |
@@ -139,7 +139,7 @@ omits every `*_call_write` entry point and refuses writes through read entry poi
 - Project/AI assets: `get_class_properties`, `read_data_asset`, `read_behavior_tree`, `read_blackboard`, `read_state_tree`
 - Material: `list_materials`, `read_material`, `get_material_instance_parameters`
 - UMG: `read_widget_layout`
-- Niagara: `list_niagara_systems`, `read_niagara_system`, `get_niagara_parameters`, `list_module_inputs`, `list_module_static_switches`, `read_ns_curve`, `list_renderer_types`
+- Niagara: `list_niagara_systems`, `read_niagara_system`, `read_niagara_effect_type`, `get_niagara_parameters`, `list_module_inputs`, `list_module_static_switches`, `read_ns_curve`, `list_renderer_types`
 - Navigation: `list_nav_mesh_bounds_volumes`, `get_navigation_status`, `project_point_to_navigation`, `find_navigation_path`
 - Cascade: `read_cascade_system`
 - Asset migration: `plan_asset_migration`, `get_asset_migration_status`, `verify_asset_migration`

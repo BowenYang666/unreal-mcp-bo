@@ -97,6 +97,115 @@ Filter by category:
 }
 ```
 
+## String Table Assets
+
+These four direct tools belong to the **Asset** category in both MCP modes.
+`MCP_ASSET_ENABLED=0` hides all four; read-only mode keeps only `read_string_table`.
+Requires the matching native plugin, not just a Python restart. Asset paths are
+`/Game/...` package paths without `.AssetName` suffixes. Reflected UObject reads
+cannot expose String Table contents; use the specialized reader.
+
+### create_string_table
+
+Required: `asset_path`, `namespace`. Optional: `dry_run=true`, `save=false`.
+Creates an empty table with its Namespace; an existing asset/package is always
+refused, never overwritten. Preview does not create an asset. Apply with
+`dry_run=false`; explicitly opt into `save=true` to save this asset only.
+
+### read_string_table
+
+Required: `asset_path`. Returns reusable `asset_path`, full `object_path`, actual
+registered `table_id`, `namespace`, `entry_count`, `package_dirty`, and **all**
+`entries`, each containing `key`, `source_string`, and `metadata`. No mutation or save.
+The returned strings are source text, not the current culture's translations.
+
+### update_string_table_entries
+
+Required: `asset_path`, `expected_namespace`. Optional: `entries=[]`,
+`delete_keys=[]`, `dry_run=true`, `save=false`.
+
+```json
+{
+  "asset_path": "/Game/Data/Localization/Text/ST_UI_Status",
+  "expected_namespace": "ST_UI_Status",
+  "entries": [
+    {"key": "Status.Slowed", "source_string": "Slowed", "metadata": {"Comment": "HUD label"}},
+    {"key": "Status.Stunned", "source_string": "Stunned"},
+    {"key": "Format.ContributionCount", "source_string": "{Status} x{Count}"}
+  ],
+  "dry_run": true
+}
+```
+
+Unspecified entries and metadata are retained. New keys require `source_string`;
+existing keys may have metadata-only edits. Metadata values are strings, or JSON
+null to explicitly remove that named field. Whole-entry deletion must use
+`delete_keys`; duplicate keys and update/delete overlaps reject the whole batch.
+No Namespace or Key rename API is provided. `expected_namespace` must match,
+and source changes may still require translation review after the next Gather.
+
+### import_string_table_csv
+
+Required: `asset_path`, `expected_namespace`, absolute `csv_path`, and explicit
+`mode="merge"` or `"replace"`. Optional: `allow_delete=false`, `dry_run=true`,
+`save=false`. Create the table separately first.
+
+```csv
+Key,SourceString,Comment
+Status.Slowed,Slowed,HUD label
+Status.Stunned,Stunned,HUD label
+Format.ContributionCount,{Status} x{Count},Named format placeholders
+```
+
+The CSV is validated, frozen to a temporary snapshot, and imported using UE's
+native `FStringTable::ImportStrings` on a temporary table before live mutation.
+Malformed quotes/rows, duplicate decoded keys or metadata headers, invalid names,
+or wrong parameter types reject before editing. The input file is never rewritten.
+Limits: CSV 1 MiB, 4096 rows/final entries, 65536 characters per cell, bounded keys
+and metadata names. Complete reads are not reduced to counts.
+
+`merge` updates imported sources and nonempty imported metadata, retaining other
+keys/metadata; native empty metadata cells are ignored. `replace` uses only the
+CSV keys and metadata, removing omitted data. Preview reports exact
+`added_keys`, `updated_keys`, `deleted_keys`; apply that deletes any key requires
+`allow_delete=true`. Replacement can also remove metadata: review the documented
+replace semantics. There is no implicit identity migration.
+
+All CSV columns after `Key`/`SourceString` are **metadata, not languages**.
+Keep the English source here. Chinese translations belong in PO Import/Compile;
+do not add a Chinese language column to this table.
+
+### Write Safety And Verification
+
+Apply refuses a pre-existing dirty table even with `save=false`; save or otherwise
+resolve those user edits separately. One editor transaction supports Undo/Redo.
+No Save All or implicit compile. Validation failures do not partially edit; save
+or readback failures report `success=false`, actual `modified`/`saved` and `after`
+state. Unsaved applied changes may remain after a save failure; inspect before
+retrying. Transport timeout/reset is unknown outcome, never an automatic retry.
+
+2026-10-28: 76 Python regressions passed. Repository, SkillTest and NF verified
+read/write, dirty/identity/duplicate protections, native CSV merge/replace, metadata,
+Undo and controlled save failure. A saved Widget Blueprint TextBlock contains a
+real String Table `FText` reference. With UnrealMCP enabled, actual Gather,
+PO Import and Compile each exit 0; a fresh process reads Namespace, all three
+source entries and metadata, then verifies en -> zh-Hans -> en text/format changes.
+English sources remain unchanged. The language test explicitly loads the compiled
+fixture locres; it does not install a business localization target or claim manual UI acceptance.
+
+The runnable isolated harness is
+[verify_string_table_localization.py](../../Python/scripts/localization/verify_string_table_localization.py).
+It requires `polib` (run with `uv run --with polib`) and an existing unique
+`/Game/__Dev/StringTables_...` fixture; outputs are under project Saved, not business PO paths.
+
+The reported `NativeGameplayTags.cpp` ensure was traced to NF's **local** test
+customization, not the current repository module: an Editor-module static
+`UE_DEFINE_GAMEPLAY_TAG_STATIC`. That definition was removed in the authorized NF
+update; the positive tag test now loads a Saved ini only inside test execution and
+cleans it up. Existing test coverage and other NF customizations were retained.
+NF Gather/Import/Compile with the plugin enabled now exit 0 without that ensure;
+no `-DisablePlugins=UnrealMCP`, log suppression or driver/RHI change is used.
+
 ## AI / Asset Reading
 
 ### Structured Asset Inspection

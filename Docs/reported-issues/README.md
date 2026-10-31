@@ -1,6 +1,6 @@
 # 问题报告与修复汇总
 
-更新日期：2026-10-22。
+更新日期：2026-10-31。
 
 本文件汇总本目录的问题、修复、验证和遗留事项，作为代码提交与后续维护的统一入口。
 详细报告保留原始复现经过及当时状态；阅读时以各报告最新的维护记录和续作反馈为准，
@@ -13,6 +13,9 @@
 | [Blueprint 折叠子图不可读](cannot-read-bp-subgraph.md) | 已修复并验证，2026-08-15 | 支持可选子图遍历和引脚默认值；属于既有修复，不是本次新增代码 |
 | [Niagara 保存重入崩溃](niagara-save-reentrancy-crash.md) | 修复已部署；原 NF 草稿续作及冷加载通过；报告仍 Open | 有真实使用正向证据，但未证明后续 D3D12 访问违例的唯一原因，未受控重建旧嵌套等待栈 |
 | [同系统复制 Emitter 后不执行](same-system-emitter-duplicate-not-executed.md) | Open，尚未修复 | 有 Handle 和成功回执不等于能运行；缺少执行图重建是强烈怀疑方向，仍需实现与验证 |
+| [String Table 创建／编辑缺口](../Tools/project_tools.md#string-table-assets) | 已补齐并部署 SkillTest/NF，2026-10-28 | 四个工具、原生 CSV、完整读回及真实 FText 本地化验收通过；未修改业务表 |
+| [本地化 commandlet 测试 Tag ensure](../Tools/project_tools.md#write-safety-and-verification) | NF 本地定制已定点修复并验证，2026-10-28 | 正常启用插件时 Gather／Import／Compile 均退出 0；未禁用插件或屏蔽日志 |
+| [Niagara Scalability 保存配置读取](niagara-scalability-reading.md) | 第一阶段已修复并部署 SkillTest/Lyra/NF，2026-10-31 | Lyra 六系统／四 Effect Type、NF 五系统／一 Effect Type 经公开 MCP 验收；Scalability 写入、上下文解析、运行诊断仍不支持，未改样例资产 |
 
 ## 1. Blueprint 折叠子图不可读
 
@@ -103,6 +106,40 @@ Overview 和 Handle 数量不是执行图连接正确的证明；当前报告尚
 **待办：**在 SkillTest 独立夹具中核对系统执行图的 Emitter 节点与 Handle ID，按原生流程
 实现复制；检查真实粒子生成、源／副本参数隔离、RI 命名空间、曲线 DI、Renderer、继承和
 User 参数，再验证保存及独立冷加载后仍执行。必须保留既有跨系统快照、安全调度和保存错误回执。
+
+## 4. String Table 资产编辑
+
+新增直接 Asset 工具：`create_string_table`、`read_string_table`、
+`update_string_table_entries`、`import_string_table_csv`。读取返回实际 Table ID、Namespace、
+全部 Key／SourceString 和元数据。创建不覆盖；增量更新保留未指定内容；CSV 先预检再用
+UE 原生导入临时表，明确 merge／replace，删除必须显式确认。
+
+默认只预览、不自动保存；编辑必须匹配 `expected_namespace`，拒绝已有未保存编辑，
+不提供隐式 Namespace／Key 迁移。失败整批拒绝或明确返回实际修改／未保存状态。
+英文源文案放 String Table；中文译文通过 PO Import／Compile，不添加语言列。
+
+2026-10-28 仓库 Python 76 项通过，原生读写、坏输入、元数据、删除、Undo、保存失败
+及独立冷加载验证通过。SkillTest 和 NF 都保存了隔离表与标准 Widget Blueprint 的真实
+String Table `FText` 引用，实际 Gather／PO Import／Compile 及 en→zh-Hans→en 语言切换
+通过；命名占位符保留，源文案仍为英文。这不是仅检查 `.uasset` 存在，也不代表业务 UI
+已改接这些夹具。测试输出均在各项目 `Saved/StringTableLocalization` 下。
+
+可复用验收脚本：[verify_string_table_localization.py](../../Python/scripts/localization/verify_string_table_localization.py)。
+插件和 Python 需要配套更新；其他未部署项目不会因共享 Python 的新 Schema 自动获得原生能力。
+
+## 5. GatherText 加载插件时的 Native Tag ensure
+
+查明仓库当前插件没有该静态定义；问题来自 NF 的独立测试定制在 Editor 模块加载时执行
+`UE_DEFINE_GAMEPLAY_TAG_STATIC`。经用户授权，只把这一处改为自动化测试执行时，从隔离
+Saved ini 加载测试 Tag 并清理，保留正向 Tag／容器断言和 NF 原有清理、DirectoryWatcher
+及其他插件定制；没有将仓库文件整段覆盖到 NF。
+
+NF 原有 `UnrealMCP.AssetProperties.Validation` 通过。正常启用 UnrealMCP 时，真实 Gather、
+PO Import、Compile 均退出 0，无该模块类型 ensure；没有使用 `-DisablePlugins=UnrealMCP`、
+日志屏蔽、引擎或驱动修改。业务本地化目标、表和 PO 未改动。
+
+本轮两项目备份：各自 `Saved/UnrealMCPBackups/StringTables_20261028`。
+SkillTest 9706 个、NF 4978 个原有保护文件哈希核对未变；新增资产仅在隔离 `__Dev` 目录。
 
 ## 提交与证据边界
 
