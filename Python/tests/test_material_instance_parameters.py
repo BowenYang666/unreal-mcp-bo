@@ -175,5 +175,88 @@ class MaterialInstanceParametersTests(unittest.TestCase):
             "clear_vector_params": ["Tint"], "clear_texture_params": ["MainTex"]})
 
 
+    def test_niagara_authoring_schema_defaults_and_receipts(self):
+        from tools.niagara_tools import register_niagara_tools
+        server = FastMCP("niagara-authoring-test")
+        register_niagara_tools(server)
+        tool = server._tool_manager.get_tool("set_niagara_scalability")
+        self.assertEqual(tool.parameters["required"], ["asset_path", "expected_baseline"])
+        self.assertEqual(tool.parameters["properties"]["changes"]["type"], "array")
+        self.connection.send_command.return_value = {"status": "success", "result": {
+            "authoring_contract": 1, "success": True, "modified": False, "saved": False}}
+        tool.fn(None, "/Game/NS_Test", "baseline", [{"field": "Platforms", "value": {"QualityLevelMask": -29}}])
+        arguments = self.connection.send_command.call_args.args[1]
+        self.assertTrue(arguments["dry_run"])
+        self.assertFalse(arguments["save"])
+        self.connection.send_command.return_value = {"status": "error", "error": "Save failed", "result": {
+            "modified": True, "saved": False, "stage": "save", "after": {"package_dirty": True}}}
+        result = tool.fn(None, "/Game/NS_Test", "baseline", dry_run=False)
+        self.assertTrue(result["modified"])
+        self.assertFalse(result["saved"])
+        self.assertTrue(result["after"]["package_dirty"])
+
+    def test_niagara_parameter_authoring_contracts(self):
+        from tools.niagara_tools import register_niagara_tools
+        server = FastMCP("niagara-parameter-authoring-test")
+        register_niagara_tools(server)
+        self.connection.send_command.return_value = {"status": "success", "result": {
+            "authoring_contract": 1, "success": True, "modified": False, "saved": False}}
+        tool = server._tool_manager.get_tool("set_niagara_user_parameters")
+        parameters = [{"name": "User.Brightness", "type": "float", "value": 1.0}]
+        tool.fn(None, "/Game/NS_Test", "baseline", parameters)
+        self.assertEqual(self.connection.send_command.call_args.args[1]["parameters"], parameters)
+        self.assertFalse(self.connection.send_command.call_args.args[1]["save"])
+        tool = server._tool_manager.get_tool("bind_niagara_module_input")
+        tool.fn(None, "/Game/NS_Test", "handle", "emitter_update", "node-guid", "baseline", "Module.Rate", "User.Rate")
+        arguments = self.connection.send_command.call_args.args[1]
+        self.assertEqual(arguments["module_node_guid"], "node-guid")
+        self.assertEqual(arguments["target"], "module")
+        self.assertTrue(arguments["dry_run"])
+        tool = server._tool_manager.get_tool("set_niagara_material_bindings")
+        tool.fn(None, "/Game/NS_Test", "handle", 1, "baseline", [{"material_parameter": "Tint", "user_parameter": "User.Tint"}])
+        self.assertEqual(self.connection.send_command.call_args.args[1]["renderer_index"], 1)
+        self.assertEqual(tool.parameters["properties"]["bindings"]["type"], "array")
+
+    def test_niagara_explicit_link_extension_contracts(self):
+        from tools.niagara_tools import register_niagara_tools
+        server = FastMCP("niagara-link-extensions")
+        register_niagara_tools(server)
+        self.connection.send_command.return_value = {"status": "success", "result": {
+            "authoring_contract": 1, "success": True, "modified": False, "saved": False}}
+        tool = server._tool_manager.get_tool("redirect_niagara_user_link")
+        tool.fn(None, "/Game/NS_Test", "handle", "spawn", "node", "baseline", "Module.Color", "User.Old", "User.New")
+        args = self.connection.send_command.call_args.args[1]
+        self.assertEqual(args["expected_linked_parameter"], "User.Old")
+        self.assertTrue(args["dry_run"])
+        self.assertFalse(args["save"])
+        tool = server._tool_manager.get_tool("bind_niagara_dynamic_input")
+        tool.fn(None, "/Game/NS_Test", "handle", "update", "parent", "Module.Scale", "function", "baseline", "Module.Value", "User.Size")
+        self.assertEqual(self.connection.send_command.call_args.args[1]["target"], "dynamic_input")
+        tool = server._tool_manager.get_tool("multiply_niagara_float_input")
+        tool.fn(None, "/Game/NS_Test", "handle", "update", "parent", "baseline", "Module.Value", "User.Size", "source-node", "source-pin", "version")
+        args = self.connection.send_command.call_args.args[1]
+        self.assertEqual(args["expected_source_pin_id"], "source-pin")
+        self.assertEqual(args["multiplier_version_guid"], "version")
+        self.connection.reset_mock()
+        self.connection.send_command.side_effect = TimeoutError("timeout")
+        result = tool.fn(None, "/Game/NS_Test", "handle", "update", "parent", "baseline", "Module.Value", "User.Size", "source-node", "source-pin", "version")
+        self.assertEqual(result["execution_state"], "unknown")
+        self.assertNotIn("saved", result)
+        self.connection.send_command.assert_called_once()
+
+    def test_niagara_authoring_never_retries_unknown_transport(self):
+        from tools.niagara_tools import register_niagara_tools
+        server = FastMCP("niagara-authoring-timeout-test")
+        register_niagara_tools(server)
+        for name, arguments in (("create_niagara_effect_type", ("/Game/NET_Test",)),
+                                ("save_niagara_authoring", ("/Game/NS_Test", "baseline"))):
+            self.connection.reset_mock()
+            self.connection.send_command.side_effect = TimeoutError("timeout")
+            result = server._tool_manager.get_tool(name).fn(None, *arguments)
+            self.assertEqual(result["execution_state"], "unknown")
+            self.assertNotIn("saved", result)
+            self.connection.send_command.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()

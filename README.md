@@ -4,10 +4,10 @@ Fork of [chongdashu/unreal-mcp](https://github.com/chongdashu/unreal-mcp) for AI
 
 ## Tool Surface
 
-The Python MCP server provides **148 internal operations**. Default grouped mode
+The Python MCP server provides **158 internal operations**. Default grouped mode
 exposes **74 MCP tools** before read-only/category filtering: Material, Niagara,
 UMG and Scene each have search/read/write entry points; smaller categories stay direct.
-Set `MCP_TOOL_MODE=direct` to expose all 148 operations directly.
+Set `MCP_TOOL_MODE=direct` to expose all 158 operations directly.
 
 [Scene tools](Docs/Tools/scene_tools.md) add guarded level-instance editing,
 fixed-view capture tasks, mesh/texture imports, placement manifests and controlled undo.
@@ -29,7 +29,7 @@ See the [grouped calling guide](Docs/Tools/README.md#grouped-mode-default).
 | Blueprint nodes | 8 | [Node tools](Docs/Tools/node_tools.md) |
 | Materials | 17 | [Material tools](Docs/Tools/material_tools.md) |
 | UMG / Widgets | 23 | [UMG tools](Docs/Tools/umg_tools.md) |
-| Niagara | 26 | [Niagara tools](Docs/Tools/niagara_tools.md) |
+| Niagara | 36 | [Niagara tools](Docs/Tools/niagara_tools.md) |
 | Project / AI assets | 6 | [Project tools](Docs/Tools/project_tools.md) |
 | Navigation | 6 | [Navigation tools](Docs/Tools/navigation_tools.md) |
 | Cascade (legacy VFX) | 1 | [Cascade reader](Docs/Tools/cascade_tools.md) |
@@ -44,6 +44,7 @@ Common asset workflows:
 - [Create DataAsset and PhysicalMaterial assets](Docs/Tools/project_tools.md#create_data_asset) without overwriting; edit enum-keyed impact Maps, assign physical materials to Material/MI or components, and [read real collision surfaces](Docs/Tools/editor_tools.md#trace_physical_material).
 - [Update an existing material instance](Docs/Tools/material_tools.md#set_material_instance_parameters), including optional Parent changes, parameter overrides and explicit save status.
 - [Read legacy Cascade effects](Docs/Tools/cascade_tools.md) without converting them to Niagara; filter emitters/LODs and inspect curves, events and references.
+- [Author saved Niagara rules and User bindings](Docs/Tools/niagara_tools.md#guarded-niagara-authoring) with exact identity/baselines, typed preflight, draft/explicit-save receipts and preserved existing data; defaults do not change gameplay instances or shared materials.
 - [Read editor logs](Docs/Tools/editor_tools.md#get_editor_logs) with an explicit log path/environment setting and a required time selector.
 
 These are source-repository capabilities. A target project needs the matching

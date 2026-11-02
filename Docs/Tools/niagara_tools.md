@@ -149,6 +149,161 @@ Existing clients need reconnecting; Claude project approval remains user-control
 See the [resolution record](../reported-issues/niagara-scalability-reading.md)
 and [repeatable acceptance script](../../Python/scripts/niagara/verify_scalability_read.py).
 
+## Guarded Niagara Authoring
+
+2026-11-01: seven internal operations reuse the existing Niagara grouped endpoints.
+Discover each exact operation with `niagara_search(tool=...)`; call its returned
+read/write endpoint. Updated native plugin required; never fall back to legacy
+writers or raw UObject edits. Read-only mode exposes only the new authoring reader.
+
+| Operation | Contract |
+| --- | --- |
+| `read_niagara_authoring` | Exact `/Game` package, target `system` / `effect_type` / `emitter` / `renderer` / `module`; returns `authoring_contract=1`, saved fields, identity and `baseline` |
+| `create_niagara_effect_type` | New exact package, no overwrite; default dry_run=true/save=false; reports created/modified/saved/dirty |
+| `set_niagara_scalability` | expected_baseline + changes of `{field,value}`; System association/null, Platforms/Overrides/local-player flags, selected Emitter rules, Renderer Platforms, Effect Type rules and Age/Distance/None significance |
+| `save_niagara_authoring` | Explicit whole-target-package save of a reviewed draft, with expected baseline and compilation validation; never Save All |
+| `set_niagara_user_parameters` | System default declarations/updates `{name,type,value}` for User Float/Int/Bool/Color; same type/value no-op; duplicate/wrong types refuse |
+| `bind_niagara_module_input` | Exact Handle, script phase, module GUID and module baseline; canonical input name to a declared type-compatible User variable; fresh/Local or identical linked no-op only |
+| `set_niagara_material_bindings` | Exact Renderer identity/baseline; patch `{material_parameter,user_parameter}` AttributeBindings, User Float->Scalar / Color->Vector, preserving other bindings/constants |
+
+All new edits default to dry_run=true/save=false. Existing dirty packages refuse
+editing, even with save=false. Review the draft through the reader and explicitly
+save with its fresh baseline. The latter saves all current edits in that package;
+approval of an individual field is not approval of unrelated user draft changes.
+Baseline covers the selected target identity/fields and User declarations; module
+targets also cover saved graph pins/links and rapid values, Renderer targets include
+material parameters/sources. It is not a general package revision or runtime state.
+
+Emitter/Renderer targets require `emitter_handle_id`; Renderer uses the actual
+source `renderer_index`, including disabled slots. Module targets add `script_type`
+(`spawn`, `update`, `emitter_spawn`, `emitter_update`) and `module_node_guid`.
+Selected/resolved versions and object/graph paths are part of the read baseline;
+GUIDs may repeat across cloned assets and are not globally unique selectors.
+
+Struct patches recursively preserve unspecified fields. Arrays replace ordered
+complete saved rows, including every inherited field; use `fields` from the
+authoring reader, not decoded `quality_levels` annotations from the scalability
+reader. Unknown/duplicate fields, invalid types, bounds and stale baselines reject
+before mutation. Signed masks and uint32 profile masks retain their native meaning.
+No global quality/Profile/preview switching, eligibility resolution or runtime
+culling diagnosis. Stateless authoring is explicitly unsupported.
+
+```json
+{
+	"asset_path": "/Game/__Dev/VFX/NS_Test",
+	"target": "emitter",
+	"emitter_handle_id": "<Handle GUID>",
+	"expected_baseline": "<read_niagara_authoring baseline>",
+	"changes": [{"field": "Platforms", "value": {"QualityLevelMask": -29}}]
+}
+```
+
+User Color defaults use linear HDR `[r,g,b,a]`. This edits authorized NS defaults,
+not running component values. Instance playback still uses component setters;
+it must not mutate shared NS/MI assets. Declaring a variable does not bind or prove
+visual consumption. Static/object/DI module inputs and replacement of existing
+different linked/dynamic/expression overrides are refused, preserving old curves.
+Same linked User is a no-op; converting Local removes only its corresponding
+rapid parameter on apply. Canonical names come from the authoring reader.
+
+`read_niagara_system` now also returns `renderer.material_parameters`: complete
+typed AttributeBindings (declared/resolved/child variables), Scalar/Vector/Texture
+constants, nullable StaticBool values, saved material parameter names/associations
+and truthful supported/complete/unsupported state. Runtime component overrides and
+actual MID values are not claimed by this asset reader. The writer currently patches
+User Float/Color mappings only, not arbitrary constant/texture/static/DI bindings.
+Every saved material must expose the unambiguous compatible global parameter;
+constants which would override the requested mapping cause rejection. Existing
+DynamicParameter channels and shared MI assets are never overwritten.
+
+Apply uses an Editor transaction, then compilation validation and optional target
+save. Receipts retain before/after, modified/compiled/saved/package_dirty, per-script
+compile status/events and separate failure stages. Compile/save failures can leave
+applied dirty state; no disk rollback or automatic retry. Transport failures report
+unknown execution state without fabricating modified=false/saved=false.
+
+Verified in repository/SkillTest UE5.7.4 isolated fixtures: typed negative masks,
+ordered Profile/CVar rows, significance, User types/no-op, exact Linked input,
+material mappings, dirty/stale guards, Undo and injected compile/save rejection.
+Fresh-process reload retained rules/links/material references; two real components
+used distinct engine MIDs with Scalar 2/5 and Color red/green, shared assets unchanged.
+Renderer updates required nonzero particles and end-of-frame submission; early
+tests with too-short simulation/default material getters failed and remain logged.
+This is runtime parameter reception, not post-fix visual scaling/performance proof.
+
+Public grouped acceptance: [verify_authoring.py](../../Python/scripts/niagara/verify_authoring.py),
+using existing SkillTest authoring permission and only new `__Dev` copies. Full
+JSON/receipts stay in `Saved/NiagaraAuthoringAcceptance`. SkillTest deployment is
+five scoped native files. NF received the same five files later on 2026-11-01;
+NodeFallEditor UE5.7.4 built successfully in 286.25 seconds, preserving local
+plugin customizations and client settings. Public grouped read/dry-run/rejection
+smoke confirmed authoring contract1 and all seven native routes, unchanged baseline,
+quality/Profile context and zero dirty packages. No NF assets were created, edited
+or saved; actual write/cold/MID acceptance remains the SkillTest evidence above.
+NF receipt: `Saved/UnrealMCPDeployment/Authoring_20261101_cd296e29/receipt.json`.
+Existing clients need reconnecting; Claude project approval remains user-controlled.
+
+### Limited Existing-Link And Curve Extensions
+
+2026-11-01 addition: three new internal write operations reuse grouped Niagara
+endpoints. They require the newer native implementation; the earlier seven-operation
+authoring deployment does not include them. Defaults remain dry_run=true/save=false;
+dirty/stale/type/identity checks, Undo, compilation and partial-failure receipts apply.
+
+- `redirect_niagara_user_link`: explicit opt-in operation for one simple same-graph
+	ParameterMapGet User link. Pass the exact module identity/baseline, canonical input,
+	expected_linked_parameter and new user_parameter. Both declared types must match.
+	Wrong old link, multiple sources, dynamic/expression/curve or missing types refuse.
+	Only the target edge changes; old User declaration/node/other consumers remain.
+	Current already-desired link is no-op. Ordinary bind still refuses differing links.
+- `read_niagara_authoring(target="dynamic_input")`: retain module_node_guid for the
+	parent, add parent_input_name and function_node_guid. The function must be reachable
+	from that exact parent's override chain; selected/resolved GUID, script path/change
+	ID, canonical typed inputs and graph/pin/link/rapid baseline are returned. Depth16/
+	64-node bounds apply. No name/first-node/latest-version substitution or expression
+	editing. Non-static typed child inputs can use `bind_niagara_dynamic_input`, which
+	retains old surrounding curves and still refuses different existing overrides.
+- `multiply_niagara_float_input`: wrap an existing dynamic Float result as preserved
+	result times User.Float. Pass target module/dynamic_input, canonical input,
+	expected_source_node_guid/expected_source_pin_id, fresh baseline and explicit
+	multiplier_version_guid from standard_float_multiplier in the reader. The exact
+	standard Multiply_Float script is read-only preflighted; apply gives the wrapper
+	a dedicated standard ParameterMapSet so shared old curve sets do not become cyclic.
+	Old output node/pin, curve keys/tangents/version and other consumers stay connected.
+	Same script/resolved version, source A and User B identify an existing wrapper:
+	no-op, never another nested multiplier. Different User/version refuses replacement.
+	This does not replace curve/time inputs or support arbitrary vector/color math.
+
+Set the User multiplier default to1 for the original result; broader Sprite/Mesh,
+velocity/beam/world-position/physics and whole-effect scale semantics remain the
+project's responsibility. The authoring reader exposes source node/pin/script/version
+identity for linked inputs. Prefer inspecting actual canonical child input names,
+not assuming conversion functions all use the same channel names.
+
+Repository verification: 81 Python regressions; seven native authoring/scalability
+regressions and an actual separate-process DynamicBindingsReload passed. Isolated
+FloatFromCurve keys/tangents, shared source witness, Undo, no-op and runtime1/.5/2
+consumption passed. Fixed-rate particle counts use independent integer/time-step
+expectations (initial frame consumes no spawn step), not multiplication of an already
+truncated integer count. A1 preserved exact original runtime output. Logs are local:
+`Saved/Logs/Niagara-LinkExtensions-Regression.log`, `Niagara-LinkExtensions-Cold.log`,
+`Niagara-LinkExtensions-LUTVerified.log`. Earlier parameter discovery, graph-cycle
+and oracle failures remain recorded; temporary diagnostics and unsafe cloned-graph
+preflight were removed. No engine/global quality/production asset changes.
+
+These additions were subsequently deployed to SkillTest and NF on 2026-11-01,
+updating only Bridge, Niagara Commands and Authoring cpp/header. SkillTestEditor
+built in 315.77 seconds; seven native regressions, actual independent cold read and
+public grouped exact-read/no-op/rejection smoke passed. NodeFallEditor built in
+80.52 seconds; its existing working copy passed old Color User redirect and preserved
+FloatFromCurve result multiplier dry-run, with exact dynamic child identities.
+No NF working/production asset was edited or saved. Its original map/port and
+client permissions were retained; actual writes remain the isolated SkillTest tests.
+Existing clients need reconnecting; Claude approval remains user-controlled.
+Backups are local `Saved/UnrealMCPBackups/LinkExtensions_20261101_*`;
+full public smoke receipts are in each project's `Saved/UnrealMCPDeployment`.
+Python discovery alone is still not deployment verification; no commit/push is automatic.
+
 ## Emitter Management
 
 ### `add_emitter_to_system`

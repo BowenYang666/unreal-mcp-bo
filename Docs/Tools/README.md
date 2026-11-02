@@ -1,7 +1,7 @@
 # Unreal MCP Tools
 
-Index for **148 internal operations**. Default grouped mode exposes **74 MCP
-tools** before read-only/category filtering; direct compatibility mode exposes 148.
+Index for **158 internal operations**. Default grouped mode exposes **74 MCP
+tools** before read-only/category filtering; direct compatibility mode exposes 158.
 
 - [Actor Tools](actor_tools.md) (8)
 - [Scene Tools](scene_tools.md) (20) - Guarded instances, captures, imports, placement manifests, Outliner folders, temporary editor visibility and controlled undo
@@ -12,7 +12,7 @@ tools** before read-only/category filtering; direct compatibility mode exposes 1
 - [Blueprint Tools](blueprint_tools.md) (9)
 - [Reading Blueprints](reading_blueprints.md) - How to discover and inspect existing Blueprints
 - [Node Tools](node_tools.md) (8)
-- [Niagara Tools](niagara_tools.md) (26)
+- [Niagara Tools](niagara_tools.md) (36)
 - [Material Tools](material_tools.md) (17)
 - [UMG Tools](umg_tools.md) (23) - Widget Blueprints / in-game UI
 - [Project Tools](project_tools.md) (6) - Input mappings, reflection, Behavior Trees, Blackboards, StateTrees
@@ -76,8 +76,8 @@ routing/argument errors are MCP tool errors.
 
 - `MCP_TOOL_MODE=grouped` (default): 74 public tools; original names from these
 	four categories are internal and cannot be called directly via MCP.
-- `MCP_TOOL_MODE=direct`: all 148 public operations, no grouped entry points.
-- `UNREAL_MCP_READ_ONLY=1`: 31 public tools in grouped mode, 44 in direct mode.
+- `MCP_TOOL_MODE=direct`: all 158 public operations, no grouped entry points.
+- `UNREAL_MCP_READ_ONLY=1`: 31 public tools in grouped mode, 45 in direct mode.
 	Only approved read operations remain; hidden writes cannot be searched or run.
 - Existing `MCP_MATERIAL_ENABLED`, `MCP_NIAGARA_ENABLED`, `MCP_UMG_ENABLED`, `MCP_SCENE_ENABLED`
 	filters remove the whole category, including its entry points, when disabled.
@@ -87,6 +87,7 @@ Counts assume no category is disabled. Restart/reconnect the MCP server/client
 after changing modes; no UE plugin rebuild is needed. Clients sharing this
 Python server source pick up grouped mode on their next restart unless configured
 with `MCP_TOOL_MODE=direct`. Do not expose both modes simultaneously.
+
 
 These checks are Python MCP dispatch rules, not native TCP authentication or a
 new C++ permission boundary. Client approval UI and annotations are not relied on

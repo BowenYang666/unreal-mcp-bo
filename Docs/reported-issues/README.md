@@ -1,6 +1,6 @@
 # 问题报告与修复汇总
 
-更新日期：2026-10-31。
+更新日期：2026-11-01。
 
 本文件汇总本目录的问题、修复、验证和遗留事项，作为代码提交与后续维护的统一入口。
 详细报告保留原始复现经过及当时状态；阅读时以各报告最新的维护记录和续作反馈为准，
@@ -15,7 +15,9 @@
 | [同系统复制 Emitter 后不执行](same-system-emitter-duplicate-not-executed.md) | Open，尚未修复 | 有 Handle 和成功回执不等于能运行；缺少执行图重建是强烈怀疑方向，仍需实现与验证 |
 | [String Table 创建／编辑缺口](../Tools/project_tools.md#string-table-assets) | 已补齐并部署 SkillTest/NF，2026-10-28 | 四个工具、原生 CSV、完整读回及真实 FText 本地化验收通过；未修改业务表 |
 | [本地化 commandlet 测试 Tag ensure](../Tools/project_tools.md#write-safety-and-verification) | NF 本地定制已定点修复并验证，2026-10-28 | 正常启用插件时 Gather／Import／Compile 均退出 0；未禁用插件或屏蔽日志 |
-| [Niagara Scalability 保存配置读取](niagara-scalability-reading.md) | 第一阶段已修复并部署 SkillTest/Lyra/NF，2026-10-31 | Lyra 六系统／四 Effect Type、NF 五系统／一 Effect Type 经公开 MCP 验收；Scalability 写入、上下文解析、运行诊断仍不支持，未改样例资产 |
+| [Niagara Scalability 保存配置读取](niagara-scalability-reading.md) | 第一阶段已修复并部署 SkillTest/Lyra/NF，2026-10-31 | Lyra 六系统／四 Effect Type、NF 五系统／一 Effect Type 经公开 MCP 验收；上下文解析/运行诊断仍不支持，未改样例资产 |
+| [Niagara Scalability authoring #140](niagara-scalability-authoring.md) | 有限受控合同已实现并验收 SkillTest，已部署 NF，2026-11-01 | 创建、关联、分层 typed 规则、预检/草稿/编译保存；NF 只读/预检烟测通过，不包括任意上下文解析或业务画质方案 |
+| [Niagara 外观参数绑定 #141](niagara-vfx-appearance-parameter-binding.md) | 有限受控合同已实现并验收 SkillTest，已部署 NF，2026-11-01 | User 声明、精确 fresh/同值 Linked 绑定和 Float/Color 材质映射；SkillTest真实双MID接收通过，NF未试写，复杂override替换/全库视觉适配仍非目标 |
 
 ## 1. Blueprint 折叠子图不可读
 

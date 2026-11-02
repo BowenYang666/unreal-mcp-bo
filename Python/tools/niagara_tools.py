@@ -28,18 +28,225 @@ def _spill_niagara_read(result: dict, operation: str) -> dict:
     from uuid import uuid4
 
     spilled = spill_if_oversized(result, operation, uuid4().hex,
-        preview_keys=("name", "path", "asset_path", "class_path", "reader_contract", "scalability_complete", "contract_version", "complete", "scope"),
+        preview_keys=("name", "path", "asset_path", "class_path", "reader_contract", "scalability_complete", "contract_version", "complete", "scope", "authoring_contract", "baseline", "target", "object_path"),
         count_keys=("emitters", "user_parameters", "unsupported"),
         hint="Read the complete JSON file for all saved rules, field states, versions and curve keys. A preview is not the full result.")
     if spilled is not result and spilled.get("overflow"):
-        for key in ("success", "reader_contract", "scalability_complete", "contract_version", "complete", "scope", "read_context", "scalability_status"):
+        for key in ("success", "reader_contract", "scalability_complete", "contract_version", "complete", "scope", "read_context", "scalability_status", "authoring_contract", "baseline", "target", "object_path"):
             if key in result:
                 spilled[key] = result[key]
     return spilled
 
 
+def _authoring_call(operation: str, arguments: dict) -> dict:
+    from unreal_mcp_server import get_unreal_connection
+    try:
+        response = get_unreal_connection().send_command(operation, arguments)
+        if not response:
+            return _niagara_transport_error("No response from Unreal Engine")
+        if response.get("status") == "error":
+            return _niagara_error(response)
+        result = response.get("result", response)
+        if result.get("success", True) and result.get("authoring_contract", 0) < 1:
+            return {"success": False, "stage": "capability", "message": "Updated native Niagara authoring plugin required; no retry."}
+        if operation == "read_niagara_authoring":
+            return _spill_niagara_read(result, operation)
+        return result
+    except Exception as error:
+        return _niagara_transport_error(str(error))
+
+
 def register_niagara_tools(mcp: FastMCP):
     """Register Niagara tools with the MCP server."""
+
+    @mcp.tool()
+    def read_niagara_authoring(ctx: Context, asset_path: str, target: str = "system",
+                              emitter_handle_id: str = "", renderer_index: int = -1,
+                              script_type: str = "spawn", module_node_guid: str = "",
+                              parent_input_name: str = "", function_node_guid: str = "") -> dict:
+        """Read exact Niagara authoring identity, complete saved fields and an optimistic baseline.
+
+        Example: asset_path='/Game/VFX/NS_Test', target='emitter', emitter_handle_id='<reader Handle GUID>'.
+        target is system, effect_type, emitter, renderer or module; renderer needs source renderer_index.
+        module needs exact module_node_guid and script_type spawn/update/emitter_spawn/emitter_update.
+        dynamic_input additionally needs the parent canonical input and reachable function_node_guid;
+        read selected function/version/pins and standard_float_multiplier.version_guid. New native
+        capability flags distinguish this extension; older plugins must not silently treat it as a module.
+        Require /Game package paths, never short names. baseline covers identity/selected version and
+        saved fields, not runtime eligibility. fields is the typed writer shape without decoded-mask
+        annotations. Read full spill JSON before editing. New native plugin required; no asset changes.
+        """
+        return _authoring_call("read_niagara_authoring", dict(asset_path=asset_path, target=target,
+            emitter_handle_id=emitter_handle_id, renderer_index=renderer_index, script_type=script_type, module_node_guid=module_node_guid,
+            parent_input_name=parent_input_name, function_node_guid=function_node_guid))
+
+    @mcp.tool()
+    def create_niagara_effect_type(ctx: Context, asset_path: str, dry_run: bool = True, save: bool = False) -> dict:
+        """Preview/create a new Niagara Effect Type, never overwrite any existing package.
+
+        Example: asset_path='/Game/__Dev/VFX/NET_Test'. Defaults dry_run=True/save=False.
+        Apply creates the exact NiagaraEffectType class, with created/modified/saved/dirty receipts.
+        New native plugin required. Timeout is unknown execution state; never retry creation blindly.
+        """
+        return _authoring_call("create_niagara_effect_type", dict(asset_path=asset_path, dry_run=dry_run, save=save))
+
+    @mcp.tool()
+    def set_niagara_scalability(ctx: Context, asset_path: str, expected_baseline: str,
+                               changes: list[dict] = None, target: str = "system",
+                               emitter_handle_id: str = "", renderer_index: int = -1,
+                               significance_handler: str = "", dry_run: bool = True, save: bool = False) -> dict:
+        """Preflight/apply typed saved Niagara scalability, with exact identity and dirty protection.
+
+        Example: asset_path='/Game/VFX/NS_Test', expected_baseline='<read_niagara_authoring baseline>',
+        changes=[{'field':'Platforms','value':{'QualityLevelMask':-29}}], target='emitter',
+        emitter_handle_id='<Handle GUID>'. Fields are limited to this layer's reader fields.
+        Struct objects merge supplied fields; arrays replace ordered COMPLETE saved rows from fields.
+        Preserve signed masks, profile three-state masks, conditions and inactive flags/values.
+        EffectType reference is an asset path or explicit null. Effect Type significance_handler may
+        be Age, Distance or None; empty preserves. No arbitrary classes or unknown fields.
+        Defaults dry_run=True/save=False. Preexisting dirty assets and stale identity/baseline refuse.
+        One transaction, compile validation, target-only optional save; failures retain actual after,
+        modified/saved. No global quality/Profile changes, effective-rule resolver or automatic retries.
+        """
+        return _authoring_call("set_niagara_scalability", dict(asset_path=asset_path, expected_baseline=expected_baseline,
+            changes=[] if changes is None else changes, target=target, emitter_handle_id=emitter_handle_id,
+            renderer_index=renderer_index, significance_handler=significance_handler, dry_run=dry_run, save=save))
+
+    @mcp.tool()
+    def save_niagara_authoring(ctx: Context, asset_path: str, expected_baseline: str, target: str = "system",
+                              emitter_handle_id: str = "", renderer_index: int = -1) -> dict:
+        """Explicitly save an approved Niagara draft after exact-target baseline and compile validation.
+
+        Example: asset_path='/Game/VFX/NS_Test', expected_baseline='<fresh authoring read baseline>'.
+        This saves the WHOLE target package, including current approved draft edits; not Save All.
+        Read/review the draft first. Stale baseline/identity refuses; compile/save failures remain
+        unsaved truthfully. Updated native plugin required; timeout is unknown and is never retried.
+        """
+        return _authoring_call("save_niagara_authoring", dict(asset_path=asset_path, expected_baseline=expected_baseline,
+            target=target, emitter_handle_id=emitter_handle_id, renderer_index=renderer_index))
+
+    @mcp.tool()
+    def set_niagara_user_parameters(ctx: Context, asset_path: str, expected_baseline: str,
+                                   parameters: list[dict], dry_run: bool = True, save: bool = False) -> dict:
+        """Preflight/declare/update NS User defaults, not a component instance's playback values.
+
+        Example: parameters=[{'name':'User.Brightness','type':'float','value':1.0},
+        {'name':'User.Tint','type':'color','value':[1,1,1,1]}], asset_path='/Game/VFX/NS_Test',
+        expected_baseline='<fresh target=system authoring baseline>'. Types float/int/bool/color.
+        Color is linear HDR [r,g,b,a]. Duplicate names, mismatched existing types and invalid values
+        reject the complete batch. Same type/value is no-op; unspecified parameters are preserved.
+        Defaults dry_run=True/save=False; dirty/stale rejects, Undo and target-only save supported.
+        Declarations alone do not bind module inputs or guarantee visible consumption. New native
+        plugin required; no automatic retry, gameplay/Notify edits or shared MI changes.
+        """
+        return _authoring_call("set_niagara_user_parameters", dict(asset_path=asset_path, target="system",
+            expected_baseline=expected_baseline, parameters=parameters, dry_run=dry_run, save=save))
+
+    @mcp.tool()
+    def bind_niagara_module_input(ctx: Context, asset_path: str, emitter_handle_id: str,
+                                 script_type: str, module_node_guid: str, expected_baseline: str,
+                                 input_name: str, user_parameter: str, dry_run: bool = True, save: bool = False) -> dict:
+        """Link an exact module input to a declared type-compatible User variable without replacing complex overrides.
+
+        Example: asset_path='/Game/VFX/NS_Test', emitter_handle_id='<Handle GUID>', script_type='emitter_update',
+        module_node_guid='<read node GUID>', expected_baseline='<target=module authoring baseline>',
+        input_name='Module.SpawnRate', user_parameter='User.Rate'. Canonical input names come from
+        the authoring reader; no name/first-node fallback or latest-version upgrade. Rejects stale
+        graph/version, static/object inputs, missing/wrong-type User variables and any existing
+        different linked/dynamic/expression override. Existing same User link is no-op. Converted
+        Local rapid constant is removed only on apply. Defaults dry_run=True/save=False, dirty
+        protection, transaction, compile/save/actual readback receipts; timeout is unknown, no retry.
+        """
+        return _authoring_call("bind_niagara_module_input", dict(asset_path=asset_path, target="module",
+            emitter_handle_id=emitter_handle_id, script_type=script_type, module_node_guid=module_node_guid,
+            expected_baseline=expected_baseline, input_name=input_name, user_parameter=user_parameter, dry_run=dry_run, save=save))
+
+    @mcp.tool()
+    def redirect_niagara_user_link(ctx: Context, asset_path: str, emitter_handle_id: str,
+                                  script_type: str, module_node_guid: str, expected_baseline: str,
+                                  input_name: str, expected_linked_parameter: str, user_parameter: str,
+                                  dry_run: bool = True, save: bool = False) -> dict:
+        """Explicitly redirect one existing simple same-type User link; never remove old declarations or consumers.
+
+        Example: input_name='Module.Color', expected_linked_parameter='User.Custom Color',
+        user_parameter='User.Star Color', plus exact System/Handle/phase/node and fresh module baseline.
+        Both User declarations must exist with the exact input type. The old input must have one
+        same-graph ParameterMapGet User source matching the expected name; curve/dynamic/expression
+        replacement, missing/wrong old link, dirty/stale/type changes refuse before mutation.
+        One edge is redirected; old nodes/variables/other users retained. Same desired link with
+        a current expected old name is no-op. Defaults dry_run=True/save=False, Undo and truthful
+        compile/save/readback receipts. This new operation is the explicit opt-in; the old bind
+        operation still refuses different existing links. Updated native required; never retry writes.
+        """
+        return _authoring_call("redirect_niagara_user_link", dict(asset_path=asset_path, target="module",
+            emitter_handle_id=emitter_handle_id, script_type=script_type, module_node_guid=module_node_guid,
+            expected_baseline=expected_baseline, input_name=input_name, expected_linked_parameter=expected_linked_parameter,
+            user_parameter=user_parameter, dry_run=dry_run, save=save))
+
+    @mcp.tool()
+    def bind_niagara_dynamic_input(ctx: Context, asset_path: str, emitter_handle_id: str,
+                                   script_type: str, module_node_guid: str, parent_input_name: str,
+                                   function_node_guid: str, expected_baseline: str, input_name: str,
+                                   user_parameter: str, dry_run: bool = True, save: bool = False) -> dict:
+        """Bind a canonical typed child input of an exact dynamic function to an existing compatible User variable.
+
+        Example: parent_input_name='Module.Scale Factor', function_node_guid='<VectorFromFloat GUID>',
+        input_name='<canonical Float child from read_niagara_authoring target=dynamic_input>',
+        user_parameter='User.Size'. Exact parent System/Handle/phase/module and selected function
+        chain baseline required. Function must be reachable from that parent's saved override chain;
+        no short-name/latest-version fallback. Static/object/DI and existing different linked/dynamic/
+        curve/expression inputs refuse. Same User link is no-op; defaults dry_run=True/save=False.
+        Does not replace the surrounding curve or promise whole-effect scale behavior. New native
+        capability required; Undo, dirty/stale checks and truthful failure receipts, no write retries.
+        """
+        return _authoring_call("bind_niagara_dynamic_input", dict(asset_path=asset_path, target="dynamic_input",
+            emitter_handle_id=emitter_handle_id, script_type=script_type, module_node_guid=module_node_guid,
+            parent_input_name=parent_input_name, function_node_guid=function_node_guid, expected_baseline=expected_baseline,
+            input_name=input_name, user_parameter=user_parameter, dry_run=dry_run, save=save))
+
+    @mcp.tool()
+    def multiply_niagara_float_input(ctx: Context, asset_path: str, emitter_handle_id: str,
+                                     script_type: str, module_node_guid: str, expected_baseline: str,
+                                     input_name: str, user_parameter: str, expected_source_node_guid: str,
+                                     expected_source_pin_id: str, multiplier_version_guid: str,
+                                     target: str = "module", parent_input_name: str = "", function_node_guid: str = "",
+                                     dry_run: bool = True, save: bool = False) -> dict:
+        """Wrap an existing dynamic Float result as preserved_result * User.Float without deleting its curve chain.
+
+        Example: target='dynamic_input', parent_input_name='Module.Scale Factor', function_node_guid='<function GUID>',
+        input_name='<canonical scalar child>', user_parameter='User.Size', plus exact parent identity,
+        fresh target baseline, expected source node/pin and standard_float_multiplier.version_guid from
+        authoring read. Float only; no vector/color/DI/expression replacement. Uses the exact standard
+        Multiply_Float script version and a dedicated ParameterMapSet, preserving old source node,
+        curve keys/tangents/version and other consumers. Same wrapper/User/version is no-op; different
+        existing wrappers refuse nesting. Set User default to1 for original result equivalence; no
+        global quality/profile changes or whole-effect scale guarantees. Defaults dry_run=True/save=False;
+        dirty/stale guards, Undo, actual compiled/saved/after receipts, new native required, no retries.
+        """
+        return _authoring_call("multiply_niagara_float_input", dict(asset_path=asset_path, target=target,
+            emitter_handle_id=emitter_handle_id, script_type=script_type, module_node_guid=module_node_guid,
+            parent_input_name=parent_input_name, function_node_guid=function_node_guid, expected_baseline=expected_baseline,
+            input_name=input_name, user_parameter=user_parameter, expected_source_node_guid=expected_source_node_guid,
+            expected_source_pin_id=expected_source_pin_id, multiplier_version_guid=multiplier_version_guid, dry_run=dry_run, save=save))
+
+    @mcp.tool()
+    def set_niagara_material_bindings(ctx: Context, asset_path: str, emitter_handle_id: str, renderer_index: int,
+                                    expected_baseline: str, bindings: list[dict], dry_run: bool = True, save: bool = False) -> dict:
+        """Patch Renderer User-to-material AttributeBindings, preserving other bindings and constants.
+
+        Example: bindings=[{'material_parameter':'Brightness','user_parameter':'User.Brightness'},
+        {'material_parameter':'Tint','user_parameter':'User.Tint'}], asset_path='/Game/VFX/NS_Test',
+        emitter_handle_id='<Handle GUID>', renderer_index=0, expected_baseline='<target=renderer baseline>'.
+        Supports declared User Float->Scalar and Color->Vector only. All saved base materials must
+        expose a unique compatible global parameter; missing/wrong/ambiguous names and conflicts
+        with preserved constants reject the batch before modification. Exact source slot/path/version
+        baseline; disabled renderers not filtered. No DynamicParameter-channel or shared MI edits.
+        Engine bindings cause per-instance MID processing, not proof of runtime or visual appearance.
+        Defaults dry_run=True/save=False, dirty/stale protection, Undo, compile/save truthful receipts.
+        """
+        return _authoring_call("set_niagara_material_bindings", dict(asset_path=asset_path, target="renderer",
+            emitter_handle_id=emitter_handle_id, renderer_index=renderer_index, expected_baseline=expected_baseline,
+            bindings=bindings, dry_run=dry_run, save=save))
 
     def _map_asset_path(asset_full_path: str, name_key: str = "system_name") -> dict:
         """Route asset_full_path to the correct C++ JSON key ('path' or name_key)."""

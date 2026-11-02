@@ -1,6 +1,7 @@
 #include "Commands/UnrealMCPNiagaraCommands.h"
 #include "Commands/UnrealMCPCommonUtils.h"
 #include "Commands/UnrealMCPNiagaraScalability.h"
+#include "Commands/UnrealMCPNiagaraAuthoring.h"
 
 // Niagara includes
 #include "NiagaraSystem.h"
@@ -202,6 +203,16 @@ FUnrealMCPNiagaraCommands::FUnrealMCPNiagaraCommands()
 
 TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleCommand(const FString& CommandType, const TSharedPtr<FJsonObject>& Params)
 {
+	if (CommandType == TEXT("read_niagara_authoring")) return UnrealMCPNiagaraAuthoring::Read(Params);
+	if (CommandType == TEXT("create_niagara_effect_type")) return UnrealMCPNiagaraAuthoring::CreateEffectType(Params);
+	if (CommandType == TEXT("set_niagara_scalability")) return UnrealMCPNiagaraAuthoring::WriteScalability(Params);
+	if (CommandType == TEXT("save_niagara_authoring")) return UnrealMCPNiagaraAuthoring::SaveDraft(Params);
+	if (CommandType == TEXT("set_niagara_user_parameters")) return UnrealMCPNiagaraAuthoring::SetUserParameters(Params);
+	if (CommandType == TEXT("bind_niagara_module_input")) return UnrealMCPNiagaraAuthoring::BindUserInput(Params);
+	if (CommandType == TEXT("redirect_niagara_user_link")) return UnrealMCPNiagaraAuthoring::RedirectUserInput(Params);
+	if (CommandType == TEXT("bind_niagara_dynamic_input")) return UnrealMCPNiagaraAuthoring::BindDynamicUserInput(Params);
+	if (CommandType == TEXT("multiply_niagara_float_input")) return UnrealMCPNiagaraAuthoring::MultiplyFloatInput(Params);
+	if (CommandType == TEXT("set_niagara_material_bindings")) return UnrealMCPNiagaraAuthoring::SetMaterialBindings(Params);
 	if (CommandType == TEXT("read_niagara_effect_type")) return UnrealMCPNiagaraScalability::ReadEffectTypeAsset(Params);
 	if (CommandType == TEXT("list_niagara_systems"))
 	{
@@ -671,6 +682,7 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleReadNiagaraSystem(const
 				RendObj->SetNumberField(TEXT("renderer_index"), Index);
 				RendObj->SetStringField(TEXT("object_path"), Renderer->GetPathName());
 				RendObj->SetObjectField(TEXT("scalability"), UnrealMCPNiagaraScalability::Renderer(Renderer));
+				RendObj->SetObjectField(TEXT("material_parameters"), UnrealMCPNiagaraAuthoring::ReadMaterialParameters(Renderer));
 
 				// Base-class fields common to every renderer type
 				AddNiagaraRendererProp(RendObj, Renderer, TEXT("motion_vector_setting"), TEXT("MotionVectorSetting"));

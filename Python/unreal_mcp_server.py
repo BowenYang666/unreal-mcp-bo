@@ -358,6 +358,7 @@ register_scene_tools(mcp)
 _read_only = os.environ.get("UNREAL_MCP_READ_ONLY", "").strip() in ("1", "true", "yes")
 
 _READ_ONLY_TOOLS = {
+    "read_niagara_authoring",
     "read_string_table",
     "get_editor_context", "list_scene_actors", "inspect_scene_target",
     "get_scene_mesh", "get_scene_viewport", "get_scene_task_status",
@@ -454,6 +455,9 @@ _CATEGORY_TOOLS = {
         "add_custom_hlsl_expression", "set_expression_position",
     },
     "niagara": {
+        "read_niagara_authoring", "create_niagara_effect_type", "set_niagara_scalability", "save_niagara_authoring",
+        "set_niagara_user_parameters", "bind_niagara_module_input", "set_niagara_material_bindings",
+        "redirect_niagara_user_link", "bind_niagara_dynamic_input", "multiply_niagara_float_input",
         "read_niagara_effect_type",
         "list_niagara_systems", "read_niagara_system", "set_niagara_parameter",
         "get_niagara_parameters", "create_niagara_system", "set_niagara_rapid_parameter",
@@ -526,13 +530,13 @@ def info():
     return """
         # Unreal MCP Server Guidance
 
-        There are 148 internal operations. Default grouped mode exposes 74 tools
+        There are 158 internal operations. Default grouped mode exposes 74 tools
         before filtering: Material, Niagara, UMG and Scene each expose <category>_search,
         <category>_call_read and <category>_call_write. Other categories stay direct.
         Search by keywords or browse with an empty query, then search by exact tool
         name for its full schema. Call the indicated read/write endpoint with tool
         and arguments. Reuse the contract for subsequent calls; do not guess names.
-        MCP_TOOL_MODE=direct exposes all 148 operations directly after reconnecting.
+        MCP_TOOL_MODE=direct exposes all 158 operations directly after reconnecting.
         Read-only/category filters apply in both modes; search never contacts UE.
 
         Core categories: Asset, Actor/Editor, Blueprint, Blueprint Node,

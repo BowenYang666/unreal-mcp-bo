@@ -150,7 +150,7 @@ class GroupedServerTests(unittest.IsolatedAsyncioTestCase):
         grouped = self.load_server()
         direct_tools = await direct.mcp.list_tools()
         grouped_tools = await grouped.mcp.list_tools()
-        self.assertEqual(len(direct_tools), 148)
+        self.assertEqual(len(direct_tools), 158)
         self.assertEqual(len(grouped_tools), 74)
         self.assertEqual(set().union(*direct._CATEGORY_TOOLS.values()), {tool.name for tool in direct_tools})
         size = lambda tools: len(json.dumps([tool.model_dump(exclude_none=True) for tool in tools]))
@@ -168,7 +168,7 @@ class GroupedServerTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(contract["effect"], expected_effect)
 
     async def test_readonly_and_disabled_categories(self):
-        self.assertEqual(len(await self.load_server("direct", True).mcp.list_tools()), 44)
+        self.assertEqual(len(await self.load_server("direct", True).mcp.list_tools()), 45)
         readonly = self.load_server(read_only=True)
         self.assertEqual(len(await readonly.mcp.list_tools()), 31)
         for category in ("material", "niagara", "umg", "scene"):

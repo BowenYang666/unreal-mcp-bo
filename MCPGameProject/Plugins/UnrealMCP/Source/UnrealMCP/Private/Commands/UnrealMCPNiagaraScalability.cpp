@@ -9,6 +9,7 @@
 #include "EditorAssetLibrary.h"
 #include "Curves/CurveFloat.h"
 #include "UObject/UnrealType.h"
+#include "UObject/TextProperty.h"
 #include "UObject/StructOnScope.h"
 #include "DeviceProfiles/DeviceProfileManager.h"
 #include "DeviceProfiles/DeviceProfile.h"
@@ -301,6 +302,32 @@ namespace UnrealMCPNiagaraScalability
 
 #if WITH_DEV_AUTOMATION_TESTS
 #include "Misc/AutomationTest.h"
+#include "Commands/UnrealMCPAssetProperties.h"
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMCPNiagaraAuthoringCodecTest, "UnrealMCP.Niagara.Authoring.TypedFields",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMCPNiagaraAuthoringCodecTest::RunTest(const FString& Parameters)
+{
+    FNiagaraPlatformSet Original(-1);
+    FNiagaraPlatformSet Proposed = Original;
+    auto* Property = FNiagaraPlatformSet::StaticStruct()->FindPropertyByName(TEXT("QualityLevelMask"));
+    if (!TestNotNull(TEXT("Native signed mask field"), Property)) return false;
+    FString Error;
+    TestTrue(TEXT("Signed mask typed decode"), UnrealMCPAssetProperties::DecodeValue(Property,
+        Property->ContainerPtrToValuePtr<void>(&Proposed), MakeShared<FJsonValueNumber>(-29), Error));
+    TestEqual(TEXT("Negative mask preserved"), Proposed.QualityLevelMask, -29);
+    TestEqual(TEXT("Original remains untouched"), Original.QualityLevelMask, -1);
+    for (const auto& Invalid : TArray<TSharedPtr<FJsonValue>>{MakeShared<FJsonValueNumber>(2147483648.0),
+        MakeShared<FJsonValueNumber>(0.5), MakeShared<FJsonValueString>(TEXT("-29")), MakeShared<FJsonValueBoolean>(false)})
+    {
+        Error.Reset();
+        TestFalse(TEXT("Invalid mask rejected"), UnrealMCPAssetProperties::DecodeValue(Property,
+            Property->ContainerPtrToValuePtr<void>(&Proposed), Invalid, Error));
+        TestEqual(TEXT("Rejected value leaves proposal unchanged"), Proposed.QualityLevelMask, -29);
+    }
+    return !HasAnyErrors();
+}
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMCPNiagaraPlatformReadTest, "UnrealMCP.Niagara.Scalability.Platforms",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
