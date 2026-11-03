@@ -8,7 +8,21 @@
 #include "NiagaraSystem.h"
 #include "Sound/SoundBase.h"
 #include "Materials/MaterialInterface.h"
+#include "Animation/AnimNotifies/AnimNotify.h"
 #include "MCPAssetPropertyTestTypes.generated.h"
+
+UCLASS(NotBlueprintable, Hidden, meta=(MCPAnimationNotifyAuthoringSafe="true"))
+class UMCPAnimationTestNotify : public UAnimNotify
+{
+    GENERATED_BODY()
+public:
+    UMCPAnimationTestNotify() { bIsNativeBranchingPoint = true; bShouldFireInEditor = false; }
+    static inline int32 CallCount = 0;
+    static inline int32 LastMontageInstance = INDEX_NONE;
+    static inline const UAnimSequenceBase* LastAnimation = nullptr;
+    virtual void BranchingPointNotify(FBranchingPointNotifyPayload& Payload) override
+    { ++CallCount; LastMontageInstance = Payload.MontageInstanceID; LastAnimation = Payload.SequenceAsset; }
+};
 
 USTRUCT()
 struct FMCPAssetPropertyTestStats

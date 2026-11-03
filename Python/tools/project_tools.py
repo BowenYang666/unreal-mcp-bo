@@ -63,8 +63,104 @@ def call_enhanced_input_command(command: str, params: dict) -> dict:
                 spilled[key] = result[key]
     return spilled
 
+def call_animation_command(command: str, params: dict) -> dict:
+    """Preserve complete animation scopes and truthful failure receipts, including overflow."""
+    from unreal_mcp_server import spill_if_oversized
+    from uuid import uuid4
+
+    result = call_asset_command(command, params)
+    metadata = ("success", "animation_contract", "complete", "baseline", "asset_path", "notify_count",
+                "dry_run", "would_modify", "modified", "saved", "package_dirty", "stage", "error",
+                "event_guid", "unsupported_count", "existing_data_preserved", "target_compilation_complete")
+    spilled = spill_if_oversized(result, command, uuid4().hex, preview_keys=metadata,
+        hint="Review the complete animation snapshot/receipt file. Timeout means UNKNOWN execution state; never blindly retry writes.")
+    if spilled is not result and spilled.get("overflow"):
+        spilled["success"] = result.get("success", False)
+        for key in metadata:
+            if key in result:
+                spilled[key] = result[key]
+    return spilled
+
 def register_project_tools(mcp: FastMCP):
     """Register project tools with the MCP server."""
+
+    @mcp.tool()
+    def read_animation_asset(ctx: Context, asset_path: str) -> dict:
+        """Read a saved AnimSequence/AnimMontage authoring scope, never play, dirty or save it.
+
+        Example: asset_path='/Game/Animations/AM_Attack'. Exact /Game package path.
+        Returns animation_contract=1, Skeleton, length/rate, Sequence Additive fields,
+        sampling/source-data identity, Montage ordered slots/segments/sections/blends,
+        ordered tracks/events with GUID, time/offset/link/filter settings and native
+        Notify/NotifyState class/path/outer/typed fields. Stored MontageTickType and
+        effective native-forced BranchingPoint are distinct. Not a raw animation export.
+        Unsupported/custom/unbounded fields explicitly mark complete=False/baseline=null;
+        never assume missing Notifies means empty. Read overflow.file_path in full.
+        Requires matching native plugin; Python discovery is not deployment.
+        """
+        return call_animation_command("read_animation_asset", {"asset_path": asset_path})
+
+    @mcp.tool()
+    def set_anim_sequence_additive(ctx: Context, asset_path: str, expected_baseline: str,
+                                   settings: dict, dry_run: bool = True, save: bool = False) -> dict:
+        """Preview/patch only four confirmed Additive fields of an existing AnimSequence.
+
+        Example: asset_path='/Game/Animations/A_Recoil', expected_baseline=<complete read>,
+        settings={'AdditiveAnimType':'AAT_LocalSpaceBase','RefPoseType':'ABPT_LocalAnimFrame',
+                  'RefPoseSeq':None,'RefFrameIndex':0}. This does NOT choose frame0 as
+        an artistically correct neutral pose. Only these native field names accepted;
+        omitted fields are retained and the merged combination is validated. Reference
+        path is an exact /Game Sequence or null; external references must be saved,
+        non-additive, same Skeleton and not self. Invalid enums/frame ranges/combinations,
+        dirty/stale/incomplete targets and busy compilation refuse before mutation.
+        One Undo transaction, proper native property/derived-data update and target-only
+        compilation wait; preserves source data, notifications and other settings.
+        Default preview/no save. Optional save=True saves ONLY this target after full
+        readback. Save failure can leave applied changes; inspect before/proposed/after,
+        modified/saved/package_dirty/stage. Timeout is unknown; no retry or Save All.
+        No import, retarget, Skeleton edits or arbitrary UObject property writer.
+        """
+        return call_animation_command("set_anim_sequence_additive", dict(asset_path=asset_path,
+            expected_baseline=expected_baseline, settings=settings, dry_run=dry_run, save=save))
+
+    @mcp.tool()
+    def add_montage_native_notify(ctx: Context, asset_path: str, expected_baseline: str,
+                                  notify_class: str, event_guid: str, time_seconds: float,
+                                  track: dict, tick_type: str,
+                                  event_settings: dict = None, dry_run: bool = True, save: bool = False) -> dict:
+        """Preview/add one opted-in native Notify to an existing Montage without replacing old events.
+
+        Example: asset_path='/Game/Animations/AM_Attack', expected_baseline=<complete read>,
+        notify_class='/Script/MyGame.AnimNotify_Release', event_guid=<new hyphenated UUID>,
+        time_seconds=0.5, track={'index':0,'name':'1'}, tick_type='BranchingPoint'.
+        The class MUST already be loaded/native/nonabstract, have C++ class metadata
+        MCPAnimationNotifyAuthoringSafe='true', and no extra saved fields beyond UAnimNotify.
+        This native-author opt-in is the finite allowlist extension mechanism, not permission
+        to load arbitrary classes or execute Blueprint logic. Project class/time decisions
+        must come from the author, not inferred sound timestamps. No fictional class fallback.
+        event_guid is the explicit proposed stored native event identity; generate once,
+        keep it, and read back after apply. Existing/missing/ambiguous GUIDs reject explicitly,
+        NOT class/time deduplication. Repeated GUID requests never add a second marker.
+        Exact existing track={'index':int,'name':str} required; time is finite in [0,length). Queued or
+        BranchingPoint required explicitly; native-forced BranchingPoint cannot be Queued.
+        event_settings only accepts TriggerWeightThreshold, NotifyTriggerChance,
+        NotifyFilterType, NotifyFilterLOD, bCanBeFilteredViaRequest, bTriggerOnDedicatedServer,
+        bTriggerOnFollower. No NotifyState/Blueprint/custom object-field writer or track creation.
+        Preview reads CDO only, creates no Notify; proposed object path is pending apply.
+        Apply uses one transaction/native linking/cache updates and verifies all existing
+        GUIDs, child settings/ownership, slot/segment/section/blend data and relative order.
+        Default dry_run=True/save=False; target-only optional save. Dirty/stale/incomplete,
+        busy compilation, invalid classes/settings/order changes refuse. Inspect actual
+        after/modified/saved/stage; failures can leave a draft, timeout means UNKNOWN.
+        No auto-retry, playback/PIE, runtime injection, CDO mutation or gameplay execution.
+        """
+        if set(track) != {"index", "name"} or type(track["index"]) is not int or not isinstance(track["name"], str):
+            return {"success": False, "modified": False, "saved": False, "stage": "preflight",
+                "error": "track requires exactly an integer index and string name"}
+        return call_animation_command("add_montage_native_notify", dict(asset_path=asset_path,
+            expected_baseline=expected_baseline, notify_class=notify_class, event_guid=event_guid,
+            time_seconds=time_seconds, track_index=track["index"], track_name=track["name"], tick_type=tick_type,
+            event_settings={} if event_settings is None else event_settings, dry_run=dry_run, save=save))
 
     @mcp.tool()
     def read_input_mapping_context(ctx: Context, asset_path: str) -> dict:

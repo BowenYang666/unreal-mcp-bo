@@ -75,10 +75,10 @@ class DuplicateAssetTests(unittest.TestCase):
         environment = {key: value for key, value in os.environ.items()
                        if key != "UNREAL_MCP_READ_ONLY" and not (key.startswith("MCP_") and key.endswith("_ENABLED"))}
         for overrides, grouped_count, direct_count, exposed in (
-            ({}, 76, 160, True),
-            ({"UNREAL_MCP_READ_ONLY": "1"}, 32, 46, False),
+            ({}, 79, 163, True),
+            ({"UNREAL_MCP_READ_ONLY": "1"}, 33, 47, False),
             ({"MCP_ASSET_ENABLED": "0"}, 60, 144, False),
-            ({"MCP_EDITOR_ENABLED": "0"}, 58, 142, True),
+            ({"MCP_EDITOR_ENABLED": "0"}, 61, 145, True),
         ):
             for mode, expected_count in (("grouped", grouped_count), ("direct", direct_count)):
                 with self.subTest(overrides=overrides, mode=mode):

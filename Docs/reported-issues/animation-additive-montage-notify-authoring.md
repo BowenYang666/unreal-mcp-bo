@@ -1,6 +1,6 @@
 # AnimSequence Additive与Montage原生通知：受控读写能力缺口
 
-日期：2026-11-03。状态：**Open；NF现场catalog与实例读取确认，未实现／未验收修复。**
+日期：2026-11-03。状态：**有限专用合同已实现，已部署 SkillTest／NF；隔离作者验收与 NF 只读烟测通过，NF生产配置与游戏侧接入仍 Open。**
 来源：NodeFall UE5.7.4的T3 Cannon Lv0／A正式接入。
 [问题索引](README.md)
 
@@ -151,3 +151,126 @@ C:\Users\15208\.copilot\session-state\0c9ca56b-4750-4e5b-b4ee-9dfe98650c9b\files
 
 本报告是能力需求，不声称实现或部署已完成，也不授权新增任意通用写接口。
 NF的A蓄力能力、正式塔／GA／DA、数值及实战装配仍是独立未完成工作。
+
+## 7. 维护记录：2026-11-03 仓库实现与隔离验收
+
+本节为仓库实现时状态；后续双项目部署见第 8 节。
+
+以上保留 NF 原始现场事实。本节不代表原项目已加载新 DLL 或动画已经配置。
+用户授权实现后新增三个直接 Asset 工具，完整参数见 [Animation Assets](../Tools/project_tools.md#animation-assets)：
+
+- `read_animation_asset`：明确的 Sequence／Montage 作者 scope、Skeleton／源 DataModel 身份、
+  Additive／采样范围、Slot／Segments／Sections／Blend、轨道及通知有序行、GUID、Link／偏移／
+  概率与过滤、Notify／NotifyState 真实 class／path／outer／typed 字段。区分存储 TickType、
+  native 强制标志和 effective BranchingPoint。不支持／有界／非有限数据明确 incomplete，
+  baseline=null；不是原始骨曲线导出或任意动画对象重建器。
+- `set_anim_sequence_additive`：仅四字段 typed patch，合并组合预检；LocalAnimFrame 与 AnimFrame
+  分别检查目标／参考的真实 sampled keys。首版外部参考限非 Additive、同一个实际 Skeleton，
+  不做 compatible Skeleton／重定向推断。拒绝自引用、相关草稿、非法组合及引擎隐式夹帧／清引用。
+  一次事务、正式属性通知、目标派生数据完成、scope 读回核对后 target-only 可选保存。
+- `add_montage_native_notify`：单个已注册原生类，明确 `track={index,name}`、时间／TickType／
+  允许的事件字段、调用者新生成的 `event_guid`。GUID 直接成为实际事件身份；碰撞明确拒绝，
+  不按 class／时间合并合法事件。仅支持显式 C++ class metadata
+  `MCPAnimationNotifyAuthoringSafe="true"` 且无额外保存字段的 native UAnimNotify；
+  项目类需另行编译／opt-in，未替 NF 构造假类。引擎库创建正确 Outer 并处理 Link／偏移／缓存；
+  保留旧 GUID／子对象配置／相对顺序和整个时间轴 scope，排序会改旧顺序则预检拒绝。
+
+默认 dry-run／不保存，完整 baseline、dirty／并发内容保护，写前要求资产编译队列空闲；
+不完成无关资产编译，不保存无关用户草稿。完整 before／proposed／after、modified／saved／
+dirty／stage 及溢出文件保持真实。保存失败可留已应用草稿，超时未知，无自动重试。
+MCP 新参数为具体类型，未引入 Any／Optional／Union 参数；通用 DataAsset 限制和帧边界调度保留。
+
+**实际验收：**仓库 UE5.7.4 构建成功；公开轨道参数修正后的最终完整 Python 85 项回归通过，
+局部 21 项亦通过。原生 Read／Additive／Notify 明确 Success，独立进程指定根的 Reload Success。
+三键骨轨道绝对位移末帧 10，在确认的本地 Frame0 后实际引擎采样为 delta 8，冷压缩采样仍为 8；
+同 Skeleton 的 AnimFrame／AnimScaled 正例及非法 Frame／自引用／不同 Skeleton／脏相关依赖负例通过。
+带原 Sound／Niagara Socket／Scale／音量／引用的 Montage 增量保留、Undo／Redo、GUID 重复拒绝、
+类／轨道／时间负例与私有保存故障注入通过；FAnimMontageInstance 真正推进到分支点回调一次，
+验证正确 MontageInstanceID／源资产 Payload，不是手工调用 Notify 冒充运行。
+
+最终原生夹具：
+`/Game/__Dev/Animation_C56C7521402A3DD88DEE7A802010873B` 与
+`/Game/__Dev/AnimationNotify_DF3277224F0678CB4E4239A3F017038F`。
+日志：仓库工程 `Saved/Logs/Animation-Matrix-Final.log`、`Animation-Cold-Final.log`。
+无根 Reload 的默认跳过不计冷读证据。
+
+真实公开 stdio→TCP 通过仓库工程临时 13092，在新 `__Dev` 副本读取、预览、真实保存参考帧 patch／
+Notify 增量，验证非法帧、stale、Additive no-op、重复 GUID 拒绝及完整复读。来源 scope 未变，
+续作前后来源／Config 文件 hash 一致，结束零脏包并正常关闭测试编辑器。
+完整回执位于仓库工程
+`Saved/AnimationPublic/073504cd7bbb44f6b79e0097f460ebcc/receipt.json`。
+
+**失败与修正证据保留：**早期测试骨架 modifier 生命周期导致缓存未完成，复制动态 Montage 的
+保存夹具长度需通过正式 API 同步；空 SoundWave 不是有效音频验收，改用引擎现成有效 Sound。
+冷加载姿态要先等待目标加载触发的异步压缩，未以旧／零姿态替代验收。
+公开调用首次在 FastMCP 顶层 JSON 预解析处把轨道名 `"1"` 转成整数，native Notify 尚未调用；
+改为嵌套轨道身份并新增真实 Tool.run 验证后，从已保存 Additive 副本继续未执行的 Notify 步骤，
+未重放已经成功的写入。原失败／原始响应仍保留，不把它们误记为生产保存故障。
+
+**未执行／未授权：**不部署／重启／查询 NF 或 SkillTest，不修改生产 Sequence／Montage／Skeleton，
+不增加项目 commandlet 或运行时注入；未 commit／push 本轮实现。
+插件测试 marker 不是 Cannon 实现。NF 释放类、精确 Gameplay 时点、唯一炮弹释放、枪口／目标快照／
+冷却和 T3 建造／战斗接入仍由 NF 另行完成，不能以本工具验收关闭这些游戏工作项。
+
+## 8. 维护记录：2026-11-03 SkillTest／NF 部署
+
+用户明确要求部署两个项目后执行。保持共享 Python、既有 authoring／分类权限，
+未修改 `.mcp.json`／`.vscode/mcp.json`，未复制 Python 到目标工程。
+
+### SkillTest
+
+- 目标：`E:\04_UnrealProjects\UE5Test\SkillTest\SkillTest.uproject`，UE5.7.4。
+  原本关闭；备份 `Saved/UnrealMCPBackups/Animation_20261103_143737`。
+- SkillTest 尚无前轮 Enhanced Input，因此同时补其两份 helper 与依赖。
+  本轮精确复制 Animation／EnhancedInput 四份 cpp／h；Bridge、Build.cs、uplugin、
+  既有测试类型 header 仅加预期路由／依赖／原生 marker，去除新增文本后完全匹配备份。
+- 首次构建被终端中断，批处理 Y/N 按用户回答 Y 结束；不记为源码失败或通过。
+  确认无残留 UBT 后仅重跑构建，`SkillTestEditor Win64 Development` 明确 Success，355.15 秒。
+- 部署后动画 Read／Additive／Notify 与 EnhancedInput Read／Append 五项原生矩阵通过。
+  实际 delta 姿态、FAnimMontageInstance 回调／Payload、旧 Sound／Niagara、Undo／故障保护覆盖。
+  两个新进程明确指定根的独立 Reload 均通过，不计默认无根跳过。
+- 临时 GUI PID30316／13091 通过原 `.vscode` 配置的新公开 stdio 会话验证读／纯预览、
+  stale／非法类拒绝、IMC reader 和窄 BP_ThirdPersonCharacter 读取；前后零脏包。
+  验收后正常关闭，恢复原关闭状态；临时端口释放，默认配置仍 13090。
+- 9965 个非目标原文件 hash 一致；11 个新 Content 文件仅在隔离 `__Dev`，未修改原资源。
+  新文件来自原生验收夹具，不是 NF 生产迁移或业务配置。
+
+实际 SkillTest 夹具根：
+`/Game/__Dev/Animation_A89500FB4BA5F73E4A062F8E9D34E920`、
+`/Game/__Dev/AnimationNotify_8C8CA7AF4D17353907CCEA81DD383CFE`、
+`/Game/__Dev/EnhancedInput_1846DABA441CA6A22E30B2BB8C4CE3AC`。
+日志：SkillTest `Saved/Logs/Animation-Deployment-Matrix.log`／`Animation-Deployment-Cold.log`
+及对应 EnhancedInput 日志。公开回执和保护核对：
+`Saved/UnrealMCPDeployment/Animation_20261103_144055/receipt.json`、`guard-verification.json`。
+
+### NF
+
+- 目标：`C:\04_unrealProjects\NodeFall\NodeFall.uproject`，UE5.7.4。
+  最初 PID39808／13090、L_map01、Editor、零脏包。SkillTest 构建期间 NF 自行正常退出，
+  日志 14:48:39 明确 Exiting；本次未向 NF 发送 close/save 请求，未 force-kill。
+  后次只读预检因已关闭无响应，未把它当成功；以最新磁盘状态重新备份，保留期间用户改动。
+- 备份：`Saved/UnrealMCPBackups/Animation_20261103_150207`，5599 个保护原文件。
+  精确复制 Animation cpp／h，只在 NF Bridge／Build.cs／测试类型 header 加动画内容；
+  uplugin／既有 EnhancedInput 未替换，DirectoryWatcher、导航／Tag／其他本地定制保留。
+- 批处理终端结果不明确，改用引擎自带同一 dotnet／UBT；首次 up-to-date 不作为新 DLL 证明，
+  再清理仅目标插件输出，全量 35 actions 明确 Success，72.87 秒。
+  原生 `UnrealMCP.Animation.Read` 明确 Success，只用瞬态对象；未运行会创建生产项目夹具的作者测试。
+- 恢复 L_map01、Editor 模式、最大化／NoLiveCoding，新 PID39240／127.0.0.1:13090，保持打开。
+  PID 是本次有时间边界的证据，后续操作需重新核对。
+- NF 原 `.mcp.json` 新公开 stdio 会话实际发现 71 个工具；四个生产动画均 contract1／complete、
+  baseline 可用。Lv0 Sequence 仍 AAT_None／ABPT_None／Frame0，A Sequence 仍 LocalSpace／LocalFrame0；
+  两 Montage 仍各原有两通知，Blend 仍 0.03／0.25，全部作者快照复读一致。
+- 同设置 Additive dry-run 不改／不保存，stale apply/save 预检拒绝；Notify 非注册类预览拒绝，
+  未以测试 marker／声音时间选择生产释放事件。窄 BP_NFPlayerController list/read 通过，前后零脏包。
+- 文档前 5596 个非目标原文件 hash 一致，全部 4777 个 Content 文件名称／大小／时间及 hash 未变；
+  未创建 NF 测试资产、写生产动画或编辑其 Skeleton。仅另更新指定 AI 交接目录记录／索引。
+
+NF 原生日志：`Saved/Logs/Animation-Deployment-Read.log`；公开完整回执及保护证据：
+`Saved/UnrealMCPDeployment/Animation_553f666196864d0ab57f6ee2e5f8d703/receipt.json`、
+`guard-verification-before-docs.json`。
+
+**客户端与剩余边界：**两项目 Claude 都仍 Pending approval；用户须分别批准并重连，
+独立配置 stdio 验收不替代信任审批。SkillTest 再打开时须确认实际端口／项目身份，
+不能把它的默认 13090 客户端误连为当前 NF。VS Code 使用共享 Python 的客户端须刷新 schema。
+未管理目标 Git／ADO、未 commit／push。本次 NF 只读／预览证据不是 NF 实际写入、冷加载、
+Gameplay 释放类／发射时点或 T3 实战验收；这些业务配置仍需独立授权与项目侧验证。

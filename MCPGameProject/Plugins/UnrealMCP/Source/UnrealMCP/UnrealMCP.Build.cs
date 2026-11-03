@@ -51,6 +51,7 @@ public class UnrealMCP : ModuleRules
 				"UnrealEd",
 				"EditorScriptingUtilities",
 				"EnhancedInput",
+				"AnimationBlueprintLibrary",
 				"EditorSubsystem",
 				"Slate",
 				"SlateCore",

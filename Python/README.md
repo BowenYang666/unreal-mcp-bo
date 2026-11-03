@@ -28,12 +28,13 @@ uv --directory ./Python run python scripts/actors/test_cube.py
 
 ## Environment Controls
 
-- `MCP_TOOL_MODE=grouped` (default): expose Material/Niagara/UMG/Scene search/read/write entry points, 76 public tools before filtering. `direct` exposes all 160 operations directly. Scene's original names are internal in grouped mode; discover contracts through `scene_search`. See the [calling guide](../Docs/Tools/README.md#grouped-mode-default).
+- `MCP_TOOL_MODE=grouped` (default): expose Material/Niagara/UMG/Scene search/read/write entry points, 79 public tools before filtering. `direct` exposes all 163 operations directly. Scene's original names are internal in grouped mode; discover contracts through `scene_search`. See the [calling guide](../Docs/Tools/README.md#grouped-mode-default).
 - `MCP_SCENE_ENABLED`: controls 20 guarded scene operations. See [scene tools](../Docs/Tools/scene_tools.md) for identity, preview, task status and save constraints. Folder parameters require native `folder_contract=1`; temporary actor hiding requires `editor_visibility_contract=1`, not merely updated Python schemas.
 - `UNREAL_MCP_PORT`: native editor TCP port, default 13090. Match `-UnrealMCPPort=<port>` when running multiple editors. Host remains loopback.
 - `UNREAL_MCP_READ_ONLY=1`: expose only the current read-only whitelist.
 - `MCP_ASSET_ENABLED`: controls `rename_asset`, `move_asset`, `duplicate_asset`, `create_data_asset`, `create_physical_material`, `set_asset_properties` (DataAsset instances and allowlisted PhysicalMaterial fields), plus `plan_asset_migration`, `execute_asset_migration`, `get_asset_migration_status`, and `verify_asset_migration`. Read-only mode retains the three migration queries but removes execution. See the [dependency-copy workflow](../Docs/Tools/editor_tools.md#dependency-copy-workflow).
 - The Asset category also includes String Table tools and [Enhanced Input IMC tools](../Docs/Tools/project_tools.md#enhanced-input-assets): `read_input_mapping_context` and `append_input_mapping_context_mappings`. The reader is read-only; append defaults to dry-run/no save and requires a complete baseline. Updated native plugin required; Legacy `create_input_mapping` is not an IMC operation.
+- [Animation tools](../Docs/Tools/project_tools.md#animation-assets) are direct Asset operations: `read_animation_asset`, `set_anim_sequence_additive`, `add_montage_native_notify`. Only the reader survives read-only filtering. Writes require complete baselines, default preview/no save, and the matching new native plugin; the native Notify class must already be registered and explicitly opted in.
 - `MCP_EDITOR_ENABLED`, `MCP_BLUEPRINT_ENABLED`, `MCP_NODE_ENABLED`, `MCP_PROJECT_ENABLED`, `MCP_UMG_ENABLED`, `MCP_MATERIAL_ENABLED`, `MCP_NIAGARA_ENABLED`, `MCP_NAVIGATION_ENABLED`, `MCP_CASCADE_ENABLED`: set to `0`/`false`/`no`/`off` to disable a category.
 - `UNREAL_PROJECT_LOG`: default log file used by `get_editor_logs`.
 

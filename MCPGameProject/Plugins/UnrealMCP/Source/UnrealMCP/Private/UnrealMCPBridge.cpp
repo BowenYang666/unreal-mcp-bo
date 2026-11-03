@@ -2,6 +2,7 @@
 #include "Commands/UnrealMCPAssetMigration.h"
 #include "Commands/UnrealMCPStringTableCommands.h"
 #include "Commands/UnrealMCPEnhancedInputCommands.h"
+#include "Commands/UnrealMCPAnimationCommands.h"
 #include "Commands/UnrealMCPSceneCommands.h"
 #include "Commands/UnrealMCPSceneAssets.h"
 #include "Commands/UnrealMCPPhysicalMaterialCommands.h"
@@ -312,6 +313,9 @@ FString UUnrealMCPBridge::ExecuteCommandOnGameThread(const FString& CommandType,
                 ResultJson = MakeShareable(new FJsonObject);
                 ResultJson->SetStringField(TEXT("message"), TEXT("pong"));
             }
+            else if (CommandType == TEXT("read_animation_asset")) ResultJson = UnrealMCPAnimation::Read(Params);
+            else if (CommandType == TEXT("set_anim_sequence_additive")) ResultJson = UnrealMCPAnimation::SetAdditive(Params);
+            else if (CommandType == TEXT("add_montage_native_notify")) ResultJson = UnrealMCPAnimation::AddNotify(Params);
             else if (CommandType == TEXT("read_input_mapping_context")) ResultJson = UnrealMCPEnhancedInput::Read(Params);
             else if (CommandType == TEXT("append_input_mapping_context_mappings")) ResultJson = UnrealMCPEnhancedInput::Append(Params);
             else if (CommandType == TEXT("read_string_table") || CommandType == TEXT("create_string_table")
@@ -545,6 +549,7 @@ FString UUnrealMCPBridge::ExecuteCommandOnGameThread(const FString& CommandType,
                 ResponseJson->SetStringField(TEXT("error"), ErrorMessage);
                 if (NiagaraCommand || CommandType.Contains(TEXT("string_table")) || CommandType == TEXT("duplicate_asset") || CommandType == TEXT("set_material_instance_parameters")
                     || CommandType == TEXT("read_input_mapping_context") || CommandType == TEXT("append_input_mapping_context_mappings")
+                    || CommandType == TEXT("read_animation_asset") || CommandType == TEXT("set_anim_sequence_additive") || CommandType == TEXT("add_montage_native_notify")
                     || CommandType == TEXT("delete_material_expression") || CommandType == TEXT("add_emitter_to_system")
                     || CommandType == TEXT("reparent_widget") || CommandType == TEXT("set_widget_preview_settings") || CommandType == TEXT("get_widget_preview_settings")
                     || CommandType == TEXT("set_asset_properties") || CommandType == TEXT("create_data_asset")

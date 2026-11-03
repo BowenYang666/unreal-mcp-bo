@@ -17,6 +17,147 @@ do not create a second Legacy mapping as an Enhanced Input workaround.
 - `key` (string) - Key or axis to bind (e.g. "SpaceBar", "Gamepad_FaceButton_Bottom")
 - `input_type` (string, optional) - `"Action"` or `"Axis"` (default: `"Action"`)
 
+## Animation Assets
+
+Three direct **Asset** tools in both MCP modes. `MCP_ASSET_ENABLED=0` hides all
+three; read-only mode retains only `read_animation_asset`. Requires the matching
+native plugin, including the AnimationBlueprintLibrary module dependency.
+**Deployed to SkillTest and NF on 2026-11-03, UE5.7.4.** SkillTest's native
+isolated authoring/playback/cold tests and configured public smoke passed; NF's
+transient reader plus complete four-asset read/preview/refusal smoke passed
+without production writes. Python schema visibility alone does not update DLLs.
+
+### read_animation_asset
+
+Required: exact `/Game/...` package `asset_path` of an existing AnimSequence or
+AnimMontage (not derived assets, redirectors, object paths or Windows paths).
+Returns `animation_contract=1`, object/class path, Skeleton identity, length,
+RateScale, Sequence Additive fields/source DataModel GUID/sampling bounds, and
+Montage ordered slots/segments/sections/blend settings. This is a stored
+**authoring scope**, not a full raw animation reconstruction/export contract.
+
+`notify_tracks` retains native index/name/color. Ordered `notifies` retain index,
+GUID, exact track, authored/actual trigger/end times, offsets, link information,
+duration, filtering/probability/weight/dedicated-server/follower flags, and actual
+Notify/NotifyState class/path/outer/typed fields. Referenced Sound/Niagara assets
+are references, while the notify objects' own configuration is expanded.
+`MontageTickType` is stored data; `effective_branching_point` also considers the
+class's native forcing flag. Changing the stored field cannot override that flag.
+
+`complete=false` is explicit partial data, never an empty-notify inference;
+`baseline=null` prevents authoring. Unknown native child data without opt-in,
+unsupported map/set/static array/storage, nonfinite/lossy values and bounds are
+reported in `unsupported` (128 details max) with full `unsupported_count`.
+Bounds: 4096 array/events, 256 tracks/expanded child objects, 50000 reflected
+values, depth limits and bounded strings. The baseline includes the selected
+authoring scope, source/reference Sequence data identity and related Skeleton
+identity; it excludes transient/deprecated runtime caches and dirty flags.
+Indices are not stable event identities. Read full `overflow.file_path` before
+reviewing large snapshots; the file retains complete responses and failure flags.
+Reads do not play, scrub, dirty or save, and do not wait for global compilation.
+
+### set_anim_sequence_additive
+
+Required: `asset_path`, `expected_baseline`, `settings`. Optional:
+`dry_run=true`, `save=false`. Only these fields may be patched:
+`AdditiveAnimType`, `RefPoseType`, `RefPoseSeq`, `RefFrameIndex`.
+
+```json
+{
+  "asset_path": "/Game/Animations/A_Recoil",
+  "expected_baseline": "<complete reviewed baseline>",
+  "settings": {
+    "AdditiveAnimType": "AAT_LocalSpaceBase",
+    "RefPoseType": "ABPT_LocalAnimFrame",
+    "RefPoseSeq": null,
+    "RefFrameIndex": 0
+  }
+}
+```
+
+This example does not select an artistically correct neutral pose. The author
+must approve the strategy/frame/reference. Omitted fields are retained and the
+whole merged combination is validated. Enums use exact native symbolic names;
+`RefPoseSeq` is null or an existing saved non-additive `/Game` Sequence with the
+**same exact Skeleton** (not arbitrary compatible-skeleton/retarget resolution).
+Self references, dirty references/Skeleton, invalid ranges/combinations and
+implicit engine clamping/clearing refuse. LocalAnimFrame samples this Sequence;
+AnimFrame samples the reference; AnimScaled uses the reference's normalized time.
+Explicitly clear an obsolete reference instead of silently losing it.
+
+Preview creates no temporary animation and does not invalidate source caches.
+Apply uses one transaction, native property-change notifications and target-only
+derived-data completion, then full scope readback before optional target save.
+Source bone/curve data identity, existing events and unrelated selected settings
+are preserved. Same settings are a no-op, including with `save=true`.
+Writers conservatively require an idle asset compilation queue before starting;
+they do not finish unrelated assets. After `save=false`, explicitly review/save
+the draft separately; a later writer call refuses an already-dirty target.
+
+### add_montage_native_notify
+
+Required: `asset_path`, `expected_baseline`, `notify_class`, `event_guid`,
+`time_seconds`, `track`, `tick_type`. Optional: `event_settings={}`,
+`dry_run=true`, `save=false`.
+
+```json
+{
+  "asset_path": "/Game/Animations/AM_Attack",
+  "expected_baseline": "<complete reviewed baseline>",
+  "notify_class": "/Script/MyGame.AnimNotify_Release",
+  "event_guid": "aa7e2aaa-227a-4a2e-8ff1-4ad340e0a837",
+  "time_seconds": 0.5,
+  "track": {"index": 0, "name": "1"},
+  "tick_type": "BranchingPoint"
+}
+```
+
+The class path is an example, **not an existing NF class**. The project must
+compile/register its real native subclass first. The finite allowlist extension
+is explicit C++ class metadata `MCPAnimationNotifyAuthoringSafe="true"` on a
+nonabstract native UAnimNotify class with no additional saved fields beyond
+UAnimNotify. Native authors attest that no unreflected stored state is omitted.
+No arbitrary class load, Blueprint classes/construction/Notify execution, CDO
+mutation, NotifyState writer or generic instanced-object editor is offered.
+The plugin's MCPAnimationTestNotify is an editor test fixture, NOT a game release
+implementation or a class to integrate into NF. Typed custom-field support needs
+its own reviewed extension rather than adding arbitrary properties to this API.
+
+`track` is exactly `{index:int,name:str}` from the reader; duplicate names refuse,
+and tracks are never created. Grouping the identity preserves numeric-looking
+names such as `"1"` under the current MCP library's top-level JSON pre-parser.
+Time must fit the native float timeline in `[0,length)`, without implicit clamping.
+`tick_type` is explicitly `Queued` or `BranchingPoint`; a native-forced branching
+class refuses Queued. `event_settings` allows only TriggerWeightThreshold,
+NotifyTriggerChance, NotifyFilterType, NotifyFilterLOD, bCanBeFilteredViaRequest,
+bTriggerOnDedicatedServer and bTriggerOnFollower with typed/range validation.
+
+Generate a new hyphenated UUID once, review it in preview, and keep it for readback:
+`event_guid` becomes the actual stored event GUID. An existing GUID is explicitly
+**refused**, never replayed/no-op guessed from class/time; old missing/ambiguous
+GUIDs also refuse. Multiple legitimate events of the same class are not merged.
+Preview reads the existing CDO only and creates no child; `proposed.object_path`
+is pending, not a fictional saved instance. Apply uses the native library to
+create an owned transactional child, Link/offset/track/cache updates, applies
+the confirmed GUID/event fields, and verifies all prior events and their
+relative order/ownership/configuration plus slots/segments/sections/blends.
+If native sorting would reorder old events, preflight refuses rather than
+normalizing existing author data. Resulting indices may shift; use GUIDs.
+
+Both writers default to preview/no save, reject dirty/stale/incomplete targets,
+and save ONLY the reviewed target after readback. Inspect `before`, `proposed`,
+`after`, `modified`, `saved`, `package_dirty`, `stage` and complete spill files.
+Readback/save failure can leave applied changes, not rollback. Timeout means
+UNKNOWN execution state; no automatic retry, Save All, runtime injection, PIE,
+Skeleton changes, imports, retargeting or gameplay decisions.
+
+Verification: isolated native reader/Additive/Notify, actual delta pose sampling,
+FAnimMontageInstance branching dispatch/instance payload, old Sound/Niagara
+configuration, Undo/Redo, failure/negative paths and independent full cold load
+passed. Public stdio read/preview/save/refusal/no-op workflows passed on new
+repository __Dev copies. This does not validate NF's Cannon class, release time,
+muzzle/target snapshot/cooldown behavior or game integration.
+
 ## Enhanced Input Assets
 
 Two direct **Asset** tools in both MCP modes. `MCP_ASSET_ENABLED=0` hides both;
@@ -24,7 +165,8 @@ read-only mode keeps only `read_input_mapping_context`. Requires the matching
 native plugin and its EnhancedInput dependency. Repository UE5.7.4 native and
 public stdio acceptance passed. **Deployed to NF on 2026-11-02**: native reader,
 public complete read/default five-row preview/stale refusal and Blueprint smoke
-passed without saving NF mappings. SkillTest has not received this addition.
+passed without saving NF mappings in that deployment. SkillTest received this
+addition on 2026-11-03; native read/append/independent cold and public read passed.
 Python visibility is not proof that another editor supports it.
 
 ### read_input_mapping_context

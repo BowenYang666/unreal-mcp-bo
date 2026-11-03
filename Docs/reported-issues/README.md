@@ -1,6 +1,6 @@
 # 问题报告与修复汇总
 
-更新日期：2026-11-02。
+更新日期：2026-11-03。
 
 本文件汇总本目录的问题、修复、验证和遗留事项，作为代码提交与后续维护的统一入口。
 详细报告保留原始复现经过及当时状态；阅读时以各报告最新的维护记录和续作反馈为准，
@@ -19,6 +19,8 @@
 | [Niagara Scalability authoring #140](niagara-scalability-authoring.md) | 有限受控合同已实现并验收 SkillTest，已部署 NF，2026-11-01 | 创建、关联、分层 typed 规则、预检/草稿/编译保存；NF 只读/预检烟测通过，不包括任意上下文解析或业务画质方案 |
 | [Niagara 外观参数绑定 #141](niagara-vfx-appearance-parameter-binding.md) | 有限受控合同已实现并验收 SkillTest，已部署 NF，2026-11-01 | User 声明、精确 fresh/同值 Linked 绑定和 Float/Color 材质映射；SkillTest真实双MID接收通过，NF未试写，复杂override替换/全库视觉适配仍非目标 |
 | [Enhanced Input IMC配置缺口 #139](enhanced-input-mapping-authoring.md) | 有限合同已实现并验收，NF五行业务映射已保存，2026-11-02 | NF公开读写／非法Key与stale拒绝／重复no-op通过，54保护文件不变且用户草稿保留；本轮未重启NF冷读，CommonUI暂停路由与#139游戏接入仍Open |
+| [Animation Additive／Montage原生Notify](animation-additive-montage-notify-authoring.md) | 有限合同已实现并部署SkillTest／NF，2026-11-03 | SkillTest原生作者／实际姿态与回调／独立冷读通过；NF四动画完整读取／纯预览／拒绝烟测及生产保护通过，未写业务动画；生产类／发射时点／T3接入仍须NF验证 |
+| [Blueprint继承组件作者缺口](blueprint-inherited-component-authoring.md) | Open，2026-11-03；NF用户选择先补工具 | 能读cpp_inherited组件，但当前writer仅本地SCS／Actor直接CDO字段；缺Mesh／Anim Class的受控子BP默认组件作者合同，未试写生产T1／T2 |
 
 ## 1. Blueprint 折叠子图不可读
 

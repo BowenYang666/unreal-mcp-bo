@@ -358,6 +358,7 @@ register_scene_tools(mcp)
 _read_only = os.environ.get("UNREAL_MCP_READ_ONLY", "").strip() in ("1", "true", "yes")
 
 _READ_ONLY_TOOLS = {
+    "read_animation_asset",
     "read_input_mapping_context",
     "read_niagara_authoring",
     "read_string_table",
@@ -432,6 +433,7 @@ _CATEGORY_TOOLS = {
     },
     "cascade": {"read_cascade_system"},
     "asset": {
+        "read_animation_asset", "set_anim_sequence_additive", "add_montage_native_notify",
         "read_input_mapping_context", "append_input_mapping_context_mappings",
         "create_string_table", "read_string_table", "update_string_table_entries", "import_string_table_csv",
         "rename_asset", "move_asset", "duplicate_asset", "set_asset_properties", "create_data_asset", "create_physical_material",

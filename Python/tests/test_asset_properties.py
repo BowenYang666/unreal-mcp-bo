@@ -1,4 +1,5 @@
 import sys
+import asyncio
 import threading
 from concurrent.futures import ThreadPoolExecutor
 import unittest
@@ -87,6 +88,61 @@ class AssetPropertiesTests(unittest.TestCase):
                     for name in ("read_input_mapping_context", "append_input_mapping_context_mappings"):
                         self.assertEqual(tools.get_tool(name) is not None,
                             "asset" not in disabled and (not readonly or name.startswith("read")))
+
+    def test_animation_schemas_forwarding_and_partial_failure(self):
+        reader = self.tools.get_tool("read_animation_asset")
+        additive = self.tools.get_tool("set_anim_sequence_additive")
+        notify = self.tools.get_tool("add_montage_native_notify")
+        self.assertEqual(reader.parameters["required"], ["asset_path"])
+        self.assertEqual(additive.parameters["required"], ["asset_path", "expected_baseline", "settings"])
+        settings = {"AdditiveAnimType": "AAT_LocalSpaceBase", "RefPoseType": "ABPT_LocalAnimFrame", "RefPoseSeq": None, "RefFrameIndex": 0}
+        reader.fn(None, "/Game/A_Test")
+        self.connection.send_command.assert_called_with("read_animation_asset", {"asset_path": "/Game/A_Test"})
+        additive.fn(None, "/Game/A_Test", "baseline", settings)
+        self.connection.send_command.assert_called_with("set_anim_sequence_additive", {
+            "asset_path": "/Game/A_Test", "expected_baseline": "baseline", "settings": settings, "dry_run": True, "save": False})
+        arguments = dict(asset_path="/Game/AM_Test", expected_baseline="baseline", notify_class="/Script/Test.Release",
+            event_guid="aa7e2aaa-227a-4a2e-8ff1-4ad340e0a837", time_seconds=0.5, track={"index": 0, "name": "1"}, tick_type="BranchingPoint")
+        self.assertEqual(notify.parameters["required"], list(arguments))
+        asyncio.run(notify.run(arguments, context=Mock()))
+        self.connection.send_command.assert_called_with("add_montage_native_notify", {
+            **{key: value for key, value in arguments.items() if key != "track"}, "track_index": 0, "track_name": "1",
+            "event_settings": {}, "dry_run": True, "save": False})
+        self.connection.send_command.return_value = {"status": "error", "error": "Save failed", "result": {
+            "modified": True, "saved": False, "stage": "save", "package_dirty": True, "after": {"notify_count": 3}}}
+        result = notify.fn(None, **arguments, dry_run=False, save=True)
+        self.assertFalse(result["success"])
+        self.assertTrue(result["modified"])
+        self.assertFalse(result["saved"])
+        self.assertEqual(result["after"]["notify_count"], 3)
+        self.connection.reset_mock()
+        self.connection.send_command.side_effect = TimeoutError("timeout")
+        result = notify.fn(None, **arguments, dry_run=False)
+        self.assertEqual(result["stage"], "transport")
+        self.assertNotIn("modified", result)
+        self.assertNotIn("saved", result)
+        self.connection.send_command.assert_called_once()
+
+    def test_animation_overflow_and_permissions(self):
+        server = test_grouped_tools.GroupedServerTests().load_server()
+        module = sys.modules["unreal_mcp_server"]
+        with tempfile.TemporaryDirectory() as directory, patch("tempfile.gettempdir", return_value=directory), \
+                patch.object(module, "spill_if_oversized", server.spill_if_oversized):
+            payload = {"success": False, "modified": True, "saved": False, "stage": "readback", "animation_contract": 1,
+                "complete": False, "baseline": None, "unsupported_count": 222, "after": {"data": "x" * 26000}}
+            self.connection.send_command.return_value = {"status": "success", "result": payload}
+            result = self.tools.get_tool("read_animation_asset").fn(None, "/Game/AM_Test")
+            self.assertTrue(result["overflow"])
+            for key in payload.keys() - {"after"}:
+                self.assertEqual(result[key], payload[key])
+            self.assertEqual(json.loads(Path(result["file_path"]).read_text(encoding="utf-8")), payload)
+        fixture = test_grouped_tools.GroupedServerTests()
+        for mode in ("direct", "grouped"):
+            for readonly in (False, True):
+                for disabled in ((), ("asset",), ("project",)):
+                    tools = fixture.load_server(mode, readonly, disabled).mcp._tool_manager
+                    for name in ("read_animation_asset", "set_anim_sequence_additive", "add_montage_native_notify"):
+                        self.assertEqual(tools.get_tool(name) is not None, "asset" not in disabled and (not readonly or name.startswith("read")))
 
     def test_string_table_contracts_and_partial_receipts(self):
         path = "/Game/Data/Localization/Text/ST_UI_Status"
