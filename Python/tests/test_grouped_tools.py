@@ -150,8 +150,8 @@ class GroupedServerTests(unittest.IsolatedAsyncioTestCase):
         grouped = self.load_server()
         direct_tools = await direct.mcp.list_tools()
         grouped_tools = await grouped.mcp.list_tools()
-        self.assertEqual(len(direct_tools), 158)
-        self.assertEqual(len(grouped_tools), 74)
+        self.assertEqual(len(direct_tools), 160)
+        self.assertEqual(len(grouped_tools), 76)
         self.assertEqual(set().union(*direct._CATEGORY_TOOLS.values()), {tool.name for tool in direct_tools})
         size = lambda tools: len(json.dumps([tool.model_dump(exclude_none=True) for tool in tools]))
         self.assertLess(size(grouped_tools), size(direct_tools) * 0.5)
@@ -168,16 +168,16 @@ class GroupedServerTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(contract["effect"], expected_effect)
 
     async def test_readonly_and_disabled_categories(self):
-        self.assertEqual(len(await self.load_server("direct", True).mcp.list_tools()), 45)
+        self.assertEqual(len(await self.load_server("direct", True).mcp.list_tools()), 46)
         readonly = self.load_server(read_only=True)
-        self.assertEqual(len(await readonly.mcp.list_tools()), 31)
+        self.assertEqual(len(await readonly.mcp.list_tools()), 32)
         for category in ("material", "niagara", "umg", "scene"):
             self.assertIsNone(readonly.mcp._tool_manager.get_tool(f"{category}_call_write"))
             write_name = next(iter(readonly._CATEGORY_TOOLS[category] - readonly._READ_ONLY_TOOLS))
             with self.assertRaises(ToolError):
                 await readonly.mcp._tool_manager.get_tool(f"{category}_search").run({"tool": write_name})
         disabled = self.load_server(disabled=("material", "niagara", "umg"))
-        self.assertEqual(len(await disabled.mcp.list_tools()), 65)
+        self.assertEqual(len(await disabled.mcp.list_tools()), 67)
         for category in ("material", "niagara", "umg"):
             for suffix in ("search", "call_read", "call_write"):
                 self.assertIsNone(disabled.mcp._tool_manager.get_tool(f"{category}_{suffix}"))
@@ -303,7 +303,7 @@ class GroupedServerTests(unittest.IsolatedAsyncioTestCase):
         async with stdio_client(parameters) as (reader, writer):
             async with ClientSession(reader, writer) as session:
                 await session.initialize()
-                self.assertEqual(len((await session.list_tools()).tools), 74)
+                self.assertEqual(len((await session.list_tools()).tools), 76)
                 scene_contract = await session.call_tool("scene_search", {"tool": "get_editor_context"})
                 self.assertEqual(json.loads(scene_contract.content[0].text)["call_tool"], "scene_call_read")
                 scene_result = await session.call_tool("scene_call_read", {"tool": "get_editor_context", "arguments": {}})

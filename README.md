@@ -4,10 +4,10 @@ Fork of [chongdashu/unreal-mcp](https://github.com/chongdashu/unreal-mcp) for AI
 
 ## Tool Surface
 
-The Python MCP server provides **158 internal operations**. Default grouped mode
-exposes **74 MCP tools** before read-only/category filtering: Material, Niagara,
+The Python MCP server provides **160 internal operations**. Default grouped mode
+exposes **76 MCP tools** before read-only/category filtering: Material, Niagara,
 UMG and Scene each have search/read/write entry points; smaller categories stay direct.
-Set `MCP_TOOL_MODE=direct` to expose all 158 operations directly.
+Set `MCP_TOOL_MODE=direct` to expose all 160 operations directly.
 
 [Scene tools](Docs/Tools/scene_tools.md) add guarded level-instance editing,
 fixed-view capture tasks, mesh/texture imports, placement manifests and controlled undo.
@@ -22,7 +22,7 @@ See the [grouped calling guide](Docs/Tools/README.md#grouped-mode-default).
 
 | Category | Internal Operations | Reference |
 |---|---:|---|
-| Asset operations | 14 | [Editor tools](Docs/Tools/editor_tools.md#asset--level-management), [Bounded asset creation/editing](Docs/Tools/project_tools.md#set_asset_properties), [String Tables](Docs/Tools/project_tools.md#string-table-assets) |
+| Asset operations | 16 | [Editor tools](Docs/Tools/editor_tools.md#asset--level-management), [Bounded asset creation/editing](Docs/Tools/project_tools.md#set_asset_properties), [String Tables](Docs/Tools/project_tools.md#string-table-assets), [Enhanced Input](Docs/Tools/project_tools.md#enhanced-input-assets) |
 | Actor + Editor | 18 | [Actor tools](Docs/Tools/actor_tools.md), [Editor tools](Docs/Tools/editor_tools.md) |
 | Scene | 20 | [Scene tools](Docs/Tools/scene_tools.md) |
 | Blueprint assets | 9 | [Blueprint tools](Docs/Tools/blueprint_tools.md), [reading guide](Docs/Tools/reading_blueprints.md) |
@@ -38,6 +38,7 @@ Notable read support includes Blueprint collapsed subgraphs and pin defaults, ca
 
 Common asset workflows:
 
+- [Read and append Enhanced Input mappings](Docs/Tools/project_tools.md#enhanced-input-assets) with complete default/Profile snapshots, exact baselines and preserved existing objects; dry-run/no-save by default, not Legacy InputSettings or runtime input application.
 - [Duplicate an asset](Docs/Tools/editor_tools.md#duplicate_asset) with Unreal's native API, retaining the original and saving only the copy.
 - [Plan dependency copies and remap references](Docs/Tools/editor_tools.md#dependency-copy-workflow), with explicit existing-NS rebinding, confirmation, status receipts and readback verification. This does not run cross-project Migrate.
 - [Patch DataAsset properties](Docs/Tools/project_tools.md#set_asset_properties) with typed nested paths, batch prevalidation, expected-value checks and target-only saving. Requires the updated C++ plugin; Python visibility is not deployment verification.
@@ -131,19 +132,21 @@ The repository's `mcp.json` is a Claude-format example template. Claude auto-dis
 ## Read-Only Mode
 
 Set `UNREAL_MCP_READ_ONLY=1` for project learning, review, or reverse engineering.
-The server retains these 33 query operations, exposed as **28 MCP tools** in
-grouped mode or **33** in direct mode, before category filtering. Grouped mode
+The server retains 46 query operations, exposed as **32 MCP tools** in
+grouped mode or **46** in direct mode, before category filtering. Grouped mode
 omits every `*_call_write` entry point and refuses writes through read entry points:
 
 - Actor/editor: `get_actors_in_level`, `find_actors_by_name`, `get_actor_properties`, `get_editor_logs`, `get_unsaved_changes`, `trace_physical_material`
 - Blueprint/node: `list_blueprints`, `read_blueprint`, `find_blueprint_nodes`
 - Project/AI assets: `get_class_properties`, `read_data_asset`, `read_behavior_tree`, `read_blackboard`, `read_state_tree`
 - Material: `list_materials`, `read_material`, `get_material_instance_parameters`
-- UMG: `read_widget_layout`
-- Niagara: `list_niagara_systems`, `read_niagara_system`, `read_niagara_effect_type`, `get_niagara_parameters`, `list_module_inputs`, `list_module_static_switches`, `read_ns_curve`, `list_renderer_types`
+- UMG: `read_widget_layout`, `get_widget_preview_settings`
+- Niagara: `read_niagara_authoring`, `list_niagara_systems`, `read_niagara_system`, `read_niagara_effect_type`, `get_niagara_parameters`, `list_module_inputs`, `list_module_static_switches`, `read_ns_curve`, `list_renderer_types`
 - Navigation: `list_nav_mesh_bounds_volumes`, `get_navigation_status`, `project_point_to_navigation`, `find_navigation_path`
 - Cascade: `read_cascade_system`
 - Asset migration: `plan_asset_migration`, `get_asset_migration_status`, `verify_asset_migration`
+- Asset content: `read_string_table`, `read_input_mapping_context`
+- Scene: `get_editor_context`, `list_scene_actors`, `inspect_scene_target`, `get_scene_mesh`, `get_scene_viewport`, `get_scene_task_status`, `inspect_scene_asset`, `get_scene_import_status`
 
 Set `UNREAL_MCP_READ_ONLY=0` (or omit it) for authoring.
 
@@ -153,7 +156,7 @@ Category filters can be combined with read-only mode. A value of `0`, `false`, `
 
 | Environment variable | Category |
 |---|---|
-| `MCP_ASSET_ENABLED` | Asset rename, move, duplicate, bounded creation/property writes, dependency-copy plan/execute/status/verify |
+| `MCP_ASSET_ENABLED` | Asset rename, move, duplicate, bounded creation/property writes, String Tables, Enhanced Input IMC read/append, dependency-copy plan/execute/status/verify |
 | `MCP_EDITOR_ENABLED` | Actors, editor state, assets, levels, logs |
 | `MCP_BLUEPRINT_ENABLED` | Blueprint asset creation/properties/reading |
 | `MCP_NODE_ENABLED` | Blueprint graph node operations/search |

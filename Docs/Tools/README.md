@@ -1,13 +1,14 @@
 # Unreal MCP Tools
 
-Index for **158 internal operations**. Default grouped mode exposes **74 MCP
-tools** before read-only/category filtering; direct compatibility mode exposes 158.
+Index for **160 internal operations**. Default grouped mode exposes **76 MCP
+tools** before read-only/category filtering; direct compatibility mode exposes 160.
 
 - [Actor Tools](actor_tools.md) (8)
 - [Scene Tools](scene_tools.md) (20) - Guarded instances, captures, imports, placement manifests, Outliner folders, temporary editor visibility and controlled undo
 - [Editor Tools](editor_tools.md) (10 editor + 3 asset operations)
 - [Bounded Asset Creation and Property Writes](project_tools.md#set_asset_properties) (3 additional Asset operations)
 - [String Table Assets](project_tools.md#string-table-assets) (4 additional Asset operations)
+- [Enhanced Input Assets](project_tools.md#enhanced-input-assets) (2 additional Asset operations: full IMC read and guarded default append)
 - [Dependency Copy Workflow](editor_tools.md#dependency-copy-workflow) (4 additional Asset operations: plan, execute, status, verify)
 - [Blueprint Tools](blueprint_tools.md) (9)
 - [Reading Blueprints](reading_blueprints.md) - How to discover and inspect existing Blueprints
@@ -74,10 +75,10 @@ routing/argument errors are MCP tool errors.
 
 ## Modes And Filters
 
-- `MCP_TOOL_MODE=grouped` (default): 74 public tools; original names from these
+- `MCP_TOOL_MODE=grouped` (default): 76 public tools; original names from these
 	four categories are internal and cannot be called directly via MCP.
-- `MCP_TOOL_MODE=direct`: all 158 public operations, no grouped entry points.
-- `UNREAL_MCP_READ_ONLY=1`: 31 public tools in grouped mode, 45 in direct mode.
+- `MCP_TOOL_MODE=direct`: all 160 public operations, no grouped entry points.
+- `UNREAL_MCP_READ_ONLY=1`: 32 public tools in grouped mode, 46 in direct mode.
 	Only approved read operations remain; hidden writes cannot be searched or run.
 - Existing `MCP_MATERIAL_ENABLED`, `MCP_NIAGARA_ENABLED`, `MCP_UMG_ENABLED`, `MCP_SCENE_ENABLED`
 	filters remove the whole category, including its entry points, when disabled.

@@ -50,6 +50,7 @@ public class UnrealMCP : ModuleRules
 			{
 				"UnrealEd",
 				"EditorScriptingUtilities",
+				"EnhancedInput",
 				"EditorSubsystem",
 				"Slate",
 				"SlateCore",

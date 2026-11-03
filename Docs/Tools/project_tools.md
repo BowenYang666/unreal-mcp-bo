@@ -8,12 +8,111 @@ Project tools provide cross-cutting functionality that isn't tied to a specific 
 
 ### create_input_mapping
 
-Create an input action or axis mapping.
+Legacy project `UInputSettings` mapping, **not an Enhanced Input IMC row**.
+For InputAction assets and Mapping Contexts use the dedicated tools below;
+do not create a second Legacy mapping as an Enhanced Input workaround.
 
 **Parameters:**
 - `action_name` (string) - Name of the mapping (e.g. "Jump", "MoveForward")
 - `key` (string) - Key or axis to bind (e.g. "SpaceBar", "Gamepad_FaceButton_Bottom")
 - `input_type` (string, optional) - `"Action"` or `"Axis"` (default: `"Action"`)
+
+## Enhanced Input Assets
+
+Two direct **Asset** tools in both MCP modes. `MCP_ASSET_ENABLED=0` hides both;
+read-only mode keeps only `read_input_mapping_context`. Requires the matching
+native plugin and its EnhancedInput dependency. Repository UE5.7.4 native and
+public stdio acceptance passed. **Deployed to NF on 2026-11-02**: native reader,
+public complete read/default five-row preview/stale refusal and Blueprint smoke
+passed without saving NF mappings. SkillTest has not received this addition.
+Python visibility is not proof that another editor supports it.
+
+### read_input_mapping_context
+
+Required: exact `/Game/...` package `asset_path`, e.g.
+`/Game/Features/UI/Input/IMC_UI_Menu`, without `.AssetName` or `.uasset`.
+Overlong paths and redirected/noncanonical resolved package paths are refused.
+Returns `mapping_contract=1`, object/class paths, default rows in native order,
+actual `profile_overrides` (including empty overrides), Action settings,
+context settings, `package_dirty`, `complete`, `unsupported` and `baseline`.
+
+Each row contains native `scope` and `index`, Action object path, internal key
+and validity, ordered triggers/modifiers with class/path/outer/typed fields,
+raw `setting_behavior`, and raw **owned** Mappable settings. Referenced objects
+may use `reference_only`; their first expansion carries fields. `actions`
+separately exposes ValueType, consumption/pause flags, inherited triggers,
+modifiers and mappable settings. Empty mapping-local arrays do not mean the
+Action has no behavior. Profile identifiers are sorted; rows are not reordered.
+
+The baseline covers defaults, profiles, child object ownership/values, context
+and referenced Action settings, excluding deprecated/transient fields. Indices
+are baseline-relative, not stable GUIDs. `success=true` is a successful query,
+not a completeness claim. Unsupported fields/custom child classes are partial;
+`complete=false` returns `baseline=null` and blocks the writer. Limits: 4096
+total rows, 1024 profiles, 256 expanded child/Action objects, 256 triggers or
+modifiers per row, 50000 reflected values, bounded recursion and string budget.
+`unsupported_count` is the full count; detailed errors are capped at 128.
+Oversized replies preserve **full JSON** at `overflow.file_path`; read that
+file, not just its preview. Reads do not dirty/save, resolve an active Profile,
+evaluate runtime input routing or apply contexts to LocalPlayers.
+
+### append_input_mapping_context_mappings
+
+Required: `asset_path`, `expected_baseline` from a complete reviewed read,
+`mappings` (1..64 exact `{action_path,key}` objects). Optional:
+`dry_run=true`, `save=false`. Only the **default** scope is supported.
+
+```json
+{
+  "asset_path": "/Game/Features/UI/Input/IMC_UI_Menu",
+  "expected_baseline": "<complete reader baseline>",
+  "mappings": [
+    {"action_path": "/Game/Features/UI/Input/IA_UI_Back", "key": "Escape"},
+    {"action_path": "/Game/Features/UI/Input/IA_UI_Back", "key": "Gamepad_FaceButton_Right"},
+    {"action_path": "/Game/Features/UI/Input/IA_UI_Accept", "key": "Enter"},
+    {"action_path": "/Game/Features/UI/Input/IA_UI_Accept", "key": "SpaceBar"},
+    {"action_path": "/Game/Features/UI/Input/IA_UI_Accept", "key": "Gamepad_FaceButton_Bottom"}
+  ]
+}
+```
+
+All Action paths must resolve to saved InputActions; keys must be valid,
+canonical internal FKey names (no labels, deprecated keys or AnyKey). Entire
+key names are length-checked before FName construction; Action package paths
+must be canonical, not redirector aliases. Entire
+batch preflight rejects missing/stale baselines, incomplete snapshots, dirty
+IMCs/requested Actions, extra fields, invalid rows and duplicate request pairs.
+One uniquely equivalent existing simple pair is a no-op; multiple exact old
+candidates or a complex same-pair row refuse, never select the first or append
+a duplicate. Same Action/different keys and different Actions/same key are valid.
+
+`before`, `proposed`, `after`, `would_modify`, `modified`, `saved`,
+`package_dirty`, added/existing indices report actual execution state. Preview
+does not mutate or save. Applying appends in request order through UE5.7's
+formal `DefaultKeyMappings`, one Undo/Redo transaction; old row order, objects,
+values, all profile overrides and context settings are retained. New rows have
+no mapping-local Trigger/Modifier/owned Mappable and inherit Action settings.
+No deprecated Mappings fallback or clear/replace/complex/Profile writer exists.
+Readback verifies the full proposal before optional **target-only** saving.
+Already-present batches do not dirty or save, even with `save=true`.
+
+Save/readback failure may leave applied changes: inspect `stage`, `after`,
+`modified/saved` and dirty state, including full spill files. No rollback or
+automatic retry is promised; timeout/connection loss means **unknown** state,
+not cancellation. This does not change Actions, project InputSettings, user
+mapping saves, Profile/input modes, LocalPlayer contexts, PIE or gameplay IMCs.
+It does not call runtime `MapKey`/mapping rebuild. General DataAsset instanced
+and EditCondition restrictions remain unchanged. After `save=false`, explicitly
+review/save the draft separately; the writer refuses already-dirty assets.
+
+Five-row ordering/cold persistence, duplicate/no-op/ambiguity, invalid batch,
+dirty/stale refusal, instanced object/Profile preservation, Undo/Redo and
+injected save failure are covered by isolated native tests. Actual public
+stdio creation/preview/save/no-op/refusal and independent cold read passed.
+CommonUI pause/Back/Accept routing and menu-context removal remain game-side
+integration tests, not proven by saved rows.
+
+## Project Inspection
 
 ### read_data_asset
 

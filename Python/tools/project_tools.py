@@ -44,8 +44,68 @@ def call_migration_command(command: str, params: dict) -> dict:
                 spilled[key] = result[key]
     return spilled
 
+def call_enhanced_input_command(command: str, params: dict) -> dict:
+    """Keep complete IMC snapshots and truthful partial write receipts, including overflow."""
+    from unreal_mcp_server import spill_if_oversized
+    from uuid import uuid4
+
+    result = call_asset_command(command, params)
+    metadata = ("success", "mapping_contract", "complete", "baseline", "asset_path",
+                "dry_run", "would_modify", "modified", "saved", "package_dirty", "stage", "error",
+                "default_mapping_count", "profile_override_count", "unsupported_count")
+    spilled = spill_if_oversized(result, command, uuid4().hex,
+        preview_keys=metadata, count_keys=("default_mappings", "profile_overrides"),
+        hint="Review the complete snapshot/receipt file. Timeout is unknown execution state; never blindly retry a write.")
+    if spilled is not result and spilled.get("overflow"):
+        spilled["success"] = result.get("success", False)
+        for key in metadata:
+            if key in result:
+                spilled[key] = result[key]
+    return spilled
+
 def register_project_tools(mcp: FastMCP):
     """Register project tools with the MCP server."""
+
+    @mcp.tool()
+    def read_input_mapping_context(ctx: Context, asset_path: str) -> dict:
+        """Read an Enhanced Input IMC's stored default/profile rows and Action settings.
+
+        Example: asset_path='/Game/Features/UI/Input/IMC_UI_Menu'. Exact /Game package
+        path, not object/Windows path. Returns native scope/index/order, internal FKey,
+        Action paths/settings (including ValueType, bTriggerWhenPaused and inherited
+        triggers/modifiers), raw SettingBehavior and owned Mappable settings/child
+        class/path/outer/values, actual profile overrides, package_dirty and baseline.
+        success does not imply complete: unsupported/bounded fields explicitly mark
+        complete=False, baseline=null, and prohibit writes. Row indices are not stable
+        IDs. Read overflow.file_path in full before proposing changes. Never evaluates
+        active Profile, applies LocalPlayer contexts, switches input modes or saves.
+        Requires updated native plugin; Python discovery is not deployment.
+        """
+        return call_enhanced_input_command("read_input_mapping_context", {"asset_path": asset_path})
+
+    @mcp.tool()
+    def append_input_mapping_context_mappings(ctx: Context, asset_path: str, expected_baseline: str,
+                                              mappings: list[dict], dry_run: bool = True, save: bool = False) -> dict:
+        """Preview/append simple InputAction+FKey rows in an existing IMC's DEFAULT scope only.
+
+        Example: asset_path='/Game/Features/UI/Input/IMC_UI_Menu', expected_baseline=<reader baseline>,
+        mappings=[{'action_path':'/Game/Features/UI/Input/IA_UI_Back','key':'Escape'}].
+        1..64 exact objects, saved existing /Game InputActions, canonical internal valid
+        keys (not display labels). Entire batch preflight: stale/incomplete snapshot,
+        dirty IMC/Actions, duplicate request pairs or ambiguous/complex existing exact
+        pairs refuse all. One uniquely equivalent simple existing row is a no-op;
+        same Action with different keys and different Actions on a key are legitimate.
+        New rows have empty mapping-local triggers/modifiers and inherit Action
+        settings; this does NOT clear inherited Action behavior. Old rows/order/objects,
+        Profile overrides and unrelated settings remain intact. No clear/replace/all-key
+        operations, complex constructors, runtime mapping rebuild or Legacy input edits.
+        Defaults preview/no save. dry_run=False makes one undoable edit; save=True saves
+        only this reviewed IMC. Inspect before/proposed/after/modified/saved/package_dirty
+        and stage, including full overflow file. Save failure can leave applied changes;
+        timeout is UNKNOWN, not rollback. No retries. Requires updated native plugin.
+        """
+        return call_enhanced_input_command("append_input_mapping_context_mappings", dict(asset_path=asset_path,
+            expected_baseline=expected_baseline, mappings=mappings, dry_run=dry_run, save=save))
 
     @mcp.tool()
     def create_string_table(ctx: Context, asset_path: str, namespace: str,
@@ -188,7 +248,8 @@ def register_project_tools(mcp: FastMCP):
         input_type: str = "Action"
     ) -> Dict[str, Any]:
         """
-        Create an input mapping for the project.
+        Create a Legacy UInputSettings project mapping, NOT an Enhanced Input IMC row.
+        For Enhanced Input use read_input_mapping_context and append_input_mapping_context_mappings.
         
         Args:
             action_name: Name of the input action

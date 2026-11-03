@@ -35,6 +35,59 @@ class AssetPropertiesTests(unittest.TestCase):
         self.addCleanup(context.stop)
         self.connection.send_command.return_value = {"status": "success", "result": {"success": True, "saved": True}}
 
+    def test_enhanced_input_schema_defaults_partial_failure_and_timeout(self):
+        reader = self.tools.get_tool("read_input_mapping_context")
+        writer = self.tools.get_tool("append_input_mapping_context_mappings")
+        path = "/Game/Input/IMC_Menu"
+        mappings = [{"action_path": "/Game/Input/IA_Back", "key": "Escape"}]
+        self.assertEqual(reader.parameters["required"], ["asset_path"])
+        self.assertEqual(writer.parameters["required"], ["asset_path", "expected_baseline", "mappings"])
+        reader.fn(None, path)
+        self.connection.send_command.assert_called_with("read_input_mapping_context", {"asset_path": path})
+        writer.fn(None, path, "baseline", mappings)
+        self.connection.send_command.assert_called_with("append_input_mapping_context_mappings", {
+            "asset_path": path, "expected_baseline": "baseline", "mappings": mappings, "dry_run": True, "save": False})
+        self.connection.send_command.return_value = {"status": "error", "error": "Save failed", "result": {
+            "modified": True, "saved": False, "package_dirty": True, "stage": "save", "after": {"default_mapping_count": 5}}}
+        result = writer.fn(None, path, "baseline", mappings, dry_run=False, save=True)
+        self.assertFalse(result["success"])
+        self.assertTrue(result["modified"])
+        self.assertFalse(result["saved"])
+        self.assertEqual(result["after"]["default_mapping_count"], 5)
+        self.connection.reset_mock()
+        self.connection.send_command.side_effect = TimeoutError("timeout")
+        result = writer.fn(None, path, "baseline", mappings, dry_run=False)
+        self.assertEqual(result["stage"], "transport")
+        self.assertNotIn("modified", result)
+        self.assertNotIn("saved", result)
+        self.connection.send_command.assert_called_once()
+
+    def test_enhanced_input_full_overflow_and_permissions(self):
+        server = test_grouped_tools.GroupedServerTests().load_server()
+        module = sys.modules["unreal_mcp_server"]
+        with tempfile.TemporaryDirectory() as directory, patch("tempfile.gettempdir", return_value=directory), \
+                patch.object(module, "spill_if_oversized", server.spill_if_oversized):
+            for operation, payload in (("read_input_mapping_context", {"success": True, "complete": False, "baseline": None,
+                    "default_mapping_count": 5, "profile_override_count": 1, "unsupported_count": 145, "unsupported": [{"reason": "x" * 26000}]}),
+                    ("append_input_mapping_context_mappings", {"success": False, "modified": True, "saved": False,
+                    "stage": "save", "package_dirty": True, "after": {"mappings": ["x" * 26000]}})):
+                self.connection.send_command.return_value = {"status": "success", "result": payload}
+                tool = self.tools.get_tool(operation)
+                args = (None, "/Game/IMC") if operation.startswith("read") else (None, "/Game/IMC", "baseline", [])
+                result = tool.fn(*args)
+                self.assertTrue(result["overflow"])
+                for key in payload.keys() - {"unsupported", "after"}:
+                    self.assertEqual(result[key], payload[key])
+                self.assertEqual(json.loads(Path(result["file_path"]).read_text(encoding="utf-8")), payload)
+        fixture = test_grouped_tools.GroupedServerTests()
+        for mode in ("direct", "grouped"):
+            for readonly in (False, True):
+                for disabled in ((), ("asset",), ("project",)):
+                    tools = fixture.load_server(mode, readonly, disabled).mcp._tool_manager
+                    for name in ("read_input_mapping_context", "append_input_mapping_context_mappings"):
+                        self.assertEqual(tools.get_tool(name) is not None,
+                            "asset" not in disabled and (not readonly or name.startswith("read")))
+
     def test_string_table_contracts_and_partial_receipts(self):
         path = "/Game/Data/Localization/Text/ST_UI_Status"
         create = self.tools.get_tool("create_string_table")
