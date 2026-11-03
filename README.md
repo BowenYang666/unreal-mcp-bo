@@ -4,56 +4,32 @@ Fork of [chongdashu/unreal-mcp](https://github.com/chongdashu/unreal-mcp) for AI
 
 ## Tool Surface
 
-The Python MCP server provides **163 internal operations**. Default grouped mode
-exposes **79 MCP tools** before read-only/category filtering: Material, Niagara,
-UMG and Scene each have search/read/write entry points; smaller categories stay direct.
-Set `MCP_TOOL_MODE=direct` to expose all 163 operations directly.
+**167 internal operations**, exposed as **57 tools** in default grouped mode.
+Material, Niagara, UMG, Scene, Blueprint and Asset use search/read/write entry
+points; other categories remain direct. `MCP_TOOL_MODE=direct` exposes original names.
 
-[Scene tools](Docs/Tools/scene_tools.md) add guarded level-instance editing,
-fixed-view capture tasks, mesh/texture imports, placement manifests and controlled undo.
-In grouped mode, discover these operations through `scene_search`, then use the
-returned `scene_call_read` or `scene_call_write` contract. Original scene operation
-names are not separate public tools. New operations added to the Scene category
-reuse these entry points rather than expanding the public tool list.
-They require the matching native plugin. New scene edits and material-instance v2
-updates default to unsaved preview. `UNREAL_MCP_PORT` selects a separate editor port;
-always verify project identity before editing.
-See the [grouped calling guide](Docs/Tools/README.md#grouped-mode-default).
+| Category | Operations | Access In Grouped Mode | Main Capabilities |
+|---|---:|---|---|
+| [Material](Docs/Tools/material_tools.md) | 17 | `material_search` | Material graphs, instances, parameters and physical-material assignment |
+| [Niagara](Docs/Tools/niagara_tools.md) | 36 | `niagara_search` | Systems, emitters, modules, curves, renderers, User bindings and scalability |
+| [UMG](Docs/Tools/umg_tools.md) | 23 | `umg_search` | Widgets, layout, bindings, reparenting and Designer preview settings |
+| [Scene](Docs/Tools/scene_tools.md) | 20 | `scene_search` | Guarded level instances, placement, captures, imports, Outliner folders and undo |
+| [Blueprint](Docs/Tools/blueprint_tools.md) | 11 | `blueprint_search` | Asset structure, components, properties, inherited skeletal defaults and compilation |
+| [Asset](Docs/Tools/project_tools.md) | 21 | `asset_search` | Asset management, DataAssets, FText/String Tables, animation, Enhanced Input and dependency migration |
+| [Actor / Editor](Docs/Tools/editor_tools.md) | 18 | Direct | Actor inspection/editing, editor state, logs, opening assets/levels and explicit saves |
+| [Blueprint Node](Docs/Tools/node_tools.md) | 8 | Direct | Graph nodes, events, variables and connections |
+| [Project / AI](Docs/Tools/project_tools.md#ai--asset-reading) | 6 | Direct | Reflected properties, DataAsset/Behavior Tree/Blackboard/StateTree reads and legacy input mappings |
+| [Navigation](Docs/Tools/navigation_tools.md) | 6 | Direct | NavMesh bounds, build/status, point projection and pathfinding |
+| [Cascade](Docs/Tools/cascade_tools.md) | 1 | Direct | Read legacy ParticleSystem emitters, LODs, modules and curves |
 
-| Category | Internal Operations | Reference |
-|---|---:|---|
-| Asset operations | 19 | [Editor tools](Docs/Tools/editor_tools.md#asset--level-management), [Bounded asset creation/editing](Docs/Tools/project_tools.md#set_asset_properties), [String Tables](Docs/Tools/project_tools.md#string-table-assets), [Enhanced Input](Docs/Tools/project_tools.md#enhanced-input-assets), [Animation](Docs/Tools/project_tools.md#animation-assets) |
-| Actor + Editor | 18 | [Actor tools](Docs/Tools/actor_tools.md), [Editor tools](Docs/Tools/editor_tools.md) |
-| Scene | 20 | [Scene tools](Docs/Tools/scene_tools.md) |
-| Blueprint assets | 9 | [Blueprint tools](Docs/Tools/blueprint_tools.md), [reading guide](Docs/Tools/reading_blueprints.md) |
-| Blueprint nodes | 8 | [Node tools](Docs/Tools/node_tools.md) |
-| Materials | 17 | [Material tools](Docs/Tools/material_tools.md) |
-| UMG / Widgets | 23 | [UMG tools](Docs/Tools/umg_tools.md) |
-| Niagara | 36 | [Niagara tools](Docs/Tools/niagara_tools.md) |
-| Project / AI assets | 6 | [Project tools](Docs/Tools/project_tools.md) |
-| Navigation | 6 | [Navigation tools](Docs/Tools/navigation_tools.md) |
-| Cascade (legacy VFX) | 1 | [Cascade reader](Docs/Tools/cascade_tools.md) |
+For grouped operations, use `<category>_search(tool="<operation>")` to obtain the
+exact contract, then the returned `*_call_read` or `*_call_write` with `tool` and
+`arguments`. Reuse contracts; original operation names are not public in grouped mode.
+The table counts internal operations, not public entry points; totals assume all categories enabled.
 
-Notable read support includes Blueprint collapsed subgraphs and pin defaults, cached Material compile results, Niagara dynamic inputs/curves/renderers, Cascade emitters/LODs/modules/distributions, arbitrary reflected UObject properties, Behavior Trees, Blackboards, and StateTrees.
-
-Common asset workflows:
-
-- [Read and author animation settings](Docs/Tools/project_tools.md#animation-assets) with complete authoring scopes, confirmed Additive references and explicit native Montage Notify identities; default preview/no save, not arbitrary timeline/object editing.
-- [Read and append Enhanced Input mappings](Docs/Tools/project_tools.md#enhanced-input-assets) with complete default/Profile snapshots, exact baselines and preserved existing objects; dry-run/no-save by default, not Legacy InputSettings or runtime input application.
-- [Duplicate an asset](Docs/Tools/editor_tools.md#duplicate_asset) with Unreal's native API, retaining the original and saving only the copy.
-- [Plan dependency copies and remap references](Docs/Tools/editor_tools.md#dependency-copy-workflow), with explicit existing-NS rebinding, confirmation, status receipts and readback verification. This does not run cross-project Migrate.
-- [Patch DataAsset properties](Docs/Tools/project_tools.md#set_asset_properties) with typed nested paths, batch prevalidation, expected-value checks and target-only saving. Requires the updated C++ plugin; Python visibility is not deployment verification.
-- [Create DataAsset and PhysicalMaterial assets](Docs/Tools/project_tools.md#create_data_asset) without overwriting; edit enum-keyed impact Maps, assign physical materials to Material/MI or components, and [read real collision surfaces](Docs/Tools/editor_tools.md#trace_physical_material).
-- [Update an existing material instance](Docs/Tools/material_tools.md#set_material_instance_parameters), including optional Parent changes, parameter overrides and explicit save status.
-- [Read legacy Cascade effects](Docs/Tools/cascade_tools.md) without converting them to Niagara; filter emitters/LODs and inspect curves, events and references.
-- [Author saved Niagara rules and User bindings](Docs/Tools/niagara_tools.md#guarded-niagara-authoring) with exact identity/baselines, typed preflight, draft/explicit-save receipts and preserved existing data; defaults do not change gameplay instances or shared materials.
-- [Read editor logs](Docs/Tools/editor_tools.md#get_editor_logs) with an explicit log path/environment setting and a required time selector.
-
-These are source-repository capabilities. A target project needs the matching
-C++ plugin build, and the MCP client must refresh its schema after Python
-changes. Tool visibility alone does not prove a deployed editor supports it.
-
-`focus_viewport` and `take_screenshot` remain legacy C++ commands but do not have registered Python MCP tools, so they are not part of the supported tool surface.
+See the [tool index and calling guide](Docs/Tools/README.md) for all contracts and
+examples. Grouping changes discovery, not permissions or save behavior. Python
+tool visibility alone does not prove native plugin support.
 
 ## Architecture
 
@@ -64,115 +40,37 @@ MCP client (VS Code/Copilot or Claude Code)
   -> Unreal Editor plugin: Plugins/UnrealMCP
 ```
 
-The editor plugin must be built and loaded in the target project. The shared Python server stays in this repository; do not copy `Python/` into every Unreal project.
+Build/load the plugin in the target project. Keep the shared Python server here.
 
 ## Onboard a Project
 
-Use the complete onboarding workflow in:
-
-- [UnrealMCP project onboarding skill](.github/skills/unreal-mcp-project-onboarding/SKILL.md)
-- [Deployment guide](Docs/copy_plugin_to_project.md)
-
-The workflow discovers the `.uproject`, checks UE version, deploys and builds the plugin, configures the selected MCP client, launches the editor, verifies port `13090`, and performs a read-only smoke test.
+Follow the [deployment guide](Docs/copy_plugin_to_project.md) or
+[onboarding skill](.github/skills/unreal-mcp-project-onboarding/SKILL.md): deploy,
+build, configure the client, launch and verify the intended editor.
 
 ## MCP Client Configuration
 
-Resolve an absolute `uv` executable with `Get-Command uv`; GUI clients may not inherit your shell `PATH`.
-
-### VS Code / Copilot
-
-Create `.vscode/mcp.json` in the workspace:
-
-```jsonc
-{
-  "servers": {
-    "unrealMCP": {
-      "type": "stdio",
-      "command": "<ABSOLUTE_UV_PATH>",
-      "args": [
-        "--directory",
-        "<MCP_REPO>\\Python",
-        "run",
-        "unreal_mcp_server.py"
-      ],
-      "env": {
-        "UNREAL_MCP_READ_ONLY": "1"
-      }
-    }
-  }
-}
-```
-
-### Claude Code
-
-Create `.mcp.json` at the Claude project root:
-
-```json
-{
-  "mcpServers": {
-    "unrealMCP": {
-      "command": "<ABSOLUTE_UV_PATH>",
-      "args": [
-        "--directory",
-        "<MCP_REPO>\\Python",
-        "run",
-        "unreal_mcp_server.py"
-      ],
-      "env": {
-        "UNREAL_MCP_READ_ONLY": "1"
-      }
-    }
-  }
-}
-```
-
-Project-scoped Claude servers require one-time approval. Run `claude` in the project root and approve `unrealMCP`; `claude mcp list` shows `Pending approval` until then.
-
-The repository's `mcp.json` is a Claude-format example template. Claude auto-discovers `.mcp.json`, not `mcp.json`.
+Use the [VS Code / Claude configuration examples](Docs/copy_plugin_to_project.md#step-8-configure-the-mcp-client)
+with an absolute `uv` path. Claude project servers require user approval.
+The repository [mcp.json](mcp.json) is a template, not an auto-discovered client config.
 
 ## Read-Only Mode
 
 Set `UNREAL_MCP_READ_ONLY=1` for project learning, review, or reverse engineering.
-The server retains 47 query operations, exposed as **33 MCP tools** in
-grouped mode or **47** in direct mode, before category filtering. Grouped mode
-omits every `*_call_write` entry point and refuses writes through read entry points:
-
-- Actor/editor: `get_actors_in_level`, `find_actors_by_name`, `get_actor_properties`, `get_editor_logs`, `get_unsaved_changes`, `trace_physical_material`
-- Blueprint/node: `list_blueprints`, `read_blueprint`, `find_blueprint_nodes`
-- Project/AI assets: `get_class_properties`, `read_data_asset`, `read_behavior_tree`, `read_blackboard`, `read_state_tree`
-- Material: `list_materials`, `read_material`, `get_material_instance_parameters`
-- UMG: `read_widget_layout`, `get_widget_preview_settings`
-- Niagara: `read_niagara_authoring`, `list_niagara_systems`, `read_niagara_system`, `read_niagara_effect_type`, `get_niagara_parameters`, `list_module_inputs`, `list_module_static_switches`, `read_ns_curve`, `list_renderer_types`
-- Navigation: `list_nav_mesh_bounds_volumes`, `get_navigation_status`, `project_point_to_navigation`, `find_navigation_path`
-- Cascade: `read_cascade_system`
-- Asset migration: `plan_asset_migration`, `get_asset_migration_status`, `verify_asset_migration`
-- Asset content: `read_string_table`, `read_input_mapping_context`, `read_animation_asset`
-- Scene: `get_editor_context`, `list_scene_actors`, `inspect_scene_target`, `get_scene_mesh`, `get_scene_viewport`, `get_scene_task_status`, `inspect_scene_asset`, `get_scene_import_status`
-
-Set `UNREAL_MCP_READ_ONLY=0` (or omit it) for authoring.
+This retains 49 query operations as **29 grouped tools** or **49 direct tools**
+before category filtering. Write endpoints are absent. Authoring uses `0` (or unset).
 
 ## Category Filtering
 
-Category filters can be combined with read-only mode. A value of `0`, `false`, `no`, or `off` disables the category; unset/other values enable it.
-
-| Environment variable | Category |
-|---|---|
-| `MCP_ASSET_ENABLED` | Asset rename, move, duplicate, bounded creation/property writes, String Tables, Enhanced Input IMC, bounded animation authoring, dependency-copy plan/execute/status/verify |
-| `MCP_EDITOR_ENABLED` | Actors, editor state, assets, levels, logs |
-| `MCP_BLUEPRINT_ENABLED` | Blueprint asset creation/properties/reading |
-| `MCP_NODE_ENABLED` | Blueprint graph node operations/search |
-| `MCP_PROJECT_ENABLED` | Input mappings, reflection, BT/BB/StateTree reads |
-| `MCP_UMG_ENABLED` | Widget creation/layout/reading |
-| `MCP_MATERIAL_ENABLED` | Material and MaterialInstance tools |
-| `MCP_NIAGARA_ENABLED` | Niagara system/emitter/module/renderer tools |
-| `MCP_NAVIGATION_ENABLED` | NavMesh bounds, navigation build/status, point projection, and path queries |
-| `MCP_CASCADE_ENABLED` | Read legacy Cascade ParticleSystem assets |
+`MCP_<CATEGORY>_ENABLED=0` disables a category before grouping; read-only filters
+still apply. Blueprint and Blueprint Node have independent switches.
+See [environment controls](Python/README.md#environment-controls) for the full list.
 
 ## Development Updates
 
-- Python-only changes: restart the MCP client/server; no Unreal build is required.
-- C++ plugin or `Build.cs` changes: save/close the target editor, replace the deployed plugin from this repository, clean stale plugin build outputs if needed, rebuild `<ProjectName>Editor`, relaunch, and verify `127.0.0.1:13090`.
-- After schema changes, restart the MCP client so it discovers the new tool parameters.
+- Python/grouping changes: restart/reconnect the MCP service; no UE rebuild or editor restart.
+- Native plugin changes: follow the deployment guide, preserve target customizations and user drafts, rebuild and verify.
+- Always verify project/port identity and review actual save/failure receipts; never blindly retry timed-out writes.
 
 ## Documentation
 

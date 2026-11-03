@@ -9,7 +9,7 @@ from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 
 
-GROUPED_CATEGORIES = ("material", "niagara", "umg", "scene")
+GROUPED_CATEGORIES = ("material", "niagara", "umg", "scene", "blueprint", "asset")
 
 
 def register_grouped_tools(server: FastMCP, categories: dict, read_only_tools: set):

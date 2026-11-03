@@ -10,6 +10,7 @@ from types import ModuleType
 from unittest.mock import Mock, patch
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp.exceptions import ToolError
 from tools.blueprint_tools import register_blueprint_tools
 from tools.editor_tools import register_editor_tools
 from tools.material_tools import register_material_tools
@@ -35,6 +36,71 @@ class AssetPropertiesTests(unittest.TestCase):
         context.start()
         self.addCleanup(context.stop)
         self.connection.send_command.return_value = {"status": "success", "result": {"success": True, "saved": True}}
+
+    def assert_available(self, tools, name, expected, category="asset"):
+        search = tools.get_tool(f"{category}_search")
+        original = tools.get_tool(name)
+        if search is None:
+            self.assertEqual(original is not None, expected)
+        else:
+            self.assertIsNone(original)
+            if expected:
+                self.assertEqual(search.fn(tool=name)["tool"], name)
+            else:
+                with self.assertRaises(ToolError):
+                    search.fn(tool=name)
+
+    def test_text_references_schema_defaults_receipts_and_timeout(self):
+        reader = self.tools.get_tool("read_data_asset_text_references")
+        writer = self.tools.get_tool("bind_data_asset_text_references")
+        path = "/Game/DA_Test"
+        bindings = [{"path": "DisplayName", "table_path": "/Game/ST_Test", "key": "1",
+                     "expected_table_id": "/Game/ST_Test.ST_Test", "expected_namespace": "Test"}]
+        self.assertEqual(reader.parameters["required"], ["asset_path", "property_paths"])
+        self.assertEqual(writer.parameters["required"], ["asset_path", "expected_baseline", "bindings"])
+        asyncio.run(reader.run({"asset_path": path, "property_paths": ["DisplayName"]}, context=Mock()))
+        self.connection.send_command.assert_called_with("read_data_asset_text_references", {"asset_path": path, "property_paths": ["DisplayName"]})
+        asyncio.run(writer.run({"asset_path": path, "expected_baseline": "baseline", "bindings": bindings}, context=Mock()))
+        self.connection.send_command.assert_called_with("bind_data_asset_text_references", {
+            "asset_path": path, "expected_baseline": "baseline", "bindings": bindings, "dry_run": True, "save": False})
+        self.connection.send_command.return_value = {"status": "error", "error": "Save failed", "result": {
+            "modified": True, "saved": False, "package_dirty": True, "stage": "save", "after": {"fields": bindings}}}
+        result = writer.fn(None, path, "baseline", bindings, dry_run=False, save=True)
+        self.assertFalse(result["success"])
+        self.assertTrue(result["modified"])
+        self.assertFalse(result["saved"])
+        self.assertEqual(result["after"]["fields"], bindings)
+        self.connection.reset_mock()
+        self.connection.send_command.side_effect = TimeoutError("timeout")
+        result = writer.fn(None, path, "baseline", bindings, dry_run=False)
+        self.assertEqual(result["stage"], "transport")
+        self.assertNotIn("modified", result)
+        self.assertNotIn("saved", result)
+        self.connection.send_command.assert_called_once()
+
+    def test_text_references_full_overflow_and_permissions(self):
+        server = test_grouped_tools.GroupedServerTests().load_server()
+        module = sys.modules["unreal_mcp_server"]
+        with tempfile.TemporaryDirectory() as directory, patch("tempfile.gettempdir", return_value=directory), \
+                patch.object(module, "spill_if_oversized", server.spill_if_oversized):
+            for operation, payload in (("read_data_asset_text_references", {"success": True, "complete": True,
+                    "baseline": "identity", "text_reference_contract": 1, "fields": [{"history": "x" * 26000}]}),
+                    ("bind_data_asset_text_references", {"success": False, "modified": True, "saved": False,
+                    "stage": "save", "package_dirty": True, "after": {"fields": ["x" * 26000]}})):
+                self.connection.send_command.return_value = {"status": "success", "result": payload}
+                args = (None, "/Game/DA", ["DisplayName"]) if operation.startswith("read") else (None, "/Game/DA", "baseline", [])
+                result = self.tools.get_tool(operation).fn(*args)
+                self.assertTrue(result["overflow"])
+                for key in payload.keys() - {"fields", "after"}:
+                    self.assertEqual(result[key], payload[key])
+                self.assertEqual(json.loads(Path(result["file_path"]).read_text(encoding="utf-8")), payload)
+        fixture = test_grouped_tools.GroupedServerTests()
+        for mode in ("direct", "grouped"):
+            for readonly in (False, True):
+                for disabled in ((), ("asset",), ("project",)):
+                    tools = fixture.load_server(mode, readonly, disabled).mcp._tool_manager
+                    for name in ("read_data_asset_text_references", "bind_data_asset_text_references"):
+                        self.assert_available(tools, name, "asset" not in disabled and (not readonly or name.startswith("read")))
 
     def test_enhanced_input_schema_defaults_partial_failure_and_timeout(self):
         reader = self.tools.get_tool("read_input_mapping_context")
@@ -86,7 +152,7 @@ class AssetPropertiesTests(unittest.TestCase):
                 for disabled in ((), ("asset",), ("project",)):
                     tools = fixture.load_server(mode, readonly, disabled).mcp._tool_manager
                     for name in ("read_input_mapping_context", "append_input_mapping_context_mappings"):
-                        self.assertEqual(tools.get_tool(name) is not None,
+                        self.assert_available(tools, name,
                             "asset" not in disabled and (not readonly or name.startswith("read")))
 
     def test_animation_schemas_forwarding_and_partial_failure(self):
@@ -142,7 +208,56 @@ class AssetPropertiesTests(unittest.TestCase):
                 for disabled in ((), ("asset",), ("project",)):
                     tools = fixture.load_server(mode, readonly, disabled).mcp._tool_manager
                     for name in ("read_animation_asset", "set_anim_sequence_additive", "add_montage_native_notify"):
-                        self.assertEqual(tools.get_tool(name) is not None, "asset" not in disabled and (not readonly or name.startswith("read")))
+                        self.assert_available(tools, name, "asset" not in disabled and (not readonly or name.startswith("read")))
+
+    def test_component_defaults_schema_and_truthful_receipts(self):
+        reader = self.tools.get_tool("read_blueprint_component_defaults")
+        writer = self.tools.get_tool("set_blueprint_skeletal_component_defaults")
+        self.assertEqual(reader.parameters["required"], ["blueprint_path"])
+        self.assertEqual(writer.parameters["required"], ["blueprint_path", "component", "expected_baseline", "settings"])
+        selector = {"source": "cpp_inherited", "name": "Mesh", "declaring_class": "/Script/Game.Tower", "scs_guid": ""}
+        settings = {"mesh": "/Game/SKM", "animation_mode": "AnimationBlueprint", "anim_class": "/Game/ABP.ABP_C"}
+        reader.fn(None, "/Game/BP_Test")
+        self.connection.send_command.assert_called_with("read_blueprint_component_defaults", {"blueprint_path": "/Game/BP_Test"})
+        writer.fn(None, "/Game/BP_Test", selector, "baseline", settings)
+        self.connection.send_command.assert_called_with("set_blueprint_skeletal_component_defaults", {
+            "blueprint_path": "/Game/BP_Test", "component": selector, "expected_baseline": "baseline", "settings": settings, "dry_run": True, "save": False})
+        self.connection.send_command.return_value = {"status": "error", "error": "Save failed", "result": {
+            "modified": True, "compiled": True, "saved": False, "package_dirty": True, "stage": "save", "after": {"components": [selector]}}}
+        result = writer.fn(None, "/Game/BP_Test", selector, "baseline", settings, dry_run=False, save=True)
+        self.assertFalse(result["success"])
+        self.assertTrue(result["modified"])
+        self.assertTrue(result["compiled"])
+        self.assertFalse(result["saved"])
+        self.assertEqual(result["after"]["components"], [selector])
+        self.connection.reset_mock()
+        self.connection.send_command.side_effect = TimeoutError("timeout")
+        result = writer.fn(None, "/Game/BP_Test", selector, "baseline", settings)
+        self.assertEqual(result["stage"], "transport")
+        for key in ("modified", "compiled", "saved"):
+            self.assertNotIn(key, result)
+        self.connection.send_command.assert_called_once()
+
+    def test_component_defaults_full_spill_and_permissions(self):
+        server = test_grouped_tools.GroupedServerTests().load_server()
+        module = sys.modules["unreal_mcp_server"]
+        with tempfile.TemporaryDirectory() as directory, patch("tempfile.gettempdir", return_value=directory), \
+                patch.object(module, "spill_if_oversized", server.spill_if_oversized):
+            payload = {"success": False, "complete": False, "baseline": None, "modified": True, "compiled": False,
+                "saved": False, "stage": "compile", "after": {"data": "x" * 26000}}
+            self.connection.send_command.return_value = {"status": "success", "result": payload}
+            result = self.tools.get_tool("read_blueprint_component_defaults").fn(None, "/Game/BP_Test")
+            self.assertTrue(result["overflow"])
+            for key in payload.keys() - {"after"}:
+                self.assertEqual(result[key], payload[key])
+            self.assertEqual(json.loads(Path(result["file_path"]).read_text(encoding="utf-8")), payload)
+        fixture = test_grouped_tools.GroupedServerTests()
+        for mode in ("direct", "grouped"):
+            for readonly in (False, True):
+                for disabled in ((), ("blueprint",), ("asset",)):
+                    tools = fixture.load_server(mode, readonly, disabled).mcp._tool_manager
+                    for name in ("read_blueprint_component_defaults", "set_blueprint_skeletal_component_defaults"):
+                        self.assert_available(tools, name, "blueprint" not in disabled and (not readonly or name.startswith("read")), "blueprint")
 
     def test_string_table_contracts_and_partial_receipts(self):
         path = "/Game/Data/Localization/Text/ST_UI_Status"
@@ -178,12 +293,12 @@ class AssetPropertiesTests(unittest.TestCase):
 
     def test_string_table_permission_filtering(self):
         readonly = test_grouped_tools.GroupedServerTests().load_server(read_only=True)
-        self.assertIsNotNone(readonly.mcp._tool_manager.get_tool("read_string_table"))
+        self.assert_available(readonly.mcp._tool_manager, "read_string_table", True)
         disabled = test_grouped_tools.GroupedServerTests().load_server(disabled=("asset",))
         for name in ("create_string_table", "read_string_table", "update_string_table_entries", "import_string_table_csv"):
-            self.assertIsNone(disabled.mcp._tool_manager.get_tool(name))
+            self.assert_available(disabled.mcp._tool_manager, name, False)
             if name != "read_string_table":
-                self.assertIsNone(readonly.mcp._tool_manager.get_tool(name))
+                self.assert_available(readonly.mcp._tool_manager, name, False)
 
     def test_patch_schema_and_forwarding(self):
         self.assertEqual(self.write.parameters["required"], ["asset_path", "changes"])
@@ -254,9 +369,8 @@ class AssetPropertiesTests(unittest.TestCase):
                 for disabled in ((), ("asset",), ("project",)):
                     tools = fixture.load_server(mode, readonly, disabled).mcp._tool_manager
                     for name in names:
-                        self.assertEqual(tools.get_tool(name) is not None,
-                            "asset" not in disabled and not (readonly and name == "execute_asset_migration"),
-                            (mode, readonly, disabled, name))
+                        self.assert_available(tools, name,
+                            "asset" not in disabled and not (readonly and name == "execute_asset_migration"))
 
     def test_invalid_requests_never_send(self):
         for path, changes in (("/Engine/Test", [{"path": "Health", "value": 1}]),
@@ -292,7 +406,7 @@ class AssetPropertiesTests(unittest.TestCase):
                                                 (False, ("asset",), False), (False, ("project",), True)):
                 server = fixture.load_server(mode, readonly, disabled)
                 for name in ("set_asset_properties", "create_data_asset", "create_physical_material"):
-                    self.assertEqual(server.mcp._tool_manager.get_tool(name) is not None, exposed)
+                    self.assert_available(server.mcp._tool_manager, name, exposed)
 
     def test_creation_defaults_and_partial_failure_receipts(self):
         for name, arguments in (

@@ -1,6 +1,6 @@
 # Blueprint继承组件：受控Mesh／Anim Class作者能力缺口
 
-日期：2026-11-03。状态：**Open；NF T3用户选择先补齐此能力，再继续接入。**
+日期：2026-11-03。状态：**有限专用合同已在仓库实现并验收，已部署 NF；NF读取／纯预览烟测通过，生产装配与游戏侧接入仍 Open。**
 来源：NodeFall UE5.7.4，T3 Cannon Lv0／A正式装配。
 [问题索引](README.md)
 
@@ -141,3 +141,101 @@ C:\Users\15208\.copilot\session-state\0c9ca56b-4750-4e5b-b4ee-9dfe98650c9b\files
 
 后续fresh读取正式Lv0／A Mesh、ABP、Montage和目标BP存在性，再按已批准建造栏／LastPosition政策继续。
 准确的Skeleton／姿态／Socket校验、唯一释放、发射时快照与GAS冷却仍属NF游戏侧工作。
+
+## 6. 维护记录：2026-11-03 仓库实现与隔离验收
+
+本节为仓库实现时状态；后续 NF 部署见第 7 节。
+
+以上保留 NF 原始需求／恢复点，不代表已操作生产 BP 或恢复候选游戏源码。
+用户授权修复后，新增两个直接 Blueprint 分类工具，合同见
+[Skeletal Component Defaults](../Tools/blueprint_tools.md#skeletal-component-defaults)：
+
+- `read_blueprint_component_defaults`：准确区分 cpp_inherited／inherited_scs／local_scs，
+  selector 使用声明类、名字与原 SCS GUID；返回实际模板／Outer／archetype／目标 override、
+  三字段 typed 默认值、hierarchy／相关保存身份、有界只读保存字段见证、complete／baseline。
+  不创建 override／handler，不编译、spawn 或保存。旧 read_blueprint 标签不作为可写身份。
+- `set_blueprint_skeletal_component_defaults`：仅 Mesh／AnimationMode／Anim Class 的合并请求，
+  默认预览／不保存。首版限精确且可编辑的 USkeletalMeshComponent、已有 AnimationBlueprint 模式，
+  Mesh／生成 AnimBlueprint Class 使用同一实际 Skeleton，或同时明确清空两引用；
+  不支持 SingleNode／custom 模式转换、任意派生组件、native AnimInstance 任意类或兼容骨架推断。
+  拒绝 wrong type／组合、脏或未编译目标／父BP／相关引用、stale／歧义身份／忙碌编译。
+
+原生分支只改目标子 CDO 自有默认子对象；父 SCS 分支通过 **Blueprint 源 handler** 的标准
+override 创建／更新目标模板，本地 SCS 保持自己模板。实际数据改动一个事务，正式 setter／通知后
+在事务外编译目标，编译后重新定位，不引用旧重实例化模板。核对未指定组件／Actor保存字段、
+本地SCS结构、父级scope未变后才 target-only 可选保存；无父模板写入、无同名副本／指针替换，
+不使用 ConstructionScript／BeginPlay 注入。modified／compiled／saved／dirty／stage／完整after
+真实保留；保存故障可留已应用草稿，超时未知，无自动重试。通用对象限制与旧 SCS／PhysMaterial 不改。
+MCP 新参数为具体类型，未引入 Any／Optional／Union 参数。
+
+**实际验证：**仓库 UE5.7.4 构建成功；完整 Python 87 项通过，局部23项通过。
+原生 Read／Write 明确 Success，独立进程明确指定根的 Reload Success；默认无根跳过不计冷读。
+隔离 Character 子BP＋父SCS／多级子BP／本地SCS三来源实际保存、编译后值、父／中间父／兄弟BP
+完整scope及hash保持、两条继承路径 Undo／Redo、故障注入磁盘未变、stale／错引用／不同Skeleton／
+非法模式／身份等负例通过。真实热／冷进程 spawn 后三 SkeletalMeshComponents 的 Mesh／Anim Class
+均符合保存值，无新增重复组件，不只看 CDO 文本。旧 `UnrealMCP.SurfaceFeedback.EndToEnd`
+本地SCS／PhysMaterial端到端回归通过。本次未新增任何 NF 游戏 Functional Test。
+
+原生最终夹具：`/Game/__Dev/ComponentDefaultsWrite_04637CAE44D7E3AE3451809B1C8BD1C3`。
+仓库工程日志：`Saved/Logs/ComponentDefaults-Matrix-ValidNegative.log`、`ComponentDefaults-Cold.log`、
+`ComponentDefaults-LegacySurfaceRegression.log`。完整冷读oracle留于 `Saved/ComponentDefaultsAcceptance`。
+
+真实公开 stdio→TCP 通过仓库工程临时13092：只复制新隔离 BP，在副本上对 native／父 SCS
+分别做纯预览、真实编译／保存明确清空组合、重复 no-op 与 stale 拒绝，目标读回与回执一致；
+来源／父兄弟／Config hash保持，结束零脏包并正常关闭测试编辑器。
+公开回执及完整响应：仓库工程
+`Saved/ComponentDefaultsPublic/1a609c39f8f94fdcb352d12af9475c8e/receipt.json`。
+
+**失败／修正保留：**早期空几何 Mesh 复制及世界重复初始化是隔离夹具缺陷，未伪报写入通过；
+引擎保存字段 `SkeletalMesh` 被明确归入 Mesh 作者scope，其他字段见证仍严格比较。
+生成类 handler 单独创建未登记 Blueprint 源，编译后 override 丢失时工具正确拒绝保存；
+经用户确认继续排查，改用 `UBlueprint::GetInheritableComponentHandler(true)` 源入口。
+将编译／生成类布局排除于数据事务后，两路径Undo稳定；不同Skeleton负例使用有效但不兼容资产，
+未屏蔽资产校验错误或降低验收。原失败日志保留，不把它们说成 NF 生产保存事故。
+
+**尚未执行：**未部署／重启／查询 NF 或 SkillTest，未试写 T1／T2、创建生产 T3 BP 或新NF FT，
+未改 Loadout／动画／Skeleton／GA／DA、未恢复session候选源码、未 commit／push 本轮实现。
+NF 类／姿态／Socket、炮弹／冷却及 T3 正式装配仍需独立授权与游戏侧验证，工具验收不替代它们。
+
+## 7. 维护记录：2026-11-03 NF增量部署
+
+用户明确要求“部署到NF”后执行。目标 `C:\04_unrealProjects\NodeFall\NodeFall.uproject`，
+UE5.7.4；源码仍来自维护仓库共享 Python 和 UnrealMCP 插件，没有复制 Python 到 NF。
+
+- 公开预检确认原 PID39240／13090、L_map01、Editor 模式、零未保存包与空闲编译／导入。
+  备份 `Saved/UnrealMCPBackups/ComponentDefaults_20261103_184447`，5603 个原文件保护 hash，
+  4777 个 Content 文件清单，含源码／配置／客户端与既有本地插件定制。
+- 再次零脏包检查后按项目流程正常 close_editor(save_all=true)，回执 closing=true、saved_count=0；
+  等待实际退出／端口释放，全部5603保护 hash 未变后才补丁，没有 force-kill。
+- 精确复制两份 ComponentDefaults cpp／h，仅在 NF Bridge 添加 include、两路由与失败回执条件。
+  去除新增文本后完全匹配备份；Build.cs／uplugin／Animation／EnhancedInput／DirectoryWatcher／
+  导航／Tag 等其他文件未替换，未覆盖游戏源码或用户改动。
+- 清理仅目标插件 Binaries／Intermediate；`NodeFallEditor Win64 Development` 明确 Success，
+  109 actions，274.36 秒。构建同时编译现有游戏源码，本轮未编辑它们，不代表 T3 游戏验收。
+- 部署后原生 `UnrealMCP.ComponentDefaults.Read` 明确 Success，只生成未保存隔离对象；
+  未在 NF 运行保存作者夹具的 Write／Reload，不新增 NF FT 或测试资产。
+- 恢复 L_map01、Editor、最大化／NoLiveCoding，PID23052／127.0.0.1:13090 匹配并保持打开。
+  PID 为本次有时间边界的证据，后续需重新核对。`.mcp.json`／既有权限保持不变。
+
+**实际公开烟测：**通过 NF 原 `.mcp.json` 的新 stdio 会话发现73项（现有分类过滤下），
+两项专用工具真实调用到新 native。T1
+`/Game/Features/TowerDefense/T1_basic/BP_t1_basic` 返回 contract1／complete／baseline：
+`SkeletalTowerMesh` 的 source=cpp_inherited、declaring_class=/Script/NodeFall.NFTowerBase，
+实际 Outer 为目标 Default__BP_t1_basic_C；Mesh／ABP生成类／AnimationBlueprint 模式准确。
+同值 dry-run 回执 would_modify=false／modified=false／compiled=false／saved=false；
+故意 stale 的 apply+save 请求在 preflight 拒绝，仍全部 false。复读完整scope／baseline 一致，
+窄范围 BP_NFPlayerController list/read 通过，开始与结束未保存包均0。
+没有对 T1／T2／T3 作实际 apply、编译、保存或新增 override，未选择或修改业务数值／时点。
+
+原生测试日志：NF `Saved/Logs/ComponentDefaults-Deployment-Read.log`。
+公开回执／全量原始响应／构建日志／保护证据：
+`Saved/UnrealMCPDeployment/ComponentDefaults_d6b5e93ab2cf4a1f89fbaa48a3cb9292/receipt.json`、
+`guard-verification-before-docs.json`。文档前5602个非目标原文件 hash 一致；
+全部4777个Content名称／大小／时间及hash未变，两份helper与已验证仓库源码一致。
+另外仅更新 NF 指定 AI 目录已有继承组件交接／索引，不改正式设计或业务恢复点。
+
+**客户端与范围：**Claude 仍 Pending approval，用户需在 NF 目录批准 unrealMCP 并重连；
+已有客户端需刷新共享 Python schema，独立配置 stdio 不绕过客户端信任。
+本轮未部署 SkillTest、未管理 NF Git／ADO、未 commit／push。
+父 SCS 真实写入、Undo／独立冷读／spawn 证据仍来自第6节仓库隔离验收，未冒充本次 NF 执行。
+候选源码和已批准游戏方案仍按原恢复点接续；工具部署不是批准重放草稿、修改生产 BP 或交付 T3。

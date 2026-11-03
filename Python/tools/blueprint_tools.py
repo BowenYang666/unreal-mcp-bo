@@ -11,8 +11,82 @@ from mcp.server.fastmcp import FastMCP, Context
 # Get logger
 logger = logging.getLogger("UnrealMCP")
 
+def call_component_defaults(command: str, arguments: dict) -> dict:
+    """Keep complete Blueprint default scopes and truthful partial mutation receipts."""
+    from tools.project_tools import call_asset_command
+    from unreal_mcp_server import spill_if_oversized
+    from uuid import uuid4
+
+    result = call_asset_command(command, arguments)
+    metadata = ("success", "component_defaults_contract", "blueprint_path", "complete", "baseline",
+                "dry_run", "would_modify", "modified", "compiled", "saved", "package_dirty", "stage", "error", "existing_data_preserved")
+    spilled = spill_if_oversized(result, command, uuid4().hex, preview_keys=metadata, count_keys=("components", "unsupported"),
+        hint="Review the complete defaults/receipt file. Timeout is unknown execution state; never blindly repeat a write.")
+    if spilled is not result and spilled.get("overflow"):
+        spilled["success"] = result.get("success", False)
+        for key in metadata:
+            if key in result:
+                spilled[key] = result[key]
+    return spilled
+
 def register_blueprint_tools(mcp: FastMCP):
     """Register Blueprint tools with the MCP server."""
+
+    @mcp.tool()
+    def read_blueprint_component_defaults(ctx: Context, blueprint_path: str) -> dict:
+        """Read exact SkeletalMeshComponent defaults and proven local/inherited/native origins.
+
+        Example: blueprint_path='/Game/Towers/BP_Tower'. Exact /Game Actor Blueprint
+        package, not an instance/class/redirector. Returns component_defaults_contract=1,
+        hierarchy, effective template class/path/outer/archetype, editable status,
+        target_owns_override, typed mesh/animation_mode/anim_class and selector
+        {source,name,declaring_class,scs_guid}. source is cpp_inherited, inherited_scs
+        or local_scs. Native declaration is proven from native default subobjects;
+        SCS uses declaring generated class plus original node GUID. Never guess from
+        a display name or old read_blueprint cpp_inherited label. Only skeletal components
+        are included; not an enumeration/serializer of every component kind.
+        Non-author fields are bounded read-only ExportText preservation witnesses,
+        NOT writable object paths or proof of arbitrary custom binary completeness.
+        Unknown derived types, ambiguous names/identities/handler/bounds mark incomplete,
+        baseline=null; do not write partial scopes. Read overflow.file_path in full.
+        Does not create overrides, compile, spawn, execute scripts, dirty or save.
+        Requires matching native plugin; Python discovery is not deployment.
+        """
+        return call_component_defaults("read_blueprint_component_defaults", {"blueprint_path": blueprint_path})
+
+    @mcp.tool()
+    def set_blueprint_skeletal_component_defaults(ctx: Context, blueprint_path: str, component: dict,
+                                                  expected_baseline: str, settings: dict,
+                                                  dry_run: bool = True, save: bool = False) -> dict:
+        """Preview/patch only the selected child Blueprint's own skeletal default template.
+
+        Example: blueprint_path='/Game/Towers/BP_Tower', component=<exact reader component
+        selector>, expected_baseline=<complete read>, settings={'mesh':'/Game/Meshes/SKM_Tower',
+        'animation_mode':'AnimationBlueprint','anim_class':'/Game/Anims/ABP_Tower.ABP_Tower_C'}.
+        Only mesh, animation_mode, anim_class accepted. Merge retains unspecified fields.
+        First contract supports AnimationBlueprint mode only, existing exact editable
+        USkeletalMeshComponent templates and matching concrete AnimBlueprint generated
+        classes with the SAME exact Skeleton. Mesh and Anim Class must both be valid
+        or explicitly cleared together; no SingleNode/custom animation transitions,
+        retargeting, arbitrary native classes or arbitrary instanced property paths.
+        Dirty target/parents/relevant assets, stale/partial/ambiguous identity, wrong
+        class/mesh/skeleton/mode or busy compilation reject before mutation. No global
+        compilation finish, parent save or implicit draft save. Defaults dry-run/no save.
+        Native writes use the target child CDO subobject; inherited SCS writes create
+        a target Blueprint source handler override ONLY on apply; local SCS retains
+        its own template. Never mutate parent templates, replace component pointers,
+        add duplicate SCS nodes or inject ConstructionScript/BeginPlay setters.
+        One edit transaction, formal setters/property notification, target compile
+        OUTSIDE transaction and RE-RESOLVE after reinstancing. Verify actor/component
+        saved-field witnesses, other components, local SCS structure and parent scopes.
+        Same values no-op, never create an unnecessary override. save=True saves ONLY
+        this target after successful readback. Inspect before/proposed_defaults/after,
+        modified/compiled/saved/package_dirty/stage, including full spill files.
+        Save/compile/readback failure can leave applied changes; timeout is UNKNOWN,
+        no rollback or automatic retries. Existing SCS/PhysMaterial API is unchanged.
+        """
+        return call_component_defaults("set_blueprint_skeletal_component_defaults", dict(blueprint_path=blueprint_path,
+            component=component, expected_baseline=expected_baseline, settings=settings, dry_run=dry_run, save=save))
     
     @mcp.tool()
     def create_blueprint(

@@ -53,9 +53,9 @@ async def verify(root, source, port):
                 assert (value.get("success") is False) if failure else (value.get("success", True) and value.get("status") != "error"), value
                 return value
 
-            async def operation(name, arguments, label, failure=False):
+            async def operation(name, arguments, label, failure=False, category="niagara"):
                 if name not in contracts:
-                    contracts[name] = await call("niagara_search", {"tool": name}, name + "_contract")
+                    contracts[name] = await call(category + "_search", {"tool": name}, name + "_contract")
                 return await call(contracts[name]["call_tool"], {"tool": name, "arguments": arguments}, label, failure)
 
             scene = await call("scene_search", {"tool": "get_editor_context"}, "scene_contract")
@@ -66,7 +66,7 @@ async def verify(root, source, port):
             assert before_dirty["total_unsaved"] == 0
             system = destination + "/NS_Test"
             effect = destination + "/NET_Test"
-            copied = await call("duplicate_asset", {"source_asset_path": source, "destination_asset_path": system}, "isolated_copy")
+            copied = await operation("duplicate_asset", {"source_asset_path": source, "destination_asset_path": system}, "isolated_copy", category="asset")
             assert copied["saved"]
             preview = await operation("create_niagara_effect_type", {"asset_path": effect}, "create_preview")
             assert not preview["created"] and not preview["saved"]

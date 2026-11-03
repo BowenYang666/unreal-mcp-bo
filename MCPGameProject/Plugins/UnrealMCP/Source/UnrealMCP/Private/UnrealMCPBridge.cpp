@@ -1,8 +1,10 @@
 #include "UnrealMCPBridge.h"
 #include "Commands/UnrealMCPAssetMigration.h"
+#include "Commands/UnrealMCPAssetProperties.h"
 #include "Commands/UnrealMCPStringTableCommands.h"
 #include "Commands/UnrealMCPEnhancedInputCommands.h"
 #include "Commands/UnrealMCPAnimationCommands.h"
+#include "Commands/UnrealMCPComponentDefaults.h"
 #include "Commands/UnrealMCPSceneCommands.h"
 #include "Commands/UnrealMCPSceneAssets.h"
 #include "Commands/UnrealMCPPhysicalMaterialCommands.h"
@@ -313,6 +315,10 @@ FString UUnrealMCPBridge::ExecuteCommandOnGameThread(const FString& CommandType,
                 ResultJson = MakeShareable(new FJsonObject);
                 ResultJson->SetStringField(TEXT("message"), TEXT("pong"));
             }
+            else if (CommandType == TEXT("read_blueprint_component_defaults")) ResultJson = UnrealMCPComponentDefaults::Read(Params);
+            else if (CommandType == TEXT("set_blueprint_skeletal_component_defaults")) ResultJson = UnrealMCPComponentDefaults::Write(Params);
+            else if (CommandType == TEXT("read_data_asset_text_references")) ResultJson = UnrealMCPAssetProperties::ReadText(Params);
+            else if (CommandType == TEXT("bind_data_asset_text_references")) ResultJson = UnrealMCPAssetProperties::BindText(Params);
             else if (CommandType == TEXT("read_animation_asset")) ResultJson = UnrealMCPAnimation::Read(Params);
             else if (CommandType == TEXT("set_anim_sequence_additive")) ResultJson = UnrealMCPAnimation::SetAdditive(Params);
             else if (CommandType == TEXT("add_montage_native_notify")) ResultJson = UnrealMCPAnimation::AddNotify(Params);
@@ -550,6 +556,8 @@ FString UUnrealMCPBridge::ExecuteCommandOnGameThread(const FString& CommandType,
                 if (NiagaraCommand || CommandType.Contains(TEXT("string_table")) || CommandType == TEXT("duplicate_asset") || CommandType == TEXT("set_material_instance_parameters")
                     || CommandType == TEXT("read_input_mapping_context") || CommandType == TEXT("append_input_mapping_context_mappings")
                     || CommandType == TEXT("read_animation_asset") || CommandType == TEXT("set_anim_sequence_additive") || CommandType == TEXT("add_montage_native_notify")
+                    || CommandType == TEXT("read_blueprint_component_defaults") || CommandType == TEXT("set_blueprint_skeletal_component_defaults")
+                    || CommandType == TEXT("read_data_asset_text_references") || CommandType == TEXT("bind_data_asset_text_references")
                     || CommandType == TEXT("delete_material_expression") || CommandType == TEXT("add_emitter_to_system")
                     || CommandType == TEXT("reparent_widget") || CommandType == TEXT("set_widget_preview_settings") || CommandType == TEXT("get_widget_preview_settings")
                     || CommandType == TEXT("set_asset_properties") || CommandType == TEXT("create_data_asset")

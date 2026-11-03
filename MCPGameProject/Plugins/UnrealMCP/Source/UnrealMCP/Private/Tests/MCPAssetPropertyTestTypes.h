@@ -93,12 +93,30 @@ public:
     TMap<TEnumAsByte<EPhysicalSurface>, FMCPImpactTestSurface> Surfaces;
 };
 
+USTRUCT()
+struct FMCPAssetTextTestBranch
+{
+    GENERATED_BODY()
+    UPROPERTY(EditAnywhere, Category="Test")
+    FText Name;
+    UPROPERTY(EditAnywhere, Category="Test")
+    FText Description;
+    UPROPERTY(EditAnywhere, Category="Test")
+    int32 Cost = 17;
+};
+
 UCLASS(NotBlueprintable, Hidden)
 class UMCPAssetPropertyTestAsset : public UDataAsset
 {
     GENERATED_BODY()
 
 public:
+    UPROPERTY(EditAnywhere, Category="Test")
+    FText DisplayName;
+
+    UPROPERTY(EditAnywhere, Category="Test")
+    FMCPAssetTextTestBranch TextBranch;
+
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Test")
     FMCPAssetPropertyTestBulletHits BulletHits;
 

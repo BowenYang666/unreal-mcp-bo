@@ -23,12 +23,16 @@ Example: `D:\Projects\MyGame\Content\Player\Anims\MM_Fire.uasset` → `/Game/Pla
 
 Before claiming an asset cannot be inspected, try `get_class_properties(asset_path=...)`. It skips transient/deprecated fields and cannot expose data stored only in custom binary serialization; use specialized readers such as `read_blueprint`, `read_material`, `read_niagara_system`, or `read_state_tree` when graph/hierarchy semantics matter.
 
-Material/Niagara/UMG/Scene names in workflows are internal operations in default grouped
+Material/Niagara/UMG/Scene/Blueprint/Asset names in workflows are internal operations in default grouped
 mode. Discover their contract with `<category>_search(tool="<operation>")`, then
 call the returned `call_tool` with `tool` and `arguments` matching `input_schema`.
 Use the actual client-visible names/prefixes; reuse contracts, respect filters,
 and call original names directly only when exposed (for example in direct mode).
-Other categories retain their direct tools.
+Other categories retain their direct tools, including Blueprint Node operations and
+Project readers such as get_class_properties/read_data_asset/read_state_tree.
+For list_blueprints/read_blueprint/component defaults use blueprint_search;
+for asset writes/creation/FText/String Tables/animation/Enhanced Input/migration/
+rename/move/duplicate use asset_search. Respect independent category filters.
 Scene work starts with `scene_search(tool="get_editor_context")`, then the returned
 read endpoint with `tool="get_editor_context", arguments={}`. Reuse discovered
 contracts; do not dump all Scene schemas or call its original names in grouped mode.

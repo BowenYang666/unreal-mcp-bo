@@ -20,7 +20,8 @@
 | [Niagara 外观参数绑定 #141](niagara-vfx-appearance-parameter-binding.md) | 有限受控合同已实现并验收 SkillTest，已部署 NF，2026-11-01 | User 声明、精确 fresh/同值 Linked 绑定和 Float/Color 材质映射；SkillTest真实双MID接收通过，NF未试写，复杂override替换/全库视觉适配仍非目标 |
 | [Enhanced Input IMC配置缺口 #139](enhanced-input-mapping-authoring.md) | 有限合同已实现并验收，NF五行业务映射已保存，2026-11-02 | NF公开读写／非法Key与stale拒绝／重复no-op通过，54保护文件不变且用户草稿保留；本轮未重启NF冷读，CommonUI暂停路由与#139游戏接入仍Open |
 | [Animation Additive／Montage原生Notify](animation-additive-montage-notify-authoring.md) | 有限合同已实现并部署SkillTest／NF，2026-11-03 | SkillTest原生作者／实际姿态与回调／独立冷读通过；NF四动画完整读取／纯预览／拒绝烟测及生产保护通过，未写业务动画；生产类／发射时点／T3接入仍须NF验证 |
-| [Blueprint继承组件作者缺口](blueprint-inherited-component-authoring.md) | Open，2026-11-03；NF用户选择先补工具 | 能读cpp_inherited组件，但当前writer仅本地SCS／Actor直接CDO字段；缺Mesh／Anim Class的受控子BP默认组件作者合同，未试写生产T1／T2 |
+| [Blueprint继承组件作者缺口](blueprint-inherited-component-authoring.md) | 有限合同已实现并验收，已部署NF，2026-11-03；SkillTest未部署 | 仓库三来源／父兄弟／Undo／冷读／spawn／旧SCS回归通过；NF实际T1完整读／同值纯预览／stale拒绝及保护通过，未写生产BP，游戏装配仍待验证 |
+| [DataAsset FText的String Table引用](dataasset-string-table-text-authoring.md) | 维护侧已修复／NF已部署，2026-11-03；SkillTest未部署 | 仓库作者／Undo／保存故障／冷读／Gather语言切换通过；NF真实T1＋用户手动三处T3身份读取／同值preview／stale拒绝通过，全部Content保持，未改生产引用 |
 
 ## 1. Blueprint 折叠子图不可读
 

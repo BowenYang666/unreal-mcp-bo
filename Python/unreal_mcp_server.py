@@ -358,7 +358,9 @@ register_scene_tools(mcp)
 _read_only = os.environ.get("UNREAL_MCP_READ_ONLY", "").strip() in ("1", "true", "yes")
 
 _READ_ONLY_TOOLS = {
+    "read_blueprint_component_defaults",
     "read_animation_asset",
+    "read_data_asset_text_references",
     "read_input_mapping_context",
     "read_niagara_authoring",
     "read_string_table",
@@ -434,6 +436,7 @@ _CATEGORY_TOOLS = {
     "cascade": {"read_cascade_system"},
     "asset": {
         "read_animation_asset", "set_anim_sequence_additive", "add_montage_native_notify",
+        "read_data_asset_text_references", "bind_data_asset_text_references",
         "read_input_mapping_context", "append_input_mapping_context_mappings",
         "create_string_table", "read_string_table", "update_string_table_entries", "import_string_table_csv",
         "rename_asset", "move_asset", "duplicate_asset", "set_asset_properties", "create_data_asset", "create_physical_material",
@@ -479,6 +482,7 @@ _CATEGORY_TOOLS = {
         "project_point_to_navigation", "find_navigation_path",
     },
     "blueprint": {
+        "read_blueprint_component_defaults", "set_blueprint_skeletal_component_defaults",
         "create_blueprint", "add_component_to_blueprint", "set_component_property",
         "set_physics_properties", "compile_blueprint", "set_blueprint_property",
         "set_static_mesh_properties", "read_blueprint", "list_blueprints",
@@ -531,16 +535,15 @@ if _tool_mode == "grouped":
 @mcp.prompt()
 def info():
     """Information about available Unreal MCP tools and best practices."""
-    return """
+    return f"Current public tools: {len(mcp._tool_manager._tools)}; mode: {_tool_mode}; read_only: {_read_only}.\n" + """
         # Unreal MCP Server Guidance
 
-        There are 158 internal operations. Default grouped mode exposes 74 tools
-        before filtering: Material, Niagara, UMG and Scene each expose <category>_search,
+        In grouped mode, Material, Niagara, UMG, Scene, Blueprint and Asset expose <category>_search,
         <category>_call_read and <category>_call_write. Other categories stay direct.
         Search by keywords or browse with an empty query, then search by exact tool
         name for its full schema. Call the indicated read/write endpoint with tool
         and arguments. Reuse the contract for subsequent calls; do not guess names.
-        MCP_TOOL_MODE=direct exposes all 158 operations directly after reconnecting.
+        MCP_TOOL_MODE=direct exposes original operation names after reconnecting.
         Read-only/category filters apply in both modes; search never contacts UE.
 
         Core categories: Asset, Actor/Editor, Blueprint, Blueprint Node,
@@ -551,6 +554,9 @@ def info():
             then scene_call_read(tool="get_editor_context", arguments={}). Scene operation
             names are internal; use scene_search for their exact read/write contracts.
         - Blueprint asset/node tools use `blueprint_path` with a full `/Game/...` path.
+            Blueprint asset operations use blueprint_search and its returned endpoint;
+            Blueprint Node operations remain direct. Asset operations use asset_search
+            and its returned endpoint. Do not call their original names in grouped mode.
         - `spawn_blueprint_actor` is the exception: it uses `blueprint_name` plus `actor_name`.
         - `create_blueprint.name` must be a full content path.
         - `spawn_actor.type` supports StaticMeshActor, PointLight, SpotLight,

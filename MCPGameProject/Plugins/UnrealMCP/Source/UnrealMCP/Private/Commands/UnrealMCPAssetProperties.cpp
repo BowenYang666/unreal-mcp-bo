@@ -9,6 +9,16 @@
 #include "ScopedTransaction.h"
 #include "UObject/Package.h"
 #include "UObject/UnrealType.h"
+#include "UObject/TextProperty.h"
+#include "Internationalization/Text.h"
+#include "Internationalization/StringTable.h"
+#include "Internationalization/StringTableCore.h"
+#include "Editor.h"
+#include "AssetCompilingManager.h"
+#include "Misc/SecureHash.h"
+#include "Misc/Paths.h"
+#include "Policies/CondensedJsonPrintPolicy.h"
+#include "Serialization/JsonSerializer.h"
 
 namespace UnrealMCPAssetProperties
 {
@@ -614,6 +624,217 @@ namespace
         }
         return Result;
     }
+
+    FString TextJson(const TSharedPtr<FJsonObject>& Value)
+    {
+        FString Text; FJsonSerializer::Serialize(Value.ToSharedRef(), TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&Text)); return Text;
+    }
+
+    TSharedRef<FJsonObject> TextIdentity(const FText& Value)
+    {
+        auto Result = MakeShared<FJsonObject>(); FString History;
+        FTextStringHelper::WriteToBuffer(History, Value);
+        Result->SetStringField(TEXT("history"), History);
+        FName TableId; FString Key;
+        const bool FromTable = FTextInspector::GetTableIdAndKey(Value, TableId, Key);
+        Result->SetStringField(TEXT("kind"), FromTable ? TEXT("string_table") : TEXT("other"));
+        if (FromTable) { Result->SetStringField(TEXT("table_id"), TableId.ToString()); Result->SetStringField(TEXT("key"), Key); }
+        return Result;
+    }
+
+    TSharedPtr<FJsonObject> TextSnapshot(UObject* Asset, const TArray<FString>& Paths, FString& Error)
+    {
+        auto Result = MakeShared<FJsonObject>(); auto Identities = MakeShared<FJsonObject>();
+        Result->SetNumberField(TEXT("text_reference_contract"), 1); Result->SetStringField(TEXT("asset_path"), Asset->GetPackage()->GetName());
+        Result->SetStringField(TEXT("class_path"), Asset->GetClass()->GetPathName());
+        TArray<TSharedPtr<FJsonValue>> Fields;
+        for (const auto& Path : Paths)
+        {
+            FResolved Resolved;
+            if (!Resolve(Asset, Path, Resolved, Error)) { Error = Path + TEXT(": ") + Error; return nullptr; }
+            auto* Property = CastField<FTextProperty>(Resolved.Leaf);
+            if (!Property) { Error = Path + TEXT(": not an FText property"); return nullptr; }
+            const auto Value = Property->GetPropertyValue(Resolved.Address); auto Identity = TextIdentity(Value);
+            if (Identity->GetStringField(TEXT("history")).Len() > 65536) { Error = Path + TEXT(": text history exceeds bound"); return nullptr; }
+            auto Row = MakeShared<FJsonObject>(); Row->SetStringField(TEXT("path"), Path); Row->SetObjectField(TEXT("identity"), Identity); Row->SetStringField(TEXT("text"), Value.ToString());
+            int32 Budget = MaxValues; FString ConditionError; Row->SetBoolField(TEXT("writable"), ConditionsMet(Resolved, nullptr, nullptr, ConditionError, Budget));
+            if (!ConditionError.IsEmpty()) Row->SetStringField(TEXT("restriction"), ConditionError);
+            Fields.Add(MakeShared<FJsonValueObject>(Row)); Identities->SetObjectField(Path, Identity);
+        }
+        auto Baseline = MakeShared<FJsonObject>(); Baseline->SetStringField(TEXT("asset_path"), Asset->GetPackage()->GetName()); Baseline->SetStringField(TEXT("class_path"), Asset->GetClass()->GetPathName());
+        Baseline->SetObjectField(TEXT("identities"), Identities);
+        const FString File = FPackageName::LongPackageNameToFilename(Asset->GetPackage()->GetName(), FPackageName::GetAssetPackageExtension());
+        Baseline->SetStringField(TEXT("saved_package_hash"), FPaths::FileExists(File) ? LexToString(FMD5Hash::HashFile(*File)) : TEXT("unsaved_package"));
+        const auto Text = TextJson(Baseline); const FTCHARToUTF8 Bytes(*Text); FSHAHash Hash; FSHA1::HashBuffer(Bytes.Get(), Bytes.Length(), Hash.Hash);
+        Result->SetStringField(TEXT("baseline"), Hash.ToString()); Result->SetArrayField(TEXT("fields"), Fields); Result->SetBoolField(TEXT("complete"), true);
+        Result->SetBoolField(TEXT("package_dirty"), Asset->GetPackage()->IsDirty());
+        Result->SetStringField(TEXT("semantics"), TEXT("Selected editable DataAsset FText histories. Baseline excludes culture-dependent display strings. History is read-only evidence, never accepted as ImportText instructions.")); return Result;
+    }
+
+    bool TextPaths(const TSharedPtr<FJsonObject>& Params, TArray<FString>& Paths, FString& Error)
+    {
+        const TArray<TSharedPtr<FJsonValue>>* Values = nullptr;
+        if (!Params || !Params->TryGetArrayField(TEXT("property_paths"), Values) || Values->IsEmpty() || Values->Num() > 64) { Error = TEXT("property_paths requires 1..64 exact FText paths"); return false; }
+        TSet<FString> Seen;
+        for (const auto& Value : *Values)
+        {
+            FString Path; if (!Value || !Value->TryGetString(Path) || Path.IsEmpty() || Path.Len() > 512 || Seen.Contains(Path)) { Error = TEXT("Invalid/duplicate FText path"); return false; }
+            Seen.Add(Path); Paths.Add(Path);
+        }
+        Paths.Sort(); return true;
+    }
+
+    bool TextPackagePath(const FString& Path)
+    {
+        if (Path.Len() >= NAME_SIZE || !Path.StartsWith(TEXT("/Game/")) || Path.Contains(TEXT(".")) || !FPackageName::IsValidLongPackageName(Path)) return false;
+        for (const TCHAR Character : Path) if (Character == 0) return false;
+        return true;
+    }
+
+    FString TextRootValue(FProperty* Property, const void* Address, UObject* Asset)
+    {
+        FString Value; Property->ExportTextItem_Direct(Value, Address, nullptr, Asset, PPF_None); return Value;
+    }
+
+#if WITH_DEV_AUTOMATION_TESTS
+    bool FailTextSaveForTest = false;
+#endif
+}
+
+TSharedPtr<FJsonObject> ReadText(const TSharedPtr<FJsonObject>& Params)
+{
+    FString Error; TArray<FString> Paths;
+    if (!TextPaths(Params, Paths, Error)) return Failure(Error);
+    for (const auto& Field : Params->Values) if (Field.Key != TEXT("asset_path") && Field.Key != TEXT("property_paths")) return Failure(TEXT("Unknown text reader argument"));
+    FString AssetPath; if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath) || !TextPackagePath(AssetPath)) return Failure(TEXT("Expected bounded /Game package path"));
+    auto* Asset = LoadTarget(Params, Error);
+    if (!Asset || !Asset->IsA<UDataAsset>()) return Failure(Error.IsEmpty() ? TEXT("Text references require a DataAsset instance") : Error);
+    auto Result = TextSnapshot(Asset, Paths, Error); if (!Result) return Failure(Error);
+    Result->SetBoolField(TEXT("success"), true); Result->SetBoolField(TEXT("modified"), false); Result->SetBoolField(TEXT("saved"), false); return Result;
+}
+
+#if WITH_DEV_AUTOMATION_TESTS
+void SetTextSaveFailureForTests(bool Fail) { FailTextSaveForTest = Fail; }
+#endif
+
+TSharedPtr<FJsonObject> BindText(const TSharedPtr<FJsonObject>& Params)
+{
+    auto Reject = [](const FString& Error) { return Failure(Error, TEXT("preflight")); };
+    if (!Params) return Reject(TEXT("Missing arguments"));
+    for (const auto& Field : Params->Values)
+        if (Field.Key != TEXT("asset_path") && Field.Key != TEXT("expected_baseline") && Field.Key != TEXT("bindings") && Field.Key != TEXT("dry_run") && Field.Key != TEXT("save")) return Reject(TEXT("Unknown text binding argument"));
+    if (!GEditor || GEditor->PlayWorld || GEditor->bIsSimulatingInEditor || GIsSavingPackage || IsGarbageCollecting() || GIsSlowTask
+        || FAssetCompilingManager::Get().GetNumRemainingAssets() != 0) return Reject(TEXT("Requires idle editor, outside PIE, saving, GC and asset compilation"));
+    bool DryRun = true, Save = false;
+    if ((Params->HasField(TEXT("dry_run")) && !Params->TryGetBoolField(TEXT("dry_run"), DryRun))
+        || (Params->HasField(TEXT("save")) && !Params->TryGetBoolField(TEXT("save"), Save))) return Reject(TEXT("dry_run/save must be boolean"));
+    FString AssetPath, Expected, Error;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath) || !TextPackagePath(AssetPath)
+        || !Params->TryGetStringField(TEXT("expected_baseline"), Expected) || Expected.Len() != 40) return Reject(TEXT("Requires bounded /Game package path and exact reader baseline"));
+    auto* Asset = LoadTarget(Params, Error);
+    if (!Asset || !Asset->IsA<UDataAsset>()) return Reject(Error.IsEmpty() ? TEXT("Requires DataAsset instance") : Error);
+    if (Asset->GetPackage()->IsDirty()) return Reject(TEXT("Target has unsaved changes; save or discard explicitly first"));
+    const TArray<TSharedPtr<FJsonValue>>* Bindings = nullptr;
+    if (!Params->TryGetArrayField(TEXT("bindings"), Bindings) || Bindings->IsEmpty() || Bindings->Num() > 64) return Reject(TEXT("bindings requires 1..64 rows"));
+    FStagedValues Staged;
+    TArray<FString> Paths;
+    TMap<FString, TSharedPtr<FJsonObject>> Desired;
+    TMap<FProperty*, FString> ProposedRoots;
+    TSet<FProperty*> ChangedRoots;
+    TMap<UStringTable*, FString> TableHashes;
+    for (const auto& Value : *Bindings)
+    {
+        if (!Value || Value->Type != EJson::Object) return Reject(TEXT("Binding must be object"));
+        const auto Row = Value->AsObject();
+        for (const auto& Field : Row->Values)
+            if (Field.Key != TEXT("path") && Field.Key != TEXT("table_path") && Field.Key != TEXT("key") && Field.Key != TEXT("expected_table_id") && Field.Key != TEXT("expected_namespace")) return Reject(TEXT("Unknown binding field"));
+        FString Path, TablePath, Key, TableId, Namespace;
+        if (!Row->TryGetStringField(TEXT("path"), Path) || Path.IsEmpty() || Path.Len() > 512 || Paths.Contains(Path)
+            || !Row->TryGetStringField(TEXT("table_path"), TablePath) || !TextPackagePath(TablePath)
+            || !Row->TryGetStringField(TEXT("key"), Key) || Key.TrimStartAndEnd().IsEmpty() || Key.Len() > 1024
+            || !Row->TryGetStringField(TEXT("expected_table_id"), TableId) || TableId.Len() >= NAME_SIZE
+            || !Row->TryGetStringField(TEXT("expected_namespace"), Namespace) || Namespace.Len() > 1024) return Reject(TEXT("Requires unique path, canonical table package, existing key, expected_table_id and expected_namespace"));
+        for (const TCHAR Character : Key) if (Character == 0 || Character == '\r' || Character == '\n') return Reject(TEXT("Invalid key character"));
+        FResolved Original;
+        if (!Resolve(Asset, Path, Original, Error) || !CastField<FTextProperty>(Original.Leaf)) return Reject(Path + TEXT(": ") + (Error.IsEmpty() ? TEXT("not FText") : Error));
+        if (!UEditorAssetLibrary::DoesAssetExist(TablePath)) return Reject(TEXT("String Table does not exist"));
+        auto* Table = Cast<UStringTable>(UEditorAssetLibrary::LoadAsset(TablePath));
+        if (!Table || !Table->IsAsset() || Table->GetPackage()->GetName() != TablePath || Table->GetPackage()->IsDirty()
+            || !FPackageName::DoesPackageExist(TablePath)) return Reject(TEXT("Table must be an existing saved clean UStringTable, not redirector"));
+        if (Table->GetStringTableId().ToString() != TableId || Table->GetStringTable()->GetNamespace() != Namespace
+            || !Table->GetStringTable()->FindEntry(FTextKey(Key)).IsValid()) return Reject(TEXT("Table ID/namespace mismatch or missing key"));
+        const FString TableFile = FPackageName::LongPackageNameToFilename(TablePath, FPackageName::GetAssetPackageExtension());
+        TableHashes.Add(Table, LexToString(FMD5Hash::HashFile(*TableFile)));
+        if (!Staged.Contains(Original.Root)) Staged.Add(Original.Root, MakeShared<FValueStorage>(Original.Root, Original.Root->ContainerPtrToValuePtr<void>(Asset)));
+        FResolved Pending;
+        if (!Resolve(Asset, Path, Pending, Error, Staged[Original.Root]->Data)) return Reject(Path + TEXT(": ") + Error);
+        const FText Native = FText::FromStringTable(Table->GetStringTableId(), Key);
+        const auto Identity = TextIdentity(Native);
+        if (Identity->GetStringField(TEXT("kind")) != TEXT("string_table") || Identity->GetStringField(TEXT("table_id")) != TableId || Identity->GetStringField(TEXT("key")) != Key) return Reject(TEXT("Native text identity did not resolve exactly"));
+        const auto* Property = CastFieldChecked<FTextProperty>(Pending.Leaf);
+        if (TextJson(TextIdentity(Property->GetPropertyValue(Original.Address))) != TextJson(Identity)) ChangedRoots.Add(Original.Root);
+        Property->SetPropertyValue(Pending.Address, Native);
+        Desired.Add(Path, Identity); Paths.Add(Path);
+    }
+    Paths.Sort();
+    auto Before = TextSnapshot(Asset, Paths, Error);
+    if (!Before || Before->GetStringField(TEXT("baseline")) != Expected) return Reject(TEXT("Stale or mismatched selected-path baseline"));
+    for (const FString& Path : Paths)
+    {
+        FResolved Original, Pending; int32 Budget = MaxValues;
+        if (!Resolve(Asset, Path, Original, Error) || !Resolve(Asset, Path, Pending, Error, Staged[Original.Root]->Data)
+            || !ConditionsMet(Pending, Original.Address, &Staged, Error, Budget)) return Reject(Path + TEXT(": ") + Error);
+    }
+    for (const auto& Entry : Staged) ProposedRoots.Add(Entry.Key, TextRootValue(Entry.Key, Entry.Value->Data, Asset));
+    auto Result = MakeShared<FJsonObject>();
+    Result->SetNumberField(TEXT("text_reference_contract"), 1); Result->SetStringField(TEXT("asset_path"), AssetPath);
+    Result->SetBoolField(TEXT("success"), true); Result->SetBoolField(TEXT("dry_run"), DryRun); Result->SetBoolField(TEXT("would_modify"), !ChangedRoots.IsEmpty());
+    Result->SetBoolField(TEXT("modified"), false); Result->SetBoolField(TEXT("saved"), false); Result->SetBoolField(TEXT("package_dirty"), Asset->GetPackage()->IsDirty());
+    Result->SetObjectField(TEXT("before"), Before); Result->SetObjectField(TEXT("after"), Before);
+    auto Proposal = MakeShared<FJsonObject>(); for (const FString& Path : Paths) Proposal->SetObjectField(Path, Desired[Path]); Result->SetObjectField(TEXT("proposed_identities"), Proposal);
+    Result->SetStringField(TEXT("stage"), DryRun ? TEXT("preview") : TEXT("no_op"));
+    if (DryRun || ChangedRoots.IsEmpty()) return Result;
+    {
+        FScopedTransaction Transaction(NSLOCTEXT("UnrealMCP", "BindDataAssetText", "Bind DataAsset String Table references"));
+        Asset->Modify();
+        for (auto* Root : ChangedRoots) { Asset->PreEditChange(Root); Root->CopyCompleteValue(Root->ContainerPtrToValuePtr<void>(Asset), Staged[Root]->Data); }
+        Asset->MarkPackageDirty();
+        for (auto* Root : ChangedRoots) { FPropertyChangedEvent Event(Root, EPropertyChangeType::ValueSet); Asset->PostEditChangeProperty(Event); }
+    }
+    Result->SetBoolField(TEXT("modified"), true);
+    auto FailAfter = [&](const FString& Stage, const FString& Message)
+    {
+        Result->SetBoolField(TEXT("success"), false); Result->SetStringField(TEXT("stage"), Stage); Result->SetStringField(TEXT("error"), Message);
+        Result->SetBoolField(TEXT("package_dirty"), Asset->GetPackage()->IsDirty()); return Result;
+    };
+    auto Verify = [&]()
+    {
+        auto After = TextSnapshot(Asset, Paths, Error);
+        if (!After) { Result->SetField(TEXT("after"), MakeShared<FJsonValueNull>()); return false; }
+        Result->SetObjectField(TEXT("after"), After);
+        for (const auto& Field : After->GetArrayField(TEXT("fields"))) if (TextJson(Field->AsObject()->GetObjectField(TEXT("identity"))) != TextJson(Desired[Field->AsObject()->GetStringField(TEXT("path"))])) return false;
+        for (const auto& Entry : ProposedRoots) if (TextRootValue(Entry.Key, Entry.Key->ContainerPtrToValuePtr<void>(Asset), Asset) != Entry.Value) return false;
+        for (const auto& Entry : TableHashes)
+        {
+            const FString File = FPackageName::LongPackageNameToFilename(Entry.Key->GetPackage()->GetName(), FPackageName::GetAssetPackageExtension());
+            if (Entry.Key->GetPackage()->IsDirty() || LexToString(FMD5Hash::HashFile(*File)) != Entry.Value) return false;
+        }
+        return true;
+    };
+    if (!Verify()) return FailAfter(TEXT("readback"), TEXT("Post-edit identity/root/table verification failed; in-memory edits remain, not saved. Do not retry."));
+    bool Saved = false;
+    if (Save)
+    {
+        bool AllowSave = true;
+#if WITH_DEV_AUTOMATION_TESTS
+        AllowSave = !FailTextSaveForTest;
+#endif
+        Saved = AllowSave && UEditorAssetLibrary::SaveLoadedAsset(Asset, false) && !Asset->GetPackage()->IsDirty() && FPackageName::DoesPackageExist(AssetPath);
+        Result->SetBoolField(TEXT("saved"), Saved);
+        if (!Saved) return FailAfter(TEXT("save"), TEXT("Save failed; applied in-memory edits remain. No rollback or retry performed."));
+        if (!Verify()) return FailAfter(TEXT("readback"), TEXT("Saved but post-save verification failed; inspect after and disk before further writes."));
+    }
+    Result->SetBoolField(TEXT("package_dirty"), Asset->GetPackage()->IsDirty()); Result->SetStringField(TEXT("stage"), Saved ? TEXT("saved") : TEXT("applied")); return Result;
 }
 
 TSharedPtr<FJsonValue> EncodeValue(FProperty* Property, const void* Address, FString& Error)

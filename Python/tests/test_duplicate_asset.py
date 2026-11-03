@@ -75,10 +75,10 @@ class DuplicateAssetTests(unittest.TestCase):
         environment = {key: value for key, value in os.environ.items()
                        if key != "UNREAL_MCP_READ_ONLY" and not (key.startswith("MCP_") and key.endswith("_ENABLED"))}
         for overrides, grouped_count, direct_count, exposed in (
-            ({}, 79, 163, True),
-            ({"UNREAL_MCP_READ_ONLY": "1"}, 33, 47, False),
-            ({"MCP_ASSET_ENABLED": "0"}, 60, 144, False),
-            ({"MCP_EDITOR_ENABLED": "0"}, 61, 145, True),
+            ({}, 57, 167, True),
+            ({"UNREAL_MCP_READ_ONLY": "1"}, 29, 49, False),
+            ({"MCP_ASSET_ENABLED": "0"}, 54, 146, False),
+            ({"MCP_EDITOR_ENABLED": "0"}, 39, 149, True),
         ):
             for mode, expected_count in (("grouped", grouped_count), ("direct", direct_count)):
                 with self.subTest(overrides=overrides, mode=mode):
@@ -89,7 +89,9 @@ class DuplicateAssetTests(unittest.TestCase):
                         capture_output=True, text=True, check=True)
                     tools = json.loads(process.stdout)
                     self.assertEqual(len(tools), expected_count)
-                    self.assertEqual("duplicate_asset" in tools, exposed)
+                    self.assertEqual("duplicate_asset" in tools, exposed and mode == "direct")
+                    if mode == "grouped":
+                        self.assertEqual("asset_call_write" in tools, exposed)
 
 
 if __name__ == "__main__":

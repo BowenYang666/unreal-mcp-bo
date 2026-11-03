@@ -2,6 +2,12 @@
 
 Tools for inspecting editor state, reading logs, saving/opening assets, and managing levels. Actor operations are documented separately in [Actor Tools](actor_tools.md).
 
+Editor/Actor operations remain direct. Asset rename/move/duplicate and dependency
+migration operations in this document instead use `asset_search` and its returned
+read/write endpoint in grouped mode; their examples describe internal operation
+inputs. `MCP_TOOL_MODE=direct` retains all original names. See the
+[calling guide](README.md#grouped-mode-default).
+
 `focus_viewport` and `take_screenshot` exist as legacy C++ commands but are not registered as Python MCP tools and are therefore not part of the supported tool surface.
 
 ## Editor Tools
@@ -200,11 +206,17 @@ It requires pre-existing source and copied textures; it never creates or saves t
 
 ### Dependency Copy Workflow
 
-These four direct **Asset-category** tools connect Python MCP calls to the native
+These four **Asset-category** operations connect Python MCP calls to the native
 `UnrealMCPAssetMigration` implementation. They are independent of the Editor and
 Project category switches. `UNREAL_MCP_READ_ONLY=1` retains plan/status/verify,
 but removes execution. They require the matching deployed C++ plugin; Python
 schema visibility alone does not prove that the editor has command routing.
+
+In grouped mode discover these four operations, and rename/move/duplicate, using
+`asset_search(tool="<operation>")`; execute the returned read/write endpoint
+with `tool` and `arguments`. Their original names are internal, including the
+examples below. `MCP_TOOL_MODE=direct` exposes original names. Other Editor/Actor
+operations in this document remain direct. Grouping adds no native save or retry.
 
 This is dependency copying **within the current project**, not Unreal's final
 cross-project **Migrate** command. It does not operate on another project's

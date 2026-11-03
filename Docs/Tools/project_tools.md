@@ -4,6 +4,14 @@
 
 Project tools provide cross-cutting functionality that isn't tied to a specific asset type — input mappings, data asset reading, and class property discovery.
 
+Calling convention: **Asset** operations below are internal in default grouped
+mode. Discover with `asset_search(tool="<operation>")`, then use the returned
+read/write endpoint with `tool` and `arguments` matching `input_schema`; reuse
+contracts. Examples describe operation inputs, not direct public MCP names.
+`MCP_TOOL_MODE=direct` keeps original names. Project-category readers such as
+`get_class_properties`, `read_data_asset` and `read_state_tree` remain direct.
+See the [calling guide](README.md#grouped-mode-default).
+
 ## Project Tools
 
 ### create_input_mapping
@@ -17,9 +25,105 @@ do not create a second Legacy mapping as an Enhanced Input workaround.
 - `key` (string) - Key or axis to bind (e.g. "SpaceBar", "Gamepad_FaceButton_Bottom")
 - `input_type` (string, optional) - `"Action"` or `"Axis"` (default: `"Action"`)
 
+## DataAsset Text References
+
+Two **Asset** operations; grouped by default, original names in direct mode.
+`MCP_ASSET_ENABLED=0` hides both;
+read-only mode retains only `read_data_asset_text_references`. Source implementation
+and isolated repository UE5.7.4 acceptance passed on 2026-11-03. **Deployed to NF
+on 2026-11-03; SkillTest has not received this addition.** NF's existing T1 and
+user-completed three T3 references passed actual native-identity read, same-identity
+preview and stale refusal through configured stdio, without production writes.
+Full authoring/Undo/cold/localization proofs remain repository-only, not NF tests.
+Shared Python discovery alone does not update DLLs.
+This does not authorize business text selection, translation edits or migration.
+
+### read_data_asset_text_references
+
+Required: canonical `/Game/...` DataAsset/PrimaryDataAsset package `asset_path`
+and `property_paths`, 1..64 unique exact FText paths. For example:
+
+```json
+{"asset_path":"/Game/Data/DA_Tower","property_paths":["DisplayName","A.Name","A.Description"]}
+```
+
+Existing protected path rules apply: editable roots, ordinary non-Instanced
+structs and supported existing array indices, no UObject traversal, class/CDO,
+arbitrary asset type, map-key path or instanced graph editing. Each selected
+field returns actual native `identity` (`kind`, read-only serialized `history`,
+and `table_id`/`key` for String Table histories), display `text`, `writable` and
+any condition restriction. Unsupported paths fail the request, not silent omission.
+The successful selected scope has `text_reference_contract=1`, `complete=true`,
+`baseline`, class/package identity and `package_dirty`. This is not a full asset export.
+
+The baseline hashes sorted path identities, target class/package and saved-package
+bytes, **not culture-dependent display strings**. Different Key with identical
+source text, or another Table with the same Key/text, is distinct. Read the exact
+path scope intended for the batch; re-read after saves/edits. Reads do not dirty,
+compile, save, change culture or interpret serialized histories as commands.
+
+### bind_data_asset_text_references
+
+Required: `asset_path`, `expected_baseline` from the exact selected-path reader,
+and `bindings` with 1..64 rows. Defaults: `dry_run=true`, `save=false`.
+
+```json
+{
+  "asset_path":"/Game/Data/DA_Tower",
+  "expected_baseline":"<reviewed exact-path baseline>",
+  "bindings":[{
+    "path":"DisplayName",
+    "table_path":"/Game/Text/ST_Towers",
+    "key":"Tower.Name",
+    "expected_table_id":"/Game/Text/ST_Towers.ST_Towers",
+    "expected_namespace":"Towers"
+  }]
+}
+```
+
+Get the actual ID, Namespace and keys from `read_string_table`; never infer them
+from an asset name. Both asset paths are bounded canonical package paths, without
+object suffixes. Every table must exist as a saved clean UStringTable, have the
+exact expected ID/Namespace and already contain the specified Key. No auto-create,
+rename, source-text/translation copying, `ImportText` or `LOCTABLE` parsing.
+
+The whole batch is validated/staged before mutation. Dirty targets (even when
+`save=false`), dirty/unsaved tables, stale baselines, duplicate paths, wrong types,
+unsupported edit conditions and invalid last rows refuse before any target edit.
+Requires an idle editor outside PIE/saving/GC/asset compilation; it never completes
+unrelated assets. Apply uses native `FText::FromStringTable`, one transaction and
+formal root-property notifications. Unspecified struct siblings remain intact;
+readback checks selected identities, complete staged roots and table file hashes.
+Save, when requested, affects only this DataAsset. A true identity no-op neither
+modifies nor saves, even with `save=true`; equal display text alone is not a no-op.
+
+Inspect actual `before`/`after`, `proposed_identities`, `would_modify`, `modified`,
+`saved`, `package_dirty`, `dry_run`, `stage` and complete `overflow.file_path`.
+Preview's `after` remains the actual original state, not a fictional applied result.
+Readback/save failure can leave applied changes; receipts retain those flags and
+after-state, not rollback claims. Transport timeout has UNKNOWN execution/save
+state with no false `modified=false`/`saved=false` assertion and no automatic retry.
+Review/read back before any further writes. Generic plain-string reads/writes are
+unchanged; legitimate literal `LOCTABLE(...)` remains literal, never a command.
+
+Verification: 89 Python tests, isolated native TextRead/TextBind plus existing
+Validation/EditConditions passed, including three fields, same-display identity
+conflicts, invalid-last-row atomic refusal, dirty/type/table/key/namespace guards,
+Undo/Redo, no-op and private save-failure injection (disk unchanged, memory edited).
+The saved fixture passed independent cold baseline/sibling checks and real native
+Gather -> PO Import -> locres Compile -> en/zh-Hans/en FText switching, with the
+plugin enabled. Language validation explicitly loads fixture locres, not business
+localization configuration or manual font/UI acceptance. The existing
+[localization harness](../../Python/scripts/localization/verify_string_table_localization.py)
+supports `--asset-text --verify-language --root /Game/__Dev/AssetText_<unique>`.
+Fresh public stdio on a new repository __Dev copy verified preview, native saved
+three-field binding, invalid batch/stale refusal and identity no-op, source/config
+hashes unchanged and zero dirty packages. No NF T1/T2/T3 or translation was edited.
+
 ## Animation Assets
 
-Three direct **Asset** tools in both MCP modes. `MCP_ASSET_ENABLED=0` hides all
+Three **Asset** operations; grouped by default, original names in direct mode.
+`MCP_ASSET_ENABLED=0` hides all
 three; read-only mode retains only `read_animation_asset`. Requires the matching
 native plugin, including the AnimationBlueprintLibrary module dependency.
 **Deployed to SkillTest and NF on 2026-11-03, UE5.7.4.** SkillTest's native
@@ -160,7 +264,8 @@ muzzle/target snapshot/cooldown behavior or game integration.
 
 ## Enhanced Input Assets
 
-Two direct **Asset** tools in both MCP modes. `MCP_ASSET_ENABLED=0` hides both;
+Two **Asset** operations; grouped by default, original names in direct mode.
+`MCP_ASSET_ENABLED=0` hides both;
 read-only mode keeps only `read_input_mapping_context`. Requires the matching
 native plugin and its EnhancedInput dependency. Repository UE5.7.4 native and
 public stdio acceptance passed. **Deployed to NF on 2026-11-02**: native reader,
@@ -340,7 +445,8 @@ Filter by category:
 
 ## String Table Assets
 
-These four direct tools belong to the **Asset** category in both MCP modes.
+These four operations belong to the **Asset** category: grouped by default,
+original names directly exposed in direct mode.
 `MCP_ASSET_ENABLED=0` hides all four; read-only mode keeps only `read_string_table`.
 Requires the matching native plugin, not just a Python restart. Asset paths are
 `/Game/...` package paths without `.AssetName` suffixes. Reflected UObject reads
@@ -489,7 +595,7 @@ remain available for other asset classes and unsupported DataAsset fields.
 
 Patch one existing `UDataAsset`/`UPrimaryDataAsset` instance, including instances
 of Blueprint-derived DataAsset classes, or allowlisted `UPhysicalMaterial` fields.
-This is a direct **Asset-category** tool
+This is an **Asset-category** operation, grouped by default and directly exposed in direct mode,
 in both MCP modes (`MCP_ASSET_ENABLED`), not part of the Project category. It is
 removed in read-only mode. Requires the updated C++ plugin; restart alone does
 not add the native command to an older deployed DLL.
@@ -536,6 +642,8 @@ Supported values and boundaries:
 - GameplayTag uses a registered tag name (empty string clears); TagContainer
   uses an array of registered names (empty array clears). No tag registration.
 - FText writes use plain strings and do not preserve localization identity.
+  For true native String Table histories use the separate
+  [DataAsset Text References](#dataasset-text-references) contract above.
   Sets, instanced objects, delegates, static C arrays, unsupported conditions and
   unsupported nested structures are rejected. Texture/Mesh/Material/Blueprint
   graph editing, MI Parent and class reparenting are excluded. Creation uses the

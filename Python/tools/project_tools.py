@@ -81,8 +81,58 @@ def call_animation_command(command: str, params: dict) -> dict:
                 spilled[key] = result[key]
     return spilled
 
+def call_text_reference_command(command: str, params: dict) -> dict:
+    """Preserve full identity scopes and truthful mutation receipts without retries."""
+    from unreal_mcp_server import spill_if_oversized
+    from uuid import uuid4
+
+    result = call_asset_command(command, params)
+    metadata = ("success", "text_reference_contract", "complete", "baseline", "asset_path",
+                "dry_run", "would_modify", "modified", "saved", "package_dirty", "stage", "error", "message")
+    spilled = spill_if_oversized(result, command, uuid4().hex, preview_keys=metadata,
+        hint="Read the complete FText identity snapshot/receipt file. Timeout is UNKNOWN execution state; read back before any further write, never blindly retry.")
+    if spilled is not result and spilled.get("overflow"):
+        for key in metadata:
+            if key in result:
+                spilled[key] = result[key]
+    return spilled
+
 def register_project_tools(mcp: FastMCP):
     """Register project tools with the MCP server."""
+
+    @mcp.tool()
+    def read_data_asset_text_references(ctx: Context, asset_path: str, property_paths: list[str]) -> dict:
+        """Read exact selected DataAsset FText identities and display strings without mutation.
+
+        Example: asset_path='/Game/Data/DA_Tower', property_paths=['DisplayName','A.Name'].
+        Requires 1..64 exact editable root/ordinary-struct FText paths, no object traversal.
+        Returns text_reference_contract=1, actual native table_id/key/history, writable,
+        complete and a baseline for this exact path scope, independent of display culture.
+        History is read-only evidence, never an ImportText instruction. Legacy plain-string
+        readers are unchanged. Read overflow.file_path in full. Matching plugin required.
+        """
+        return call_text_reference_command("read_data_asset_text_references", dict(asset_path=asset_path, property_paths=property_paths))
+
+    @mcp.tool()
+    def bind_data_asset_text_references(ctx: Context, asset_path: str, expected_baseline: str,
+                                       bindings: list[dict], dry_run: bool = True, save: bool = False) -> dict:
+        """Preview/bind existing String Table keys to selected DataAsset FText properties.
+
+        Example: asset_path='/Game/Data/DA_Tower', expected_baseline=<reader for exact paths>,
+        bindings=[{'path':'DisplayName','table_path':'/Game/Text/ST_Towers','key':'Tower.Name',
+                   'expected_table_id':'/Game/Text/ST_Towers.ST_Towers','expected_namespace':'Towers'}].
+        Table paths are canonical /Game package paths (no .object suffix). Discover actual
+        ID/namespace/keys with read_string_table, never infer them. Up to 64 unique FText
+        paths; dirty target/table, stale identity, missing key or unsupported path rejects
+        the whole batch. No key creation, namespace edits, translation copying or ImportText.
+        Defaults dry-run/no-save. One transaction/native property notifications; optional
+        save targets only this DataAsset, no-op never writes/saves. Other fields retained.
+        Real native FText::FromStringTable histories, not current display strings.
+        Inspect actual modified/saved/package_dirty/stage/after on failure. Timeout means
+        unknown outcome, not rollback; no automatic retry. Matching native plugin required.
+        """
+        return call_text_reference_command("bind_data_asset_text_references", dict(asset_path=asset_path,
+            expected_baseline=expected_baseline, bindings=bindings, dry_run=dry_run, save=save))
 
     @mcp.tool()
     def read_animation_asset(ctx: Context, asset_path: str) -> dict:

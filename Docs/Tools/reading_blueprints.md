@@ -13,6 +13,13 @@ When working with AI assistants to modify or extend your Unreal Engine project, 
 
 These tools are **read-only** — they inspect existing Blueprints without modifying them.
 
+In default grouped mode these names are internal operations. Discover schemas
+with `blueprint_search(tool="list_blueprints")` or `blueprint_search(tool="read_blueprint")`,
+then call the returned `blueprint_call_read` using `tool` and an `arguments` object.
+Reuse contracts; examples below show underlying operation inputs and outputs.
+Original names are directly exposed only in `MCP_TOOL_MODE=direct`. Blueprint Node
+tools such as `find_blueprint_nodes` remain direct, with their separate filter.
+
 ## Quick Start
 
 ### 1. Discover Blueprints in Your Project
@@ -23,7 +30,7 @@ Use `list_blueprints` to find what Blueprints exist:
 "List all the blueprints in my project"
 ```
 
-The AI assistant will call `list_blueprints()` and return a summary like:
+The AI assistant will run the discovered `list_blueprints` operation and return a summary like:
 
 ```json
 {

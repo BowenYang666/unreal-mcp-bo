@@ -40,7 +40,8 @@ class GroupedToolsTests(unittest.IsolatedAsyncioTestCase):
             self.calls.append("other")
             return {}
 
-        self.categories = {"material": {"read_sample", "write_sample"}, "niagara": set(), "umg": set(), "scene": set()}
+        self.categories = {"material": {"read_sample", "write_sample"}, "niagara": set(), "umg": set(),
+                   "scene": set(), "blueprint": set(), "asset": set()}
         self.original_schema = self.server._tool_manager.get_tool("read_sample").parameters
 
     def group(self):
@@ -150,12 +151,12 @@ class GroupedServerTests(unittest.IsolatedAsyncioTestCase):
         grouped = self.load_server()
         direct_tools = await direct.mcp.list_tools()
         grouped_tools = await grouped.mcp.list_tools()
-        self.assertEqual(len(direct_tools), 163)
-        self.assertEqual(len(grouped_tools), 79)
+        self.assertEqual(len(direct_tools), 167)
+        self.assertEqual(len(grouped_tools), 57)
         self.assertEqual(set().union(*direct._CATEGORY_TOOLS.values()), {tool.name for tool in direct_tools})
         size = lambda tools: len(json.dumps([tool.model_dump(exclude_none=True) for tool in tools]))
         self.assertLess(size(grouped_tools), size(direct_tools) * 0.5)
-        for category in ("material", "niagara", "umg", "scene"):
+        for category in ("material", "niagara", "umg", "scene", "blueprint", "asset"):
             search = grouped.mcp._tool_manager.get_tool(f"{category}_search")
             for name in direct._CATEGORY_TOOLS[category]:
                 with self.subTest(tool=name):
@@ -168,21 +169,86 @@ class GroupedServerTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(contract["effect"], expected_effect)
 
     async def test_readonly_and_disabled_categories(self):
-        self.assertEqual(len(await self.load_server("direct", True).mcp.list_tools()), 47)
+        self.assertEqual(len(await self.load_server("direct", True).mcp.list_tools()), 49)
+        self.assertEqual(len(await self.load_server(disabled=("node",)).mcp.list_tools()), 49)
         readonly = self.load_server(read_only=True)
-        self.assertEqual(len(await readonly.mcp.list_tools()), 33)
-        for category in ("material", "niagara", "umg", "scene"):
+        self.assertEqual(len(await readonly.mcp.list_tools()), 29)
+        for category in ("material", "niagara", "umg", "scene", "blueprint", "asset"):
             self.assertIsNone(readonly.mcp._tool_manager.get_tool(f"{category}_call_write"))
             write_name = next(iter(readonly._CATEGORY_TOOLS[category] - readonly._READ_ONLY_TOOLS))
             with self.assertRaises(ToolError):
                 await readonly.mcp._tool_manager.get_tool(f"{category}_search").run({"tool": write_name})
         disabled = self.load_server(disabled=("material", "niagara", "umg"))
-        self.assertEqual(len(await disabled.mcp.list_tools()), 70)
+        self.assertEqual(len(await disabled.mcp.list_tools()), 48)
         for category in ("material", "niagara", "umg"):
             for suffix in ("search", "call_read", "call_write"):
                 self.assertIsNone(disabled.mcp._tool_manager.get_tool(f"{category}_{suffix}"))
         with self.assertRaises(ValueError):
             self.load_server("typo")
+
+    async def test_guidance_reports_current_filtered_surface(self):
+        for mode, readonly, disabled in (("grouped", False, ()), ("direct", True, ()), ("grouped", True, ("asset",))):
+            server = self.load_server(mode, readonly, disabled)
+            guidance = server.info()
+            self.assertIn(f"Current public tools: {len(await server.mcp.list_tools())}; mode: {mode}", guidance)
+            self.assertIn("Blueprint and Asset", guidance)
+
+    async def test_asset_blueprint_routes_permissions_and_failures(self):
+        server = self.load_server()
+        connection = Mock()
+        module = ModuleType("unreal_mcp_server")
+        module.get_unreal_connection = Mock(return_value=connection)
+        module.spill_if_oversized = server.spill_if_oversized
+        cases = (
+            ("asset", "read_data_asset_text_references", "bind_data_asset_text_references",
+             {"asset_path": "/Game/DA", "property_paths": ["DisplayName"]},
+             {"asset_path": "/Game/DA", "expected_baseline": "identity", "bindings": []}),
+            ("blueprint", "read_blueprint_component_defaults", "set_blueprint_skeletal_component_defaults",
+             {"blueprint_path": "/Game/BP"},
+             {"blueprint_path": "/Game/BP", "component": {}, "expected_baseline": "identity", "settings": {}}),
+        )
+        with patch.dict(sys.modules, unreal_mcp_server=module):
+            for category, reader, writer, read_arguments, write_arguments in cases:
+                with self.subTest(category=category):
+                    search = server.mcp._tool_manager.get_tool(f"{category}_search")
+                    connection.reset_mock()
+                    contract = await search.run({"tool": reader})
+                    self.assertEqual(contract["call_tool"], f"{category}_call_read")
+                    connection.send_command.assert_not_called()
+                    connection.send_command.return_value = {"status": "success", "result": {"success": True, "complete": True}}
+                    read = await server.mcp._tool_manager.get_tool(f"{category}_call_read").run({"tool": reader, "arguments": read_arguments})
+                    self.assertTrue(read["complete"])
+                    connection.send_command.assert_called_once_with(reader, read_arguments)
+                    connection.reset_mock()
+                    connection.send_command.return_value = {"status": "error", "error": "save failed", "result": {
+                        "modified": True, "saved": False, "stage": "save", "after": {"identity": "kept"}}}
+                    written = await server.mcp._tool_manager.get_tool(f"{category}_call_write").run({"tool": writer, "arguments": write_arguments})
+                    self.assertFalse(written["success"])
+                    self.assertTrue(written["modified"])
+                    self.assertFalse(written["saved"])
+                    self.assertEqual(written["after"], {"identity": "kept"})
+                    connection.send_command.assert_called_once_with(writer, {**write_arguments, "dry_run": True, "save": False})
+                    connection.reset_mock()
+                    for endpoint, name, arguments in (
+                        (f"{category}_call_read", writer, write_arguments),
+                        (f"{category}_call_write", reader, read_arguments),
+                        ("scene_call_read", reader, read_arguments),
+                        (f"{category}_call_read", reader, {**read_arguments, "unexpected": True}),
+                    ):
+                        with self.assertRaises(ToolError):
+                            await server.mcp._tool_manager.get_tool(endpoint).run({"tool": name, "arguments": arguments})
+                    connection.send_command.assert_not_called()
+                    connection.send_command.side_effect = TimeoutError("timeout")
+                    timed_out = await server.mcp._tool_manager.get_tool(f"{category}_call_write").run({"tool": writer, "arguments": write_arguments})
+                    self.assertEqual(timed_out["stage"], "transport")
+                    self.assertNotIn("modified", timed_out)
+                    self.assertNotIn("saved", timed_out)
+                    connection.send_command.assert_called_once()
+                    connection.send_command.side_effect = None
+                for readonly in (False, True):
+                    disabled = self.load_server(read_only=readonly, disabled=(category,))
+                    for suffix in ("search", "call_read", "call_write"):
+                        self.assertIsNone(disabled.mcp._tool_manager.get_tool(f"{category}_{suffix}"))
 
     async def test_scene_discovery_filters_and_dispatch(self):
         server = self.load_server()
@@ -303,20 +369,27 @@ class GroupedServerTests(unittest.IsolatedAsyncioTestCase):
         async with stdio_client(parameters) as (reader, writer):
             async with ClientSession(reader, writer) as session:
                 await session.initialize()
-                self.assertEqual(len((await session.list_tools()).tools), 79)
+                self.assertEqual(len((await session.list_tools()).tools), 57)
                 scene_contract = await session.call_tool("scene_search", {"tool": "get_editor_context"})
                 self.assertEqual(json.loads(scene_contract.content[0].text)["call_tool"], "scene_call_read")
                 scene_result = await session.call_tool("scene_call_read", {"tool": "get_editor_context", "arguments": {}})
                 self.assertEqual(json.loads(scene_result.content[0].text), {"command": "get_editor_context", "params": {}})
-                migration = await session.call_tool("plan_asset_migration", {
+                migration_contract = await session.call_tool("asset_search", {"tool": "plan_asset_migration"})
+                self.assertEqual(json.loads(migration_contract.content[0].text)["call_tool"], "asset_call_read")
+                migration = await session.call_tool("asset_call_read", {"tool": "plan_asset_migration", "arguments": {
                     "roots": ["/Game/NS_Test"],
-                    "path_rules": [{"source_root": "/Game", "target_root": "/Game/__Dev/Test"}]})
+                    "path_rules": [{"source_root": "/Game", "target_root": "/Game/__Dev/Test"}]}})
                 self.assertFalse(migration.isError)
                 self.assertEqual(json.loads(migration.content[0].text), {
                     "command": "plan_asset_migration", "params": {
                         "roots": ["/Game/NS_Test"],
                         "path_rules": [{"source_root": "/Game", "target_root": "/Game/__Dev/Test"}],
                         "rebind_assets": [], "retain_roots": []}})
+                blueprint_contract = await session.call_tool("blueprint_search", {"tool": "read_blueprint_component_defaults"})
+                self.assertEqual(json.loads(blueprint_contract.content[0].text)["call_tool"], "blueprint_call_read")
+                blueprint = await session.call_tool("blueprint_call_read", {"tool": "read_blueprint_component_defaults", "arguments": {"blueprint_path": "/Game/BP_Test"}})
+                self.assertFalse(blueprint.isError)
+                self.assertEqual(json.loads(blueprint.content[0].text), {"command": "read_blueprint_component_defaults", "params": {"blueprint_path": "/Game/BP_Test"}})
                 contract = await session.call_tool("material_search", {"tool": "set_material_instance_parameters"})
                 self.assertFalse(contract.isError)
                 self.assertEqual(json.loads(contract.content[0].text)["call_tool"], "material_call_write")
@@ -329,6 +402,10 @@ class GroupedServerTests(unittest.IsolatedAsyncioTestCase):
                     "params": {"asset_path": "/Game/Test", "parent_material_path": "/Game/Parent", "save": False}})
                 for endpoint, arguments in (
                     ("get_editor_context", {}),
+                    ("plan_asset_migration", {}),
+                    ("read_blueprint_component_defaults", {"blueprint_path": "/Game/BP_Test"}),
+                    ("asset_call_read", {"tool": "execute_asset_migration", "arguments": {}}),
+                    ("blueprint_call_write", {"tool": "plan_asset_migration", "arguments": {}}),
                     ("scene_call_read", {"tool": "capture_scene_viewport", "arguments": {}}),
                     ("material_call_read", {"tool": "set_material_instance_parameters", "arguments": {}}),
                     ("material_call_write", {"tool": "set_niagara_parameter", "arguments": {}}),

@@ -2,6 +2,14 @@
 
 This document provides detailed information about the Blueprint tools available in the Unreal MCP integration.
 
+In default grouped mode these 11 Blueprint asset operations are internal names:
+use `blueprint_search(tool="<operation>")`, then the returned `call_tool` with
+`tool` and `arguments` matching `input_schema`. Reuse discovered contracts.
+Examples below describe the underlying operation/payload, not a directly exposed
+MCP tool. `MCP_TOOL_MODE=direct` retains original names after reconnecting.
+Node tools and the Editor operation `spawn_blueprint_actor` remain direct.
+See the [calling guide](README.md#grouped-mode-default).
+
 ## Overview
 
 Blueprint tools allow you to create and manipulate Blueprint assets in Unreal Engine, including creating new Blueprint classes, adding components, setting properties, and spawning Blueprint actors in the level.
@@ -124,6 +132,126 @@ including its partial `result` (`modified`, `saved`, `before`, `after`).
   }
 }
 ```
+
+## Skeletal Component Defaults
+
+Two **Blueprint** operations, grouped via `blueprint_search` in default mode and
+direct under their original names in direct mode. `MCP_BLUEPRINT_ENABLED=0`
+hides both; read-only mode retains only `read_blueprint_component_defaults`.
+They are not Asset-category operations. Requires matching updated native plugin;
+implemented and verified in the repository UE5.7.4 project. **Deployed to NF on
+2026-11-03**: native reader and actual T1 source/default read, same-value preview,
+stale refusal and Blueprint smoke passed without production BP writes. SkillTest
+has not received this addition. Python visibility is not proof of a loaded DLL.
+
+### read_blueprint_component_defaults
+
+Required: exact `/Game/...` Actor Blueprint package `blueprint_path`.
+Returns `component_defaults_contract=1`, `hierarchy`, `components`, `complete`,
+`unsupported`, `baseline` and `package_dirty`. Only SkeletalMeshComponents are
+included, not every component type. Unsupported/ambiguous scopes have no usable
+baseline; missing data is not inferred as an empty/default component.
+
+Each component has exact `class_path`, effective `template_path`, `outer_path`,
+`archetype_path`, `target_owns_override`, `editable_when_inherited`, typed
+`defaults={mesh,animation_mode,anim_class}` and this copyable `component` selector:
+
+```json
+{
+  "source": "cpp_inherited",
+  "name": "SkeletalTowerMesh",
+  "declaring_class": "/Script/MyGame.TowerBase",
+  "scs_guid": ""
+}
+```
+
+This is an illustrative native selector, not an existing project class promise.
+`source` is `cpp_inherited`, `inherited_scs` or `local_scs`; the latter two carry
+the declaring generated class and original SCS node GUID. Native origin is
+proven from native default subobjects and target-child CDO ownership. Names
+alone or the legacy `read_blueprint` source label are not authoring identity.
+Actual sources/override ownership are resolved through the full BP hierarchy,
+without creating handlers/overrides, compiling, spawning or saving on read.
+
+The baseline covers the selected authoring scope, ancestry/saved package and
+related Mesh/Skeleton/AnimBlueprint identities, actor fields, local SCS structure
+and non-author component fields. `preserved_fields`/`preserved_actor_fields`
+are bounded read-only ExportText witnesses, **not writable property paths, typed
+arbitrary-object schemas or a complete custom binary serializer**. Unknown derived
+component classes are partial; this first contract accepts exact
+USkeletalMeshComponent only. Duplicate names/invalid source keys/handler mismatch,
+inheritance/value bounds refuse writing rather than selecting a first match.
+Read `overflow.file_path` in full; previews are not complete asset scopes.
+
+### set_blueprint_skeletal_component_defaults
+
+Required: `blueprint_path`, exact reader `component`, `expected_baseline`,
+nonempty `settings`. Optional: `dry_run=true`, `save=false`.
+
+```json
+{
+  "blueprint_path": "/Game/Towers/BP_Tower",
+  "component": {
+    "source": "cpp_inherited",
+    "name": "SkeletalTowerMesh",
+    "declaring_class": "/Script/MyGame.TowerBase",
+    "scs_guid": ""
+  },
+  "expected_baseline": "<complete reviewed baseline>",
+  "settings": {
+    "mesh": "/Game/Meshes/SKM_Tower",
+    "animation_mode": "AnimationBlueprint",
+    "anim_class": "/Game/Animations/ABP_Tower.ABP_Tower_C"
+  }
+}
+```
+
+Only `mesh`, `animation_mode`, `anim_class` are writable; unspecified values are
+retained and the whole merged combination is validated. Mesh accepts a canonical
+SkeletalMesh package/object path, Anim Class an actual compiled AnimBlueprint
+generated-class object path (not an ABP asset or guessed `_C`). Both references
+must be valid together, or explicitly cleared together with JSON null. First
+contract requires an editable exact component **already in AnimationBlueprint
+mode**, and retains that mode; SingleNode/custom animation-data transitions and
+arbitrary native AnimInstance classes are not offered. Mesh/AnimBP must use the
+same exact Skeleton, not inferred compatible-skeleton/retarget resolution.
+
+Stale/incomplete/ambiguous identity, wrong types/skeleton/mode/combinations,
+dirty/uncompiled target/ancestors/references and busy compilation reject before
+mutation. There is no global compile finish, Save All, implicit parent/draft save,
+arbitrary component traversal, component-pointer replacement or duplicate SCS
+creation. Preview creates no override and does not compile or save. Identical
+effective defaults are a no-op, including for `save=true`.
+
+Native changes address the target child's own CDO default subobject. Parent SCS
+changes use the target **Blueprint source** handler's standard override mechanism,
+not a generated-class-only temporary record. Local SCS uses its existing template.
+One data-edit transaction records source/handler/template changes, not UClass
+layout; formal setters/property notifications are followed by target BP compile
+outside the transaction and **fresh resolution** of the component afterward.
+The reader/writer does not execute a Construction Script or BeginPlay fallback
+to simulate saved defaults. It does not expose a Blueprint execution framework.
+
+Readback verifies typed effective values, other components, actor/component saved
+field witnesses, local SCS structure and unchanged parent scopes before optional
+**target-only** save. Parent templates, roots, attachment, materials/collision and
+other selected fields remain unchanged. `before`, `proposed_defaults`, `after`,
+`modified`, `compiled`, `saved`, `package_dirty`, `existing_data_preserved` and
+`stage` describe actual state. Readback/compile/save failure can leave applied
+changes, not rollback; timeout/connection loss is UNKNOWN, never auto-retry.
+After `save=false`, explicitly review/save that draft separately; another writer
+call refuses an already-dirty target. Full spill files retain failure receipts.
+
+Verification: native Character-derived and multilevel parent-SCS/local-SCS isolated
+BP edits, compiled re-resolution, parent/sibling defaults+hashes, no-op/negative
+inputs, both native/inherited Undo/Redo, injected save failure, independent full
+cold read and actual hot/cold spawned components passed. Public stdio on a new
+isolated BP verified native and parent-SCS save/no-op/stale and source/config
+hash protection. Existing SurfaceFeedback.EndToEnd local SCS/PhysMaterial and
+full Python regression passed. No NF T1/T2/T3 writes, new NF FT, deployment or
+gameplay completion is implied. Legacy `set_component_property` stays SCS-only.
+
+## Other Blueprint Operations
 
 ### set_physics_properties
 

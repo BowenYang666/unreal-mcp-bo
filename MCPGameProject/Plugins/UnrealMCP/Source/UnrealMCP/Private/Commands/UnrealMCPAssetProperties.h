@@ -12,4 +12,9 @@ namespace UnrealMCPAssetProperties
     TSharedPtr<FJsonObject> CreatePhysicalMaterial(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> Read(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> Write(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> ReadText(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> BindText(const TSharedPtr<FJsonObject>& Params);
+#if WITH_DEV_AUTOMATION_TESTS
+    void SetTextSaveFailureForTests(bool Fail);
+#endif
 }

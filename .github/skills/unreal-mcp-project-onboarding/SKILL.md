@@ -118,12 +118,18 @@ Use the same external Python server for every onboarded project; do not copy the
 
 `MCP_TOOL_MODE=grouped` is the default; `direct` exposes original operation names
 for compatibility. Preserve an existing explicit mode unless its change is
-authorized. In grouped mode Material/Niagara/UMG/Scene each expose `<category>_search`,
+authorized. In grouped mode Material/Niagara/UMG/Scene/Blueprint/Asset each expose `<category>_search`,
 `<category>_call_read` and `<category>_call_write`; other categories remain direct.
 Use search with an exact internal operation name to obtain `input_schema` and
 `call_tool`, then pass `tool` and `arguments` to that endpoint. Read-only mode
 omits write endpoints, and disabled categories have no endpoints. Discover the
 actual filtered list; do not treat an unfiltered tool count as a smoke-test gate.
+
+For Blueprint smoke tests, discover `list_blueprints` and `read_blueprint` using
+`blueprint_search(tool=exact_operation)`, then use the returned read endpoint
+with `tool` and `arguments`. Asset operations similarly use `asset_search`.
+Blueprint Node tools and Project readers such as `get_class_properties`,
+`read_data_asset` and `read_state_tree` remain direct with their own filters.
 
 For Scene context, discover `scene_search(tool="get_editor_context")` and call the
 returned read endpoint with `tool="get_editor_context", arguments={}`. Original Scene

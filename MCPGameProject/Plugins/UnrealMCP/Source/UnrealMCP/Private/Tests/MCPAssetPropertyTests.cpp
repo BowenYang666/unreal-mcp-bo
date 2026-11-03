@@ -16,6 +16,180 @@
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "UObject/Package.h"
+#include "Internationalization/StringTable.h"
+#include "Internationalization/StringTableCore.h"
+#include "Editor.h"
+#include "Misc/Paths.h"
+#include "Misc/SecureHash.h"
+#include "Misc/FileHelper.h"
+#include "HAL/FileManager.h"
+#include "Misc/ScopeExit.h"
+#include "Internationalization/Internationalization.h"
+#include "Internationalization/Culture.h"
+#include "Internationalization/TextLocalizationManager.h"
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMCPAssetTextReadTest, "UnrealMCP.AssetProperties.TextRead",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMCPAssetTextReadTest::RunTest(const FString& Parameters)
+{
+    const FString Root = TEXT("/Game/__Dev/AssetTextRead_") + FGuid::NewGuid().ToString(EGuidFormats::Digits);
+    auto* Asset = NewObject<UMCPAssetPropertyTestAsset>(CreatePackage(*(Root + TEXT("/DA_Test"))), TEXT("DA_Test"), RF_Public | RF_Standalone | RF_Transactional);
+    auto* Table = NewObject<UStringTable>(CreatePackage(*(Root + TEXT("/ST_Test"))), TEXT("ST_Test"), RF_Public | RF_Standalone);
+    auto* Other = NewObject<UStringTable>(CreatePackage(*(Root + TEXT("/ST_Other"))), TEXT("ST_Other"), RF_Public | RF_Standalone);
+    Table->GetMutableStringTable()->SetNamespace(TEXT("MCPTextRead")); Other->GetMutableStringTable()->SetNamespace(TEXT("MCPTextReadOther"));
+    Table->GetMutableStringTable()->SetSourceString(FTextKey(TEXT("One")), TEXT("Same")); Table->GetMutableStringTable()->SetSourceString(FTextKey(TEXT("Two")), TEXT("Same"));
+    Other->GetMutableStringTable()->SetSourceString(FTextKey(TEXT("One")), TEXT("Same"));
+    FAssetRegistryModule::AssetCreated(Asset); FAssetRegistryModule::AssetCreated(Table); FAssetRegistryModule::AssetCreated(Other);
+    Asset->DisplayName = FText::FromStringTable(Table->GetStringTableId(), TEXT("One")); Asset->TextBranch.Name = FText::FromString(TEXT("LOCTABLE(literal)"));
+    auto Params = MakeShared<FJsonObject>(); Params->SetStringField(TEXT("asset_path"), Asset->GetPackage()->GetName());
+    Params->SetArrayField(TEXT("property_paths"), {MakeShared<FJsonValueString>(TEXT("DisplayName")), MakeShared<FJsonValueString>(TEXT("TextBranch.Name"))});
+    const bool Dirty = Asset->GetPackage()->IsDirty(); const auto Before = UnrealMCPAssetProperties::ReadText(Params);
+    if (!TestTrue(TEXT("Root/nested FText identity reader"), Before->GetBoolField(TEXT("success")))) { AddError(Before->GetStringField(TEXT("error"))); return false; }
+    TestEqual(TEXT("Two selected fields"), Before->GetArrayField(TEXT("fields")).Num(), 2);
+    const auto Identity = Before->GetArrayField(TEXT("fields"))[0]->AsObject()->GetObjectField(TEXT("identity"));
+    TestEqual(TEXT("Real StringTable identity"), Identity->GetStringField(TEXT("kind")), FString(TEXT("string_table")));
+    TestEqual(TEXT("Exact native Table ID"), Identity->GetStringField(TEXT("table_id")), Table->GetStringTableId().ToString());
+    TestEqual(TEXT("Exact key"), Identity->GetStringField(TEXT("key")), FString(TEXT("One")));
+    TestEqual(TEXT("Read preserves dirty"), Asset->GetPackage()->IsDirty(), Dirty);
+    TestEqual(TEXT("Read baseline stable"), UnrealMCPAssetProperties::ReadText(Params)->GetStringField(TEXT("baseline")), Before->GetStringField(TEXT("baseline")));
+    Asset->DisplayName = FText::FromStringTable(Table->GetStringTableId(), TEXT("Two"));
+    TestEqual(TEXT("Same visible text"), Asset->DisplayName.ToString(), FString(TEXT("Same")));
+    TestNotEqual(TEXT("Different key differs despite same display"), UnrealMCPAssetProperties::ReadText(Params)->GetStringField(TEXT("baseline")), Before->GetStringField(TEXT("baseline")));
+    Asset->DisplayName = FText::FromStringTable(Other->GetStringTableId(), TEXT("One"));
+    TestNotEqual(TEXT("Different table differs despite same key/display"), UnrealMCPAssetProperties::ReadText(Params)->GetStringField(TEXT("baseline")), Before->GetStringField(TEXT("baseline")));
+    FString Error; auto* Property = FindFProperty<FTextProperty>(Asset->GetClass(), TEXT("DisplayName"));
+    const auto Legacy = UnrealMCPAssetProperties::EncodeValue(Property, Property->ContainerPtrToValuePtr<void>(Asset), Error);
+    TestEqual(TEXT("Legacy plain display encoding unchanged"), Legacy->AsString(), FString(TEXT("Same")));
+    Params->SetArrayField(TEXT("property_paths"), {MakeShared<FJsonValueString>(TEXT("Stats.Health"))});
+    TestFalse(TEXT("Non FText rejected"), UnrealMCPAssetProperties::ReadText(Params)->GetBoolField(TEXT("success")));
+    Params->SetArrayField(TEXT("property_paths"), {MakeShared<FJsonValueString>(TEXT("Texture.Name"))});
+    TestFalse(TEXT("Object boundary retained"), UnrealMCPAssetProperties::ReadText(Params)->GetBoolField(TEXT("success")));
+    return !HasAnyErrors();
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMCPAssetTextBindTest, "UnrealMCP.AssetProperties.TextBind",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMCPAssetTextBindTest::RunTest(const FString& Parameters)
+{
+    const FString Root = TEXT("/Game/__Dev/AssetText_") + FGuid::NewGuid().ToString(EGuidFormats::Digits);
+    auto* Asset = NewObject<UMCPAssetPropertyTestAsset>(CreatePackage(*(Root / TEXT("DA_Test"))), TEXT("DA_Test"), RF_Public | RF_Standalone | RF_Transactional);
+    auto* Table = NewObject<UStringTable>(CreatePackage(*(Root / TEXT("ST_Test"))), TEXT("ST_Test"), RF_Public | RF_Standalone | RF_Transactional);
+    auto* Other = NewObject<UStringTable>(CreatePackage(*(Root / TEXT("ST_Other"))), TEXT("ST_Other"), RF_Public | RF_Standalone);
+    Table->GetMutableStringTable()->SetNamespace(TEXT("MCPAssetText")); Other->GetMutableStringTable()->SetNamespace(TEXT("MCPAssetTextOther"));
+    for (const TCHAR* Key : {TEXT("One"), TEXT("Two")}) { Table->GetMutableStringTable()->SetSourceString(FTextKey(Key), TEXT("Slowed")); Other->GetMutableStringTable()->SetSourceString(FTextKey(Key), TEXT("Slowed")); }
+    Table->GetMutableStringTable()->SetSourceString(FTextKey(TEXT("Description")), TEXT("{Status} x{Count}"));
+    FAssetRegistryModule::AssetCreated(Asset); FAssetRegistryModule::AssetCreated(Table); FAssetRegistryModule::AssetCreated(Other);
+    Asset->TextBranch.Cost = 17; Asset->Stats.Health = 123; Asset->DisplayName = FText::FromString(TEXT("LOCTABLE(literal)"));
+    for (UObject* Target : {static_cast<UObject*>(Asset), static_cast<UObject*>(Table), static_cast<UObject*>(Other)})
+    { Target->MarkPackageDirty(); if (!TestTrue(TEXT("Saved isolated fixture"), UEditorAssetLibrary::SaveLoadedAsset(Target, false))) return false; }
+    const FString File = FPackageName::LongPackageNameToFilename(Asset->GetPackage()->GetName(), FPackageName::GetAssetPackageExtension());
+    const FString TableFile = FPackageName::LongPackageNameToFilename(Table->GetPackage()->GetName(), FPackageName::GetAssetPackageExtension());
+    const auto TableHash = FMD5Hash::HashFile(*TableFile);
+    auto ReadParams = MakeShared<FJsonObject>(); ReadParams->SetStringField(TEXT("asset_path"), Asset->GetPackage()->GetName());
+    ReadParams->SetArrayField(TEXT("property_paths"), {MakeShared<FJsonValueString>(TEXT("DisplayName")), MakeShared<FJsonValueString>(TEXT("TextBranch.Name")), MakeShared<FJsonValueString>(TEXT("TextBranch.Description"))});
+    auto Read = [&]() { return UnrealMCPAssetProperties::ReadText(ReadParams); };
+    const auto Before = Read();
+    auto Binding = [&](const FString& Path, const FString& Key)
+    {
+        auto Row = MakeShared<FJsonObject>(); Row->SetStringField(TEXT("path"), Path); Row->SetStringField(TEXT("table_path"), Table->GetPackage()->GetName());
+        Row->SetStringField(TEXT("key"), Key); Row->SetStringField(TEXT("expected_table_id"), Table->GetStringTableId().ToString()); Row->SetStringField(TEXT("expected_namespace"), TEXT("MCPAssetText")); return Row;
+    };
+    auto Name = Binding(TEXT("DisplayName"), TEXT("One")); auto Branch = Binding(TEXT("TextBranch.Name"), TEXT("Two")); auto Description = Binding(TEXT("TextBranch.Description"), TEXT("Description"));
+    auto Request = MakeShared<FJsonObject>(); Request->SetStringField(TEXT("asset_path"), Asset->GetPackage()->GetName()); Request->SetStringField(TEXT("expected_baseline"), Before->GetStringField(TEXT("baseline")));
+    Request->SetArrayField(TEXT("bindings"), {MakeShared<FJsonValueObject>(Name), MakeShared<FJsonValueObject>(Branch), MakeShared<FJsonValueObject>(Description)});
+    auto Apply = [&]() { return UnrealMCPAssetProperties::BindText(Request); };
+    auto Preview = Apply();
+    if (!TestTrue(TEXT("Default preview accepted"), Preview->GetBoolField(TEXT("success")))) { AddError(Preview->GetStringField(TEXT("error"))); return false; }
+    TestTrue(TEXT("Default dry run"), Preview->GetBoolField(TEXT("dry_run"))); TestTrue(TEXT("Would bind three fields"), Preview->GetBoolField(TEXT("would_modify")));
+    TestFalse(TEXT("Preview no mutation"), Preview->GetBoolField(TEXT("modified"))); TestFalse(TEXT("Preview no save"), Preview->GetBoolField(TEXT("saved")));
+    Request->SetBoolField(TEXT("dry_run"), false);
+    auto Reject = [&](const FString& Label)
+    {
+        auto Result = Apply(); TestFalse(Label, Result->GetBoolField(TEXT("success"))); TestFalse(Label + TEXT(" no mutation"), Result->GetBoolField(TEXT("modified")));
+        TestFalse(Label + TEXT(" no save"), Result->GetBoolField(TEXT("saved"))); TestEqual(Label + TEXT(" target unchanged"), Asset->DisplayName.ToString(), FString(TEXT("LOCTABLE(literal)")));
+    };
+    Description->SetStringField(TEXT("key"), TEXT("Missing")); Reject(TEXT("Invalid last row atomic")); Description->SetStringField(TEXT("key"), TEXT("Description"));
+    Name->SetStringField(TEXT("expected_namespace"), TEXT("Wrong")); Reject(TEXT("Namespace")); Name->SetStringField(TEXT("expected_namespace"), TEXT("MCPAssetText"));
+    Name->SetStringField(TEXT("expected_table_id"), TEXT("Wrong")); Reject(TEXT("Table ID")); Name->SetStringField(TEXT("expected_table_id"), Table->GetStringTableId().ToString());
+    Name->SetStringField(TEXT("table_path"), Asset->GetPackage()->GetName()); Reject(TEXT("Wrong table class")); Name->SetStringField(TEXT("table_path"), Root / TEXT("ST_Missing")); Reject(TEXT("Missing table")); Name->SetStringField(TEXT("table_path"), Table->GetPackage()->GetName());
+    for (const TCHAR* Path : {TEXT("Stats.Health"), TEXT("Texture.Name"), TEXT("Missing"), TEXT("TextBranch.Name")})
+    { Name->SetStringField(TEXT("path"), Path); Reject(TEXT("Invalid/duplicate path")); } Name->SetStringField(TEXT("path"), TEXT("DisplayName"));
+    Table->GetPackage()->SetDirtyFlag(true); Reject(TEXT("Dirty table")); Table->GetPackage()->SetDirtyFlag(false);
+    Asset->GetPackage()->SetDirtyFlag(true); Reject(TEXT("Dirty target even no-save")); Asset->GetPackage()->SetDirtyFlag(false);
+    Request->SetStringField(TEXT("expected_baseline"), FString::ChrN(40, '0')); Reject(TEXT("Stale")); Request->SetStringField(TEXT("expected_baseline"), Before->GetStringField(TEXT("baseline")));
+    auto Applied = Apply(); if (!TestTrue(TEXT("Three native references applied"), Applied->GetBoolField(TEXT("success")))) { AddError(Applied->GetStringField(TEXT("error"))); return false; }
+    TestTrue(TEXT("Modified true"), Applied->GetBoolField(TEXT("modified"))); TestFalse(TEXT("Default save false"), Applied->GetBoolField(TEXT("saved")));
+    TestEqual(TEXT("Sibling cost"), Asset->TextBranch.Cost, 17); TestEqual(TEXT("Unrelated root"), Asset->Stats.Health, 123);
+    FName Id; FString Key;
+    TestTrue(TEXT("Root native history"), FTextInspector::GetTableIdAndKey(Asset->DisplayName, Id, Key)); TestEqual(TEXT("Root key"), Key, FString(TEXT("One")));
+    TestTrue(TEXT("Nested name native history"), FTextInspector::GetTableIdAndKey(Asset->TextBranch.Name, Id, Key)); TestEqual(TEXT("Nested key"), Key, FString(TEXT("Two")));
+    GEditor->UndoTransaction(); TestEqual(TEXT("Undo full batch"), Asset->DisplayName.ToString(), FString(TEXT("LOCTABLE(literal)"))); TestTrue(TEXT("Undo nested"), Asset->TextBranch.Name.IsEmpty());
+    GEditor->RedoTransaction(); TestTrue(TEXT("Redo native history"), FTextInspector::GetTableIdAndKey(Asset->TextBranch.Description, Id, Key)); TestEqual(TEXT("Redo key"), Key, FString(TEXT("Description")));
+    TestTrue(TEXT("Save only target fixture"), UEditorAssetLibrary::SaveLoadedAsset(Asset, false));
+    Request->SetStringField(TEXT("expected_baseline"), Read()->GetStringField(TEXT("baseline"))); Request->SetBoolField(TEXT("save"), true);
+    auto NoOp = Apply(); TestTrue(TEXT("Same native identity succeeds"), NoOp->GetBoolField(TEXT("success"))); TestFalse(TEXT("No-op no mutation"), NoOp->GetBoolField(TEXT("modified"))); TestFalse(TEXT("No-op no save"), NoOp->GetBoolField(TEXT("saved")));
+    const FString OriginalBaseline = Read()->GetStringField(TEXT("baseline"));
+    Asset->DisplayName = FText::FromStringTable(Table->GetStringTableId(), TEXT("Two")); TestEqual(TEXT("Different key same display"), Asset->DisplayName.ToString(), FString(TEXT("Slowed")));
+    auto StaleKey = Apply(); TestFalse(TEXT("Same display different key stale"), StaleKey->GetBoolField(TEXT("success")));
+    Request->SetStringField(TEXT("expected_baseline"), Read()->GetStringField(TEXT("baseline"))); TestTrue(TEXT("Different identity would modify"), Apply()->GetBoolField(TEXT("would_modify")));
+    Asset->DisplayName = FText::FromStringTable(Other->GetStringTableId(), TEXT("One")); Request->SetStringField(TEXT("expected_baseline"), OriginalBaseline);
+    TestFalse(TEXT("Same key/display different table stale"), Apply()->GetBoolField(TEXT("success")));
+    Request->SetStringField(TEXT("expected_baseline"), Read()->GetStringField(TEXT("baseline")));
+    const auto SavedHash = FMD5Hash::HashFile(*File);
+    UnrealMCPAssetProperties::SetTextSaveFailureForTests(true); ON_SCOPE_EXIT { UnrealMCPAssetProperties::SetTextSaveFailureForTests(false); };
+    auto Failed = Apply(); TestFalse(TEXT("Save failure truthful"), Failed->GetBoolField(TEXT("success"))); TestTrue(TEXT("Save failure applied"), Failed->GetBoolField(TEXT("modified"))); TestFalse(TEXT("Save failure unsaved"), Failed->GetBoolField(TEXT("saved"))); TestEqual(TEXT("Save stage"), Failed->GetStringField(TEXT("stage")), FString(TEXT("save")));
+    TestTrue(TEXT("Failure disk unchanged"), SavedHash == FMD5Hash::HashFile(*File)); TestTrue(TEXT("Failure includes after"), Failed->HasTypedField<EJson::Object>(TEXT("after")));
+    UnrealMCPAssetProperties::SetTextSaveFailureForTests(false); TestTrue(TEXT("Explicit recovery target save"), UEditorAssetLibrary::SaveLoadedAsset(Asset, false));
+    FString Error; auto* Property = FindFProperty<FTextProperty>(Asset->GetClass(), TEXT("DisplayName"));
+    FText Literal; TestTrue(TEXT("Legacy string decode"), UnrealMCPAssetProperties::DecodeValue(Property, &Literal, MakeShared<FJsonValueString>(TEXT("LOCTABLE(literal)")), Error));
+    TestEqual(TEXT("Literal not interpreted"), Literal.ToString(), FString(TEXT("LOCTABLE(literal)"))); TestFalse(TEXT("Literal no table history"), FTextInspector::GetTableIdAndKey(Literal, Id, Key));
+    TestTrue(TEXT("Tables untouched on disk"), TableHash == FMD5Hash::HashFile(*TableFile)); TestFalse(TEXT("Table remains clean"), Table->GetPackage()->IsDirty());
+    FString Json; FJsonSerializer::Serialize(Read().ToSharedRef(), TJsonWriterFactory<>::Create(&Json));
+    const FString Receipt = FPaths::ProjectSavedDir() / TEXT("AssetText") / FPackageName::GetLongPackageAssetName(Root) / TEXT("snapshot.json");
+    IFileManager::Get().MakeDirectory(*FPaths::GetPath(Receipt), true);
+    TestTrue(TEXT("Snapshot evidence"), FFileHelper::SaveStringToFile(Json, *Receipt));
+    AddInfo(TEXT("AssetText fixture: ") + Root); return !HasAnyErrors();
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMCPAssetTextReloadTest, "UnrealMCP.AssetProperties.TextReload",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMCPAssetTextReloadTest::RunTest(const FString& Parameters)
+{
+    FString Root; if (!FParse::Value(FCommandLine::Get(), TEXT("MCPAssetTextRoot="), Root)) { AddInfo(TEXT("Requires explicit saved TextBind root; skipped")); return true; }
+    if (!Root.StartsWith(TEXT("/Game/__Dev/AssetText_")) || !FPackageName::IsValidLongPackageName(Root)) return false;
+    TestNull(TEXT("Independent process not already loaded"), FindObject<UObject>(nullptr, *(Root / TEXT("DA_Test.DA_Test"))));
+    auto* Asset = Cast<UMCPAssetPropertyTestAsset>(UEditorAssetLibrary::LoadAsset(Root / TEXT("DA_Test")));
+    auto* Table = Cast<UStringTable>(UEditorAssetLibrary::LoadAsset(Root / TEXT("ST_Test")));
+    if (!TestNotNull(TEXT("Cold DataAsset"), Asset) || !TestNotNull(TEXT("Cold table"), Table)) return false;
+    auto Params = MakeShared<FJsonObject>(); Params->SetStringField(TEXT("asset_path"), Asset->GetPackage()->GetName());
+    Params->SetArrayField(TEXT("property_paths"), {MakeShared<FJsonValueString>(TEXT("DisplayName")), MakeShared<FJsonValueString>(TEXT("TextBranch.Name")), MakeShared<FJsonValueString>(TEXT("TextBranch.Description"))});
+    FString PreviousJson; TSharedPtr<FJsonObject> Previous;
+    const FString Receipt = FPaths::ProjectSavedDir() / TEXT("AssetText") / FPackageName::GetLongPackageAssetName(Root) / TEXT("snapshot.json");
+    if (!TestTrue(TEXT("Read hot evidence"), FFileHelper::LoadFileToString(PreviousJson, *Receipt))) return false;
+    FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(PreviousJson), Previous);
+    const auto Current = UnrealMCPAssetProperties::ReadText(Params);
+    TestEqual(TEXT("Cold baseline exact"), Current->GetStringField(TEXT("baseline")), Previous->GetStringField(TEXT("baseline")));
+    TestEqual(TEXT("Cold unrelated sibling"), Asset->TextBranch.Cost, 17); TestEqual(TEXT("Cold unrelated root"), Asset->Stats.Health, 123);
+    FString Directory;
+    if (FParse::Value(FCommandLine::Get(), TEXT("MCPAssetTextLocalization="), Directory))
+    {
+        auto& Internationalization = FInternationalization::Get(); const FString Original = Internationalization.GetCurrentCulture()->GetName();
+        ON_SCOPE_EXIT { Internationalization.SetCurrentCulture(Original); };
+        for (const FString Culture : {TEXT("en"), TEXT("zh-Hans"), TEXT("en")})
+        {
+            TestTrue(TEXT("Native culture change"), Internationalization.SetCurrentCulture(Culture));
+            const FString Resource = Directory / Culture / TEXT("MCPStringTable.locres"); if (!TestTrue(TEXT("Compiled locres"), FPaths::FileExists(Resource))) return false;
+            FTextLocalizationManager::Get().UpdateFromLocalizationResource(Resource);
+            const FString Expected = Culture == TEXT("zh-Hans") ? TEXT("\u51cf\u901f") : TEXT("Slowed");
+            TestEqual(TEXT("Existing root switches language"), Asset->DisplayName.ToString(), Expected); TestEqual(TEXT("Existing nested switches language"), Asset->TextBranch.Name.ToString(), Expected);
+            TestEqual(TEXT("Culture-independent identity baseline"), UnrealMCPAssetProperties::ReadText(Params)->GetStringField(TEXT("baseline")), Previous->GetStringField(TEXT("baseline")));
+        }
+    }
+    TestFalse(TEXT("Cold target clean"), Asset->GetPackage()->IsDirty()); TestFalse(TEXT("Cold table clean"), Table->GetPackage()->IsDirty()); return !HasAnyErrors();
+}
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMCPAssetPropertyTest, "UnrealMCP.AssetProperties.Validation",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

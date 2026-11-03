@@ -152,12 +152,19 @@ Content-only projects are supported; UnrealBuildTool may generate temporary targ
 
 Use the Python server from the UnrealMCP repository; do not copy the Python directory into the target UE project. Resolve an absolute `uv` path with `Get-Command uv`.
 
-The current default is `MCP_TOOL_MODE=grouped`: Material, Niagara, UMG and Scene each
+The current default is `MCP_TOOL_MODE=grouped`: Material, Niagara, UMG, Scene, Blueprint and Asset each
 expose a category search/read/write interface. Search by internal operation name
 to obtain its `input_schema` and `call_tool`, then execute with `tool` and
 `arguments`. Other categories retain direct tools. `MCP_TOOL_MODE=direct` is the
 compatibility option; preserve existing explicit modes and permissions unless
 their change is authorized. See the [calling guide](Tools/README.md#grouped-mode-default).
+
+Blueprint smoke tests use `blueprint_search(tool="list_blueprints")` and
+`blueprint_search(tool="read_blueprint")`, followed by each returned read endpoint
+with `tool` and `arguments`. Asset operations similarly use `asset_search`.
+Blueprint Node tools and Project readers (`get_class_properties`, `read_data_asset`,
+`read_state_tree`) remain direct. Grouping-only Python updates require MCP restart,
+not an editor restart, native rebuild or broader client permissions.
 
 Shared Python updates take effect when each MCP server/client restarts, but do
 not update a running editor's C++ DLL. Grouping alone needs no UE build; new

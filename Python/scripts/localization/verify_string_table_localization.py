@@ -4,6 +4,7 @@ Run with: uv run --with polib python scripts/localization/verify_string_table_lo
   --project <absolute .uproject> --engine <UE root>
   --root /Game/__Dev/StringTables_<unique> [--verify-language]
 The fixture must already exist. Only Saved outputs and their PO are written.
+Use --asset-text with /Game/__Dev/AssetText_<unique> for the TextBind DataAsset fixture.
 """
 
 import argparse
@@ -20,12 +21,14 @@ def main():
     parser.add_argument("--engine", type=Path, required=True)
     parser.add_argument("--root", required=True)
     parser.add_argument("--verify-language", action="store_true")
+    parser.add_argument("--asset-text", action="store_true")
     args = parser.parse_args()
     project = args.project.resolve(strict=True)
-    if not args.root.startswith("/Game/__Dev/StringTables_") or any(part in ("", ".", "..") for part in args.root[6:].split("/")):
-        raise ValueError("Only an existing /Game/__Dev/StringTables_<unique> fixture is allowed")
+    prefix = "/Game/__Dev/AssetText_" if args.asset_text else "/Game/__Dev/StringTables_"
+    if not args.root.startswith(prefix) or any(part in ("", ".", "..") for part in args.root[6:].split("/")):
+        raise ValueError(f"Only an existing {prefix}<unique> fixture is allowed")
     assets = project.parent / "Content" / args.root[6:]
-    for name in ("ST_Status.uasset", "WBP_Reference.uasset"):
+    for name in (("ST_Test.uasset", "DA_Test.uasset") if args.asset_text else ("ST_Status.uasset", "WBP_Reference.uasset")):
         if not (assets / name).is_file():
             raise FileNotFoundError(assets / name)
     output = project.parent / "Saved" / "StringTableLocalization" / args.root.rsplit("/", 1)[-1]
@@ -64,7 +67,7 @@ def main():
         if "Unreal MCP Module has started" not in text:
             raise RuntimeError(f"{phase} did not prove the plugin was enabled: {log}")
         if automation:
-            for name in ("Reload", "Localization"):
+            for name in (("TextReload",) if args.asset_text else ("Reload", "Localization")):
                 if f"Result={{Success}} Name={{{name}}}" not in text:
                     raise RuntimeError(f"Missing {name} success: {log}")
         elif "GatherText completed with exit code 0" not in text:
@@ -76,6 +79,8 @@ def main():
         if phase == "Import":
             po = polib.pofile(str(output / "zh-Hans/MCPStringTable.po"))
             expected = {"Slowed": "\u51cf\u901f", "Stunned": "\u7729\u6655", "{Status} x{Count}": "{Status} x{Count}"}
+            if args.asset_text:
+                del expected["Stunned"]
             seen = set()
             for entry in po:
                 if entry.msgid in expected:
@@ -89,9 +94,14 @@ def main():
         config.write_text(common + configurations[phase], encoding="utf-8")
         run(phase, ["-run=GatherText", f"-config={config}"])
     if args.verify_language:
-        run("Languages", ["/Engine/Maps/Entry", "-RenderOffscreen", f"-MCPStringTableRoot={args.root}",
-            f"-MCPStringTableLocalization={output}", "-ExecCmds=Automation RunTests UnrealMCP.StringTables.Reload+UnrealMCP.StringTables.Localization",
-            "-TestExit=Automation Test Queue Empty"], automation=True)
+        if args.asset_text:
+            run("Languages", ["/Engine/Maps/Entry", "-RenderOffscreen", "-stdout", "-FullStdOutLogOutput", f"-MCPAssetTextRoot={args.root}",
+                f"-MCPAssetTextLocalization={output}", "-ExecCmds=Automation RunTests UnrealMCP.AssetProperties.TextReload",
+                "-TestExit=Automation Test Queue Empty"], automation=True)
+        else:
+            run("Languages", ["/Engine/Maps/Entry", "-RenderOffscreen", f"-MCPStringTableRoot={args.root}",
+                f"-MCPStringTableLocalization={output}", "-ExecCmds=Automation RunTests UnrealMCP.StringTables.Reload+UnrealMCP.StringTables.Localization",
+                "-TestExit=Automation Test Queue Empty"], automation=True)
     (output / "receipt.json").write_text(json.dumps({"fixture": args.root, "results": results}, indent=2), encoding="utf-8")
     print(f"Receipt: {output / 'receipt.json'}", flush=True)
 

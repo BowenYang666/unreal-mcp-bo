@@ -37,12 +37,14 @@ The tool skips transient/deprecated fields and cannot reconstruct data stored on
 ## Public Tools and Internal Operations
 
 Use the current client's discovered tools, including its server prefix.
-`get_class_properties`, `read_data_asset`, `read_blueprint`, `read_state_tree`
+`get_class_properties`, `read_data_asset`, `read_state_tree`
 and `read_cascade_system` remain direct tools when their categories are enabled.
-In default grouped mode, Material/Niagara/UMG/Scene readers are internal operations:
+In default grouped mode, Material/Niagara/UMG/Scene/Blueprint/Asset readers are internal operations:
 
 | Operation | Discover its exact contract | Execute |
 |---|---|---|
+| `list_blueprints` / `read_blueprint` / `read_blueprint_component_defaults` | `blueprint_search(tool=exact_operation)` | Returned `call_tool`, normally `blueprint_call_read` |
+| `read_data_asset_text_references` / `read_string_table` / `read_animation_asset` / `read_input_mapping_context` | `asset_search(tool=exact_operation)` | Returned `call_tool`, normally `asset_call_read` |
 | `read_material` | `material_search(tool="read_material")` | Returned `call_tool`, normally `material_call_read` |
 | `read_niagara_system` | `niagara_search(tool="read_niagara_system")` | Returned `call_tool`, normally `niagara_call_read` |
 | `read_widget_layout` | `umg_search(tool="read_widget_layout")` | Returned `call_tool`, normally `umg_call_read` |
@@ -53,6 +55,9 @@ Pass `tool` and an `arguments` object matching `input_schema`; do not send `ctx`
 Reuse contracts rather than searching before every call. `MCP_TOOL_MODE=direct`
 exposes the original operation names directly. Respect category/read-only
 filters; missing tools do not authorize changing configuration or using raw TCP.
+Blueprint Node tools remain direct under their separate filter. Asset writes,
+creation and migration likewise require `asset_search` and its returned endpoint;
+Blueprint component/property writes require `blueprint_search`.
 
 ## Structured Asset Inspection
 
