@@ -1,6 +1,6 @@
 # 问题报告与修复汇总
 
-更新日期：2026-11-03。
+更新日期：2026-11-05。
 
 本文件汇总本目录的问题、修复、验证和遗留事项，作为代码提交与后续维护的统一入口。
 详细报告保留原始复现经过及当时状态；阅读时以各报告最新的维护记录和续作反馈为准，
@@ -10,6 +10,8 @@
 
 | 问题 | 当前状态 | 结论边界 |
 | --- | --- | --- |
+| [场景截图任务缓存耗尽](scene-capture-task-cache-exhaustion.md) | 已修复并构建部署NF／SkillTest，2026-11-05 | 两项目实际DLL18项矩阵／100截图／独立冷读及公开幂等烟测通过；SkillTest后续授权完成build，不删图或重拍旧ID |
+| [场景截图PNG近乎全透明](scene-capture-transparent-png.md) | 已修复并构建部署NF／SkillTest，2026-11-05 | 两项目公开PNG均57600像素全不透明、同ID哈希／时间不变；SkillTest原Review地图及全部业务资产保持，原报告PNG未改 |
 | [Blueprint 折叠子图不可读](cannot-read-bp-subgraph.md) | 已修复并验证，2026-08-15 | 支持可选子图遍历和引脚默认值；属于既有修复，不是本次新增代码 |
 | [Niagara 保存重入崩溃](niagara-save-reentrancy-crash.md) | 修复已部署；原 NF 草稿续作及冷加载通过；报告仍 Open | 有真实使用正向证据，但未证明后续 D3D12 访问违例的唯一原因，未受控重建旧嵌套等待栈 |
 | [同系统复制 Emitter 后不执行](same-system-emitter-duplicate-not-executed.md) | Open，尚未修复 | 有 Handle 和成功回执不等于能运行；缺少执行图重建是强烈怀疑方向，仍需实现与验证 |

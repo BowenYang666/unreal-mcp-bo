@@ -51,6 +51,31 @@ class SceneToolsTests(unittest.TestCase):
         self.assertNotIn("saved", receipt)
         self.connection.send_command.assert_called_once()
 
+    def test_capture_history_and_opaque_receipts_remain_truthful(self):
+        capture = self.tools.get_tool("capture_scene_viewport")
+        status = self.tools.get_tool("get_scene_task_status")
+        self.assertIn("alpha_mode='opaque'", capture.description)
+        self.assertEqual(capture.parameters["required"], ["project_path", "level_path", "viewport_id", "request_id"])
+        payloads = [
+            {"success": True, "state": "completed", "saved": True, "alpha_mode": "opaque", "opaque": True, "capture_receipt_contract": 1, "receipt_persisted": True, "receipt_source": "disk"},
+            {"success": True, "state": "completed", "saved": True, "alpha_mode": "opaque", "opaque": True, "receipt_persisted": False, "persistence_error": "final receipt not persisted"},
+            {"success": False, "state": "interrupted_unknown", "stage": "receipt_load", "error_code": "capture_receipt_unavailable"},
+            {"success": False, "stage": "preflight", "error_code": "capture_cache_pinned", "cached_tasks": 32, "modified": False, "saved": False},
+        ]
+        for payload in payloads:
+            for operation, arguments in ((capture, (None, "project", "map", 0, "capture001")), (status, (None, "project", "capture001"))):
+                with self.subTest(payload=payload, operation=operation.name):
+                    self.connection.reset_mock()
+                    self.connection.send_command.return_value = {"status": "success" if payload["success"] else "error", "result": payload}
+                    result = operation.fn(*arguments)
+                    for key, value in payload.items():
+                        self.assertEqual(result[key], value)
+                    if payload.get("state") == "interrupted_unknown":
+                        self.assertNotIn("saved", result)
+                        self.assertNotIn("modified", result)
+                    self.assertEqual(result["request_id"], "capture001")
+                    self.connection.send_command.assert_called_once()
+
     def test_open_asset_world_refusal_preserves_guidance_without_retry(self):
         from tools.editor_tools import register_editor_tools
         server = FastMCP("open-asset-test")

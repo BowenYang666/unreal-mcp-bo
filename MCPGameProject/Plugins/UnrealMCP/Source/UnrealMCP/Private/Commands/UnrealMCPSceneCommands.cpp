@@ -53,12 +53,32 @@
 #include "ScopedTransaction.h"
 #include "UObject/SavePackage.h"
 #include "UObject/UnrealType.h"
+#include "Misc/SecureHash.h"
+#include "Serialization/JsonSerializer.h"
+#if WITH_DEV_AUTOMATION_TESTS
+#include "Misc/AutomationTest.h"
+#include "Misc/CommandLine.h"
+#include "Misc/ScopeExit.h"
+#endif
+#if PLATFORM_WINDOWS
+#include "Windows/WindowsHWrapper.h"
+#else
+#include <cstdio>
+#include <unistd.h>
+#endif
 
 namespace UnrealMCPScene
 {
 namespace
 {
     TMap<FString, TSharedPtr<FJsonObject>> Tasks;
+    constexpr int32 MaxCaptureTasks = 32;
+    struct FDurableCapture { FString Id; FMD5Hash Hash; };
+    TArray<FDurableCapture> CompletedCaptures;
+#if WITH_DEV_AUTOMATION_TESTS
+    bool FailCapturePersistence = false;
+    bool ExpireCapture = false;
+#endif
     bool CaptureBusy = false;
     FString LastUndoToken;
     TWeakObjectPtr<UWorld> LastUndoWorld;
@@ -84,6 +104,130 @@ namespace
         Result->SetStringField(TEXT("stage"), TEXT("preflight"));
         Result->SetStringField(TEXT("error"), Message);
         return Result;
+    }
+
+    bool CaptureId(const TSharedPtr<FJsonObject>& Params, FString& Id)
+    {
+        if (!Params || !Params->TryGetStringField(TEXT("request_id"), Id) || Id.IsEmpty() || Id.Len() > 64) return false;
+        for (const TCHAR Character : Id) if (!(FChar::IsAlnum(Character) || Character == TEXT('_'))) return false;
+        return true;
+    }
+
+    FString CaptureReceiptFile(const FString& Id)
+    {
+        return FPaths::ConvertRelativePathToFull(FPaths::ProjectSavedDir() / TEXT("UnrealMCP/SceneCaptures") / (Id + TEXT(".json")));
+    }
+
+    bool CaptureTerminal(const TSharedPtr<FJsonObject>& Receipt)
+    {
+        FString State; return Receipt->TryGetStringField(TEXT("state"), State) && (State == TEXT("completed") || State == TEXT("failed"));
+    }
+
+    bool PublishCaptureFile(const FString& Temporary, const FString& File, bool Replace)
+    {
+#if PLATFORM_WINDOWS
+        return ::MoveFileExW(*Temporary, *File, MOVEFILE_WRITE_THROUGH | (Replace ? MOVEFILE_REPLACE_EXISTING : 0)) != 0;
+#else
+        return Replace ? ::rename(TCHAR_TO_UTF8(*Temporary), TCHAR_TO_UTF8(*File)) == 0
+            : ::link(TCHAR_TO_UTF8(*Temporary), TCHAR_TO_UTF8(*File)) == 0;
+#endif
+    }
+
+    bool PersistCapture(const FString& Id, const TSharedPtr<FJsonObject>& Receipt, bool Replace)
+    {
+    #if WITH_DEV_AUTOMATION_TESTS
+        if (FailCapturePersistence) { Receipt->SetBoolField(TEXT("receipt_persisted"), false); return false; }
+    #endif
+        const FString File = CaptureReceiptFile(Id), Temporary = File + TEXT(".") + FGuid::NewGuid().ToString(EGuidFormats::Digits) + TEXT(".tmp");
+        IFileManager::Get().MakeDirectory(*FPaths::GetPath(File), true);
+        auto Snapshot = MakeShared<FJsonObject>(*Receipt); Snapshot->SetBoolField(TEXT("receipt_persisted"), true);
+        FString Json;
+        bool Written = FJsonSerializer::Serialize(Snapshot, TJsonWriterFactory<>::Create(&Json))
+            && FFileHelper::SaveStringToFile(Json, *Temporary, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
+        if (Written)
+        {
+            Written = PublishCaptureFile(Temporary, File, Replace);
+        }
+        IFileManager::Get().Delete(*Temporary, false, false, true);
+        Receipt->SetBoolField(TEXT("receipt_persisted"), Written);
+        return Written;
+    }
+
+    void PersistCaptureTerminal(const FString& Id, const TSharedPtr<FJsonObject>& Receipt)
+    {
+        CompletedCaptures.RemoveAll([&](const FDurableCapture& Entry) { return Entry.Id == Id; });
+        if (PersistCapture(Id, Receipt, true))
+        {
+            const auto Hash = FMD5Hash::HashFile(*CaptureReceiptFile(Id));
+            if (Hash.IsValid()) CompletedCaptures.Add({Id, Hash});
+        }
+        else Receipt->SetStringField(TEXT("persistence_error"), TEXT("Terminal receipt was not persisted; actual screenshot state is retained in memory. Do not retry the capture."));
+    }
+
+    bool MakeCaptureRoom()
+    {
+        while (Tasks.Num() >= MaxCaptureTasks && !CompletedCaptures.IsEmpty())
+        {
+            const auto Candidate = CompletedCaptures[0]; CompletedCaptures.RemoveAt(0);
+            const auto Found = Tasks.Find(Candidate.Id);
+            if (!Found || !CaptureTerminal(*Found)) continue;
+            const auto Hash = FMD5Hash::HashFile(*CaptureReceiptFile(Candidate.Id));
+            if (!Hash.IsValid() || Hash != Candidate.Hash) continue;
+            Tasks.Remove(Candidate.Id);
+        }
+        return Tasks.Num() < MaxCaptureTasks;
+    }
+
+    TSharedPtr<FJsonObject> CaptureFailure(const FString& Code, const FString& Message)
+    {
+        auto Result = Failure(Message); Result->SetStringField(TEXT("error_code"), Code);
+        Result->SetStringField(TEXT("execution_state"), TEXT("not_started"));
+        Result->SetNumberField(TEXT("cached_tasks"), Tasks.Num()); Result->SetNumberField(TEXT("cache_limit"), MaxCaptureTasks);
+        if (CaptureBusy) for (const auto& Entry : Tasks) if (!CaptureTerminal(Entry.Value)) { Result->SetStringField(TEXT("active_request_id"), Entry.Key); break; }
+        return Result;
+    }
+
+    TSharedPtr<FJsonObject> LoadCapture(const FString& Id)
+    {
+        const FString File = CaptureReceiptFile(Id); FString Json, Project, SavedId, State; double Contract = 0;
+        TSharedPtr<FJsonObject> Receipt;
+        if (IFileManager::Get().FileSize(*File) < 1 || IFileManager::Get().FileSize(*File) > 262144
+            || !FFileHelper::LoadFileToString(Json, *File) || !FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Json), Receipt) || !Receipt
+            || !Receipt->TryGetNumberField(TEXT("capture_receipt_contract"), Contract) || Contract != 1
+            || !Receipt->TryGetStringField(TEXT("project_path"), Project) || !FPaths::IsSamePath(Project, ProjectPath())
+            || !Receipt->TryGetStringField(TEXT("request_id"), SavedId) || SavedId != Id
+            || !Receipt->TryGetStringField(TEXT("state"), State) || !(State == TEXT("pending") || State == TEXT("completed") || State == TEXT("failed")))
+        {
+            auto Result = Failure(TEXT("Capture receipt unavailable or invalid; inspect the original output/receipt before further work. Never recreate this ID blindly."));
+            Result->RemoveField(TEXT("modified")); Result->RemoveField(TEXT("saved")); Result->SetStringField(TEXT("stage"), TEXT("receipt_load"));
+            Result->SetStringField(TEXT("error_code"), TEXT("capture_receipt_unavailable")); Result->SetStringField(TEXT("state"), TEXT("interrupted_unknown"));
+            Result->SetStringField(TEXT("request_id"), Id); return Result;
+        }
+        if (State == TEXT("pending"))
+        {
+            Receipt->SetBoolField(TEXT("success"), false); Receipt->SetStringField(TEXT("state"), TEXT("interrupted_unknown"));
+            Receipt->RemoveField(TEXT("modified")); Receipt->RemoveField(TEXT("saved"));
+            Receipt->SetStringField(TEXT("error"), TEXT("Previous capture did not publish a terminal receipt; inspect output before any further capture. No retry performed."));
+            Receipt->SetStringField(TEXT("stage"), TEXT("receipt_load"));
+        }
+        Receipt->SetStringField(TEXT("receipt_source"), TEXT("disk")); return Receipt;
+    }
+
+    bool EncodeOpaqueCapture(TArray<FColor>& Pixels, int32 Width, int32 Height, TArray64<uint8>& Png)
+    {
+        for (FColor& Pixel : Pixels) Pixel.A = 255;
+        FImageUtils::PNGCompressImageArray(Width, Height, MakeArrayView(Pixels), Png);
+        auto Wrapper = FModuleManager::LoadModuleChecked<IImageWrapperModule>(TEXT("ImageWrapper")).CreateImageWrapper(EImageFormat::PNG);
+        TArray64<uint8> Decoded;
+        if (!Wrapper->SetCompressed(Png.GetData(), Png.Num()) || Wrapper->GetWidth() != Width || Wrapper->GetHeight() != Height
+            || !Wrapper->GetRaw(ERGBFormat::RGBA, 8, Decoded) || Decoded.Num() != static_cast<int64>(Pixels.Num()) * 4) return false;
+        for (int32 Index = 0; Index < Pixels.Num(); ++Index)
+        {
+            const int64 Offset = static_cast<int64>(Index) * 4;
+            if (Decoded[Offset] != Pixels[Index].R || Decoded[Offset + 1] != Pixels[Index].G
+                || Decoded[Offset + 2] != Pixels[Index].B || Decoded[Offset + 3] != 255) return false;
+        }
+        return true;
     }
 
     UWorld* ResolveWorld(const TSharedPtr<FJsonObject>& Params, FString& Error)
@@ -1145,12 +1289,15 @@ TSharedPtr<FJsonObject> Viewport(const TSharedPtr<FJsonObject>& Params, bool Wri
 TSharedPtr<FJsonObject> Capture(const TSharedPtr<FJsonObject>& Params)
 {
     FString Error, Id;
+    FString Project;
+    if (!Params || !Params->TryGetStringField(TEXT("project_path"), Project) || FPaths::IsRelative(Project) || !FPaths::IsSamePath(Project, ProjectPath())) return Failure(TEXT("Project mismatch"));
+    if (!CaptureId(Params, Id)) return Failure(TEXT("request_id required (1..64 letters/digits/underscore)"));
+    if (const auto Previous = Tasks.Find(Id)) return *Previous;
+    if (IFileManager::Get().FileExists(*CaptureReceiptFile(Id))) return LoadCapture(Id);
     UWorld* World = ResolveWorld(Params, Error);
     if (!World) return Failure(Error);
-    if (!Params->TryGetStringField(TEXT("request_id"), Id) || Id.IsEmpty() || Id.Len() > 64) return Failure(TEXT("request_id required (1..64 letters/digits/underscore)"));
-    for (TCHAR Character : Id) if (!(FChar::IsAlnum(Character) || Character == TEXT('_'))) return Failure(TEXT("Invalid request_id"));
-    if (const auto Previous = Tasks.Find(Id)) return *Previous;
-    if (CaptureBusy || Tasks.Num() >= 32) return Failure(TEXT("Capture already active or task cache full"));
+    if (CaptureBusy) return CaptureFailure(TEXT("capture_active"), TEXT("Capture already active; query active_request_id before starting another"));
+    if (!MakeCaptureRoom()) return CaptureFailure(TEXT("capture_cache_pinned"), TEXT("Capture history is full of non-durable or changed receipts; inspect persistence errors. No output was deleted or task cancelled."));
     auto Client = ResolveViewport(World, Params, Error);
     if (!Client) return Failure(Error);
     int32 Width = 1280, Height = 720, Frames = 32, Seconds = 60;
@@ -1164,7 +1311,7 @@ TSharedPtr<FJsonObject> Capture(const TSharedPtr<FJsonObject>& Params)
     if (!SceneViewport || SceneViewport->GetSizeXY().GetMin() < 1) return Failure(TEXT("Level viewport has no render surface"));
     if (GUsingNullRHI) return Failure(TEXT("Scene capture requires a rendering RHI"));
     const FString Filename = FPaths::ConvertRelativePathToFull(FPaths::ProjectSavedDir() / TEXT("Screenshots/UnrealMCP") / (Id + TEXT(".png")));
-    if (IFileManager::Get().FileExists(*Filename)) return Failure(TEXT("Screenshot output already exists; use a new request_id"));
+    if (IFileManager::Get().FileExists(*Filename)) return CaptureFailure(TEXT("capture_output_exists"), TEXT("Screenshot output already exists; use a new request_id"));
     const FIntPoint PreviousSize = SceneViewport->GetSizeXY();
     TSharedPtr<FSceneViewport> CaptureViewport = MakeShared<FSceneViewport>(Client, nullptr);
     CaptureViewport->UpdateViewportRHI(false, Width, Height, EWindowMode::Windowed, PF_B8G8R8A8);
@@ -1181,11 +1328,14 @@ TSharedPtr<FJsonObject> Capture(const TSharedPtr<FJsonObject>& Params)
     Result->SetStringField(TEXT("aspect_ratio_policy"), Constrained ? TEXT("camera_letterbox") : TEXT("viewport_projection"));
     if (Camera) Result->SetNumberField(TEXT("camera_aspect_ratio"), CameraAspect);
     Result->SetStringField(TEXT("render_target"), TEXT("offscreen"));
+    Result->SetStringField(TEXT("alpha_mode"), TEXT("opaque"));
     Result->SetBoolField(TEXT("success"), true); Result->SetStringField(TEXT("state"), TEXT("pending"));
     Result->SetStringField(TEXT("request_id"), Id); Result->SetStringField(TEXT("project_path"), ProjectPath());
     Result->SetStringField(TEXT("level_path"), World->GetPackage()->GetName());
+    Result->SetNumberField(TEXT("capture_receipt_contract"), 1);
     Result->SetNumberField(TEXT("warmup_frames"), Frames); Result->SetNumberField(TEXT("timeout_seconds"), Seconds);
     Result->SetBoolField(TEXT("saved"), false);
+    if (!PersistCapture(Id, Result, false)) return CaptureFailure(TEXT("capture_receipt_write_failed"), TEXT("Cannot reserve a durable capture ID; no capture started"));
     Tasks.Add(Id, Result); CaptureBusy = true;
     const double Started = FPlatformTime::Seconds(); const FVector Location = Client->GetViewLocation(); const FRotator Rotation = Client->GetViewRotation(); const float Fov = Client->ViewFOV;
     const auto Exposure = Client->ExposureSettings; const bool GameView = Client->IsInGameView();
@@ -1202,9 +1352,17 @@ TSharedPtr<FJsonObject> Capture(const TSharedPtr<FJsonObject>& Params)
             Result->SetBoolField(TEXT("source_viewport_unchanged"), ClientAlive && SceneViewport->GetSizeXY() == PreviousSize);
             if (!ErrorMessage.IsEmpty()) Result->SetStringField(TEXT("error"), ErrorMessage);
             CaptureViewport.Reset();
-            CaptureBusy = false; return false;
+            CaptureBusy = false;
+#if WITH_DEV_AUTOMATION_TESTS
+            ExpireCapture = false;
+#endif
+            PersistCaptureTerminal(Result->GetStringField(TEXT("request_id")), Result);
+            return false;
         };
         if (!ClientAlive || !ExpectedWorld.IsValid() || Client->GetWorld() != ExpectedWorld.Get() || GEditor->PlayWorld || GEditor->bIsSimulatingInEditor) return Finish(TEXT("Viewport/world disappeared or PIE/Simulate started"));
+    #if WITH_DEV_AUTOMATION_TESTS
+        if (ExpireCapture) return Finish(TEXT("Capture timed out waiting for rendering/resources; do not recreate blindly"));
+    #endif
         if (FPlatformTime::Seconds() - Started > Seconds) return Finish(TEXT("Capture timed out waiting for rendering/resources; do not recreate blindly"));
         if (!Client->GetViewLocation().Equals(Location, 0.01) || !Client->GetViewRotation().Equals(Rotation, 0.01) || !FMath::IsNearlyEqual(Client->ViewFOV, Fov)) return Finish(TEXT("Camera changed during capture"));
         if (Client->ExposureSettings.bFixed != Exposure.bFixed || Client->ExposureSettings.FixedEV100 != Exposure.FixedEV100 || Client->IsInGameView() != GameView) return Finish(TEXT("Exposure/Game View changed during capture"));
@@ -1221,13 +1379,17 @@ TSharedPtr<FJsonObject> Capture(const TSharedPtr<FJsonObject>& Params)
         if (CaptureViewport->GetSizeXY() != FIntPoint(Width, Height)) return Finish(TEXT("Offscreen viewport did not render at requested dimensions"));
         TArray<FColor> Pixels;
         if (!CaptureViewport->ReadPixels(Pixels) || Pixels.Num() != Width * Height) return Finish(TEXT("Viewport pixel read failed"));
-        TArray64<uint8> Png; FImageUtils::PNGCompressImageArray(Width, Height, MakeArrayView(Pixels), Png);
-        auto Wrapper = FModuleManager::LoadModuleChecked<IImageWrapperModule>(TEXT("ImageWrapper")).CreateImageWrapper(EImageFormat::PNG);
-        if (!Wrapper->SetCompressed(Png.GetData(), Png.Num()) || Wrapper->GetWidth() != Width || Wrapper->GetHeight() != Height) return Finish(TEXT("PNG validation failed"));
+        TArray64<uint8> Png;
+        if (!EncodeOpaqueCapture(Pixels, Width, Height, Png)) return Finish(TEXT("PNG opaque/RGB/dimensions validation failed"));
         IFileManager::Get().MakeDirectory(*FPaths::GetPath(Filename), true);
-        if (!FFileHelper::SaveArrayToFile(Png, *Filename) || IFileManager::Get().FileSize(*Filename) != Png.Num()) return Finish(TEXT("PNG save failed"));
+        const FString Temporary = Filename + TEXT(".") + FGuid::NewGuid().ToString(EGuidFormats::Digits) + TEXT(".tmp");
+        const bool Saved = FFileHelper::SaveArrayToFile(Png, *Temporary) && IFileManager::Get().FileSize(*Temporary) == Png.Num()
+            && PublishCaptureFile(Temporary, Filename, false);
+        IFileManager::Get().Delete(*Temporary, false, false, true);
+        if (!Saved) return Finish(TEXT("PNG save failed; existing output was not overwritten"));
         Result->SetStringField(TEXT("file_path"), Filename); Result->SetNumberField(TEXT("width"), Width); Result->SetNumberField(TEXT("height"), Height);
         Result->SetNumberField(TEXT("bytes"), Png.Num()); Result->SetBoolField(TEXT("saved"), true);
+        Result->SetBoolField(TEXT("opaque"), true);
         Result->SetStringField(TEXT("convergence"), TEXT("bounded warmup, not a guarantee of Lumen/exposure convergence"));
         return Finish(FString());
     }));
@@ -1238,7 +1400,82 @@ TSharedPtr<FJsonObject> Task(const TSharedPtr<FJsonObject>& Params)
 {
     FString Project, Id;
     if (!Params->TryGetStringField(TEXT("project_path"), Project) || !FPaths::IsSamePath(Project, ProjectPath())) return Failure(TEXT("Project mismatch"));
-    if (!Params->TryGetStringField(TEXT("request_id"), Id) || !Tasks.Contains(Id)) return Failure(TEXT("Unknown request_id; editor restart expires task status; inspect output before retry"));
-    return Tasks[Id];
+    if (!CaptureId(Params, Id)) return Failure(TEXT("Invalid request_id"));
+    if (const auto Previous = Tasks.Find(Id)) return *Previous;
+    if (IFileManager::Get().FileExists(*CaptureReceiptFile(Id))) return LoadCapture(Id);
+    return LoadCapture(Id);
 }
+#if WITH_DEV_AUTOMATION_TESTS
+int32 CaptureTaskCountForTests() { return Tasks.Num(); }
+bool HasCaptureTaskForTests(const FString& Id) { return Tasks.Contains(Id); }
+void ExpireCaptureForTests() { if (CaptureBusy) ExpireCapture = true; }
+void SetCapturePersistenceFailureForTests(bool Fail) { FailCapturePersistence = Fail; }
+bool ClearCaptureMemoryForTests()
+{
+    if (CaptureBusy) return false;
+    Tasks.Empty(); CompletedCaptures.Empty(); return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMCPCaptureReceiptSafetyTest, "UnrealMCP.Scene.CaptureReceiptSafety", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMCPCaptureReceiptSafetyTest::RunTest(const FString& Parameters)
+{
+    if (!FParse::Param(FCommandLine::Get(), TEXT("UnrealMCPNoServer")) || CaptureBusy) { AddError(TEXT("Requires idle isolated NoServer process")); return false; }
+    auto Original = MoveTemp(Tasks); auto OriginalOrder = MoveTemp(CompletedCaptures);
+    ON_SCOPE_EXIT { Tasks = MoveTemp(Original); CompletedCaptures = MoveTemp(OriginalOrder); FailCapturePersistence = false; };
+    const FString Prefix = TEXT("CaptureSafety_") + FGuid::NewGuid().ToString(EGuidFormats::Digits);
+    auto Receipt = [&](const FString& Id, const FString& State)
+    {
+        auto Value = MakeShared<FJsonObject>(); Value->SetStringField(TEXT("project_path"), ProjectPath()); Value->SetStringField(TEXT("request_id"), Id);
+        Value->SetStringField(TEXT("state"), State); Value->SetNumberField(TEXT("capture_receipt_contract"), 1); Value->SetBoolField(TEXT("success"), State != TEXT("failed")); Value->SetBoolField(TEXT("saved"), State == TEXT("completed")); return Value;
+    };
+    const FString IntentId = Prefix + TEXT("_intent"); auto Intent = Receipt(IntentId, TEXT("pending"));
+    TestTrue(TEXT("Intent reserved atomically"), PersistCapture(IntentId, Intent, false));
+    const auto IntentHash = FMD5Hash::HashFile(*CaptureReceiptFile(IntentId));
+    TestFalse(TEXT("Duplicate reservation never replaces intent"), PersistCapture(IntentId, Receipt(IntentId, TEXT("completed")), false));
+    TestTrue(TEXT("Existing intent bytes preserved"), IntentHash == FMD5Hash::HashFile(*CaptureReceiptFile(IntentId)));
+    auto Interrupted = LoadCapture(IntentId); TestEqual(TEXT("Cold nonterminal is unknown"), Interrupted->GetStringField(TEXT("state")), FString(TEXT("interrupted_unknown")));
+    TestFalse(TEXT("Unknown cannot assert not saved"), Interrupted->HasField(TEXT("saved")));
+    auto Pending = Receipt(Prefix + TEXT("_pending"), TEXT("pending")); Tasks.Add(Pending->GetStringField(TEXT("request_id")), Pending);
+    for (int32 Index = 0; Index < 31; ++Index)
+    {
+        const FString Id = Prefix + FString::Printf(TEXT("_%d"), Index); auto Value = Receipt(Id, Index % 2 ? TEXT("failed") : TEXT("completed"));
+        Tasks.Add(Id, Value); PersistCaptureTerminal(Id, Value);
+    }
+    TestTrue(TEXT("Terminal history makes room"), MakeCaptureRoom()); TestTrue(TEXT("Pending task never evicted"), Tasks.Contains(Pending->GetStringField(TEXT("request_id"))));
+    const FString First = Prefix + TEXT("_0"); TestFalse(TEXT("Old terminal evicted"), Tasks.Contains(First));
+    TestEqual(TEXT("Evicted terminal loads from disk"), LoadCapture(First)->GetStringField(TEXT("state")), FString(TEXT("completed")));
+    TestFalse(TEXT("Disk read never refills memory"), Tasks.Contains(First));
+    TestTrue(TEXT("Corrupt old receipt fixture"), FFileHelper::SaveStringToFile(TEXT("invalid"), *CaptureReceiptFile(First)));
+    auto Corrupt = LoadCapture(First); TestEqual(TEXT("Corrupt status not retried"), Corrupt->GetStringField(TEXT("state")), FString(TEXT("interrupted_unknown")));
+    TestFalse(TEXT("Corrupt receipt not fake saved flag"), Corrupt->HasField(TEXT("saved")));
+    Tasks.Empty(); CompletedCaptures.Empty();
+    const FString ChangedId = Prefix + TEXT("_changed"); auto Changed = Receipt(ChangedId, TEXT("failed")); Tasks.Add(ChangedId, Changed); PersistCaptureTerminal(ChangedId, Changed);
+    FFileHelper::SaveStringToFile(TEXT("invalid"), *CaptureReceiptFile(ChangedId));
+    FailCapturePersistence = true;
+    for (int32 Index = 0; Index < 31; ++Index)
+    {
+        const FString Id = Prefix + FString::Printf(TEXT("_nondurable_%d"), Index); auto Value = Receipt(Id, TEXT("failed")); Tasks.Add(Id, Value); PersistCaptureTerminal(Id, Value);
+        TestFalse(TEXT("Persistence failure truthful"), Value->GetBoolField(TEXT("receipt_persisted")));
+    }
+    TestFalse(TEXT("Changed/non-durable records are pinned"), MakeCaptureRoom()); TestEqual(TEXT("Bounded full history remains"), Tasks.Num(), 32);
+    const auto Refused = CaptureFailure(TEXT("capture_cache_pinned"), TEXT("test")); TestFalse(TEXT("No new work started"), Refused->GetBoolField(TEXT("modified")));
+    return !HasAnyErrors();
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMCPCaptureOpaqueCodecTest, "UnrealMCP.Scene.CaptureOpaqueCodec", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMCPCaptureOpaqueCodecTest::RunTest(const FString& Parameters)
+{
+    TArray<FColor> Pixels = {FColor(0, 0, 0, 0), FColor(231, 42, 17, 0), FColor(29, 180, 95, 127), FColor(13, 61, 255, 255)};
+    const auto Before = Pixels; TArray64<uint8> Png;
+    TestTrue(TEXT("Black/transparent/partial/opaque source pixels encode"), EncodeOpaqueCapture(Pixels, 2, 2, Png));
+    for (int32 Index = 0; Index < Pixels.Num(); ++Index)
+    {
+        TestEqual(TEXT("Red unchanged"), Pixels[Index].R, Before[Index].R); TestEqual(TEXT("Green unchanged"), Pixels[Index].G, Before[Index].G);
+        TestEqual(TEXT("Blue unchanged"), Pixels[Index].B, Before[Index].B); TestEqual(TEXT("Alpha opaque"), Pixels[Index].A, static_cast<uint8>(255));
+    }
+    return !HasAnyErrors();
+}
+#endif
 }

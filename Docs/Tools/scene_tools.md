@@ -438,7 +438,12 @@ Viewport-only changes are not level transactions.
 It returns a pending receipt. Query `get_scene_task_status` with the same project and ID;
 only `state=completed` with success and a file_path proves file completion. Existing IDs
 return their receipt, and existing output files are never overwritten. The bounded
-cache holds 32 tasks per editor session; restarting expires status, not output files.
+memory window holds at most32 records, not32 lifetime captures. Matching updated
+plugins persist intent/terminal JSON under `Saved/UnrealMCP/SceneCaptures` and evict
+only durable completed/failed records whose disk hashes still match. No PNG is
+deleted, no pending task cancelled. Old IDs read disk history without re-rendering
+or refilling memory, including after a map change or editor restart. Old PNGs from
+before this contract remain protected from overwrite but may have no receipt.
 
 The task waits for detectable asset/shader compilation and async loading, draws
 1..300 warmup frames, renders the selected viewport client to an independent offscreen
@@ -449,6 +454,29 @@ Changes to map, camera lock/pose/aspect constraint, exposure or Game View invali
 capture; external user edits are not reverted. MCP commands that could interfere
 are refused during capture. Timeout is 5..120 seconds. Rendering/resource convergence,
 particularly Lumen/eye adaptation, is not guaranteed by a finite warmup count.
+
+New receipts declare `capture_receipt_contract=1` and `alpha_mode=opaque`; completed
+PNG output declares `opaque=true`. Before PNG encoding only A is set to255, leaving
+RGB unchanged. The actual encoded PNG is decoded and every RGB channel and opaque
+Alpha are verified. No transparent-background mode is offered: framebuffer Alpha
+is not treated as meaningful scene transparency. Legitimate black opaque scenes
+are allowed; RGB brightness is not an output-validity requirement. Existing images
+are never rewritten. PNG publication uses a unique same-directory temporary file
+and an OS atomic no-replace operation, protecting even an output appearing while
+the task is pending. This does not change exposure, postprocessing or VFX assets.
+
+Check `receipt_persisted` separately from `saved`. A final receipt-write failure
+retains actual PNG/state fields in memory with `persistence_error` and pins that
+record. A full history of non-durable or externally changed receipts fails closed
+as `capture_cache_pinned`; it does not discard uncertain outcomes or silently
+recapture. `capture_active` identifies the active request independently; capacity
+errors include cached_tasks/cache_limit. An intent-write failure refuses before
+rendering. Corrupt/missing/nonterminal disk history is `interrupted_unknown`, not
+a false no-save/no-modification claim; inspect existing output before proceeding.
+Saved history is metadata, not disk cleanup: PNG/receipt retention remains the
+project owner's responsibility. Never delete receipts to work around an active
+or non-durable task. These protections require the new native DLL, not just Python
+schema refresh. Old deployed DLLs still have the original32-task/Alpha behavior.
 
 Accepted task receipts distinguish `requested_width/height`, `actual_width/height`
 (allocated target dimensions; PNG dimensions on success), and `source_viewport_width/height`
@@ -466,7 +494,48 @@ projection/aspect-axis behavior applies to the requested dimensions.
 Regression group `UnrealMCP.Scene.CaptureResolution` checks smaller/larger/native sizes,
 portrait/wide outputs, locked/free views, source2345x1833 to output1440x1000 at48warmup
 frames, existing fixed-size source mode, and source-change/write-failure cleanup.
-It decodes the real PNG and checks nonblack scene pixels, output dimensions and black bars.
+It decodes the real PNG and checks scene RGB (or a legitimate black scene), output
+dimensions, all-pixel Alpha255 and black bars. The added pending-output collision
+case verifies the pre-existing file's bytes are unchanged.
+
+2026-11-05 source-only verification:18 native matrix tests passed, including
+`CaptureCapacity` (three controlled execution failures followed by100 real PNGs in
+one process; one terminal persistence failure pins a successfully saved PNG),
+`CaptureReceiptSafety`, `CaptureOpaqueCodec`, and15 resolution/camera/failure cases.
+An explicit independent `CaptureColdRead` passed using the matrix's old ID, unchanged
+PNG hash and empty memory. Python97 regressions passed, retaining actual complete,
+non-durable, interrupted and cache-refusal receipts without retries. Logs remain
+under repository project Saved/Logs/Capture-Matrix-Final.log and
+Capture-ColdRead-Final.log. NF/SkillTest were not contacted or deployed in this fix;
+production VFX visual acceptance is not claimed. Windows atomic publication was
+exercised; the POSIX publication branch was not runtime-tested here.
+
+Earlier deployment on2026-11-05: **NF built and verified; SkillTest source copied only,
+awaiting the user's build.** Exactly SceneCommands.cpp/.h and MCPSceneTests.cpp
+were synchronized after confirming old baselines. NF's deployed DLL passed the
+18-test native matrix,100 real screenshots and separate cold receipt read. Actual
+configured stdio on NF's unchanged L_map01 then saved an opaque/persisted PNG and
+replayed its ID without changing image hash/time, source viewport or dirty state.
+Independent System.Drawing decoding confirmed all57600 pixels of that320x180 PNG
+were opaque. This is pixel/contract validation, not production VFX visual approval.
+SkillTest's old DLL hashes and Binaries/Intermediate inventory remained unchanged
+at that copy-only stage; it was not yet fixed. Client configuration,
+project binding, permissions and business assets were not changed by this update.
+
+Later on2026-11-05, the user authorized **full SkillTest deployment, now built and
+verified**. Its incrementally built DLL (7 actions,1138.49s) passed the same18-test
+matrix/100 screenshots and explicit independent cold read of
+`CaptureBatch_2D1DB4DC43F1D444E252F5878C77E36E_4`. The original Review map was
+restored using project INI port13091, without a CLI port override. Actual VSCode
+configured grouped MCP saved a320x180 opaque/persisted PNG; same-ID replay kept
+hash/time and full viewport/camera/exposure/map/dirty0 unchanged. Independent
+System.Drawing decoding found all57600 pixels opaque; Claude-configured reconnect
+read the same ID and BP_ThirdPersonCharacter successfully. All14194 original file
+hashes and14024 Content names/sizes/times stayed unchanged. NF was not operated.
+Backup: SkillTest Saved/UnrealMCPBackups/CaptureBuild_20261105_143610; build/native/
+public/guard receipts: Saved/UnrealMCPDeployment/CaptureBuild_20261105_143610.
+Existing clients reconnect; Claude still needs normal project approval. No new
+public parameters, permissions or unrelated feature deployments were added.
 
 Output: `<Project>/Saved/Screenshots/UnrealMCP/<request_id>.png`. A/B comparisons must
 use the same pose, resolution, exposure and render settings. File creation alone is

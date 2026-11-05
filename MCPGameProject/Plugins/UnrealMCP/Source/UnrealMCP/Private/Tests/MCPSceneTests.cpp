@@ -51,6 +51,7 @@
 #include "IImageWrapperModule.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
+#include "Misc/SecureHash.h"
 #include "Widgets/SViewport.h"
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMCPOpenAssetWorldGuardTest, "UnrealMCP.Editor.OpenAssetWorldGuard", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -910,13 +911,16 @@ struct FMCPCaptureFixture
     bool ExpectFailure = false;
     bool ExpectDetached = false;
     bool CreatedOutputDirectory = false;
+    bool CreatedOutputFile = false;
     bool DirtyBefore = false;
+    bool ExpectBlack = false;
     double Deadline = 0;
     ~FMCPCaptureFixture()
     {
         if (Client) Client->Viewport = nullptr;
         Viewport.Reset(); Client.Reset();
         if (CreatedOutputDirectory) IFileManager::Get().DeleteDirectory(*Filename, false, false);
+        if (CreatedOutputFile) IFileManager::Get().Delete(*Filename, false, false, true);
     }
 };
 
@@ -943,7 +947,13 @@ bool FMCPCheckCapture::Update()
     {
         Test->TestEqual(TEXT("Changed source causes explicit task failure"), State, FString(TEXT("failed")));
         Test->TestFalse(TEXT("Failure never reports file saved"), Receipt->GetBoolField(TEXT("saved")));
-        Test->TestFalse(TEXT("Failure produces no PNG"), IFileManager::Get().FileExists(*Fixture->Filename));
+        if (Fixture->CreatedOutputFile)
+        {
+            FString Protected;
+            Test->TestTrue(TEXT("Existing output still readable"), FFileHelper::LoadFileToString(Protected, *Fixture->Filename));
+            Test->TestEqual(TEXT("Output appearing during pending was not overwritten"), Protected, FString(TEXT("owned_existing_output")));
+        }
+        else Test->TestFalse(TEXT("Failure produces no PNG"), IFileManager::Get().FileExists(*Fixture->Filename));
         Test->TestEqual(TEXT("Failed receipt retains request width"), Receipt->GetIntegerField(TEXT("requested_width")), Fixture->Request->GetIntegerField(TEXT("width")));
         Test->TestEqual(TEXT("Failed receipt retains actual target width"), Receipt->GetIntegerField(TEXT("actual_width")), Fixture->Request->GetIntegerField(TEXT("width")));
         return true;
@@ -962,9 +972,15 @@ bool FMCPCheckCapture::Update()
     Test->TestEqual(TEXT("PNG width"), Wrapper->GetWidth(), static_cast<int64>(Width)); Test->TestEqual(TEXT("PNG height"), Wrapper->GetHeight(), static_cast<int64>(Height));
     TArray64<uint8> Pixels;
     if (!Test->TestTrue(TEXT("Decode PNG pixels"), Wrapper->GetRaw(ERGBFormat::RGBA, 8, Pixels))) return true;
+    bool Opaque = Pixels.Num() == static_cast<int64>(Width) * Height * 4;
+    for (int64 Index = 3; Index < Pixels.Num(); Index += 4) Opaque &= Pixels[Index] == 255;
+    Test->TestTrue(TEXT("Every decoded PNG pixel is opaque"), Opaque);
+    Test->TestEqual(TEXT("Explicit alpha contract"), Receipt->GetStringField(TEXT("alpha_mode")), FString(TEXT("opaque")));
+    Test->TestTrue(TEXT("Opaque completion receipt"), Receipt->GetBoolField(TEXT("opaque")));
     int32 NonBlack = 0;
     for (int64 Index = 0; Index + 3 < Pixels.Num(); Index += 4) if (Pixels[Index] > 8 || Pixels[Index + 1] > 8 || Pixels[Index + 2] > 8) ++NonBlack;
-    Test->TestTrue(TEXT("Scene is not an empty/black render"), NonBlack > Width * Height / 100);
+    if (Fixture->ExpectBlack) Test->TestEqual(TEXT("Legitimate black scene accepted as opaque"), NonBlack, 0);
+    else Test->TestTrue(TEXT("Scene is not an empty/black render"), NonBlack > Width * Height / 100);
     if (Fixture->Camera.IsValid())
     {
         Test->TestEqual(TEXT("Camera aspect constraint unchanged"), Fixture->Camera->GetCameraComponent()->AspectRatio, 16.f / 9.f);
@@ -993,7 +1009,7 @@ IMPLEMENT_COMPLEX_AUTOMATION_TEST(FMCPCaptureSizeTest, "UnrealMCP.Scene.CaptureR
 void FMCPCaptureSizeTest::GetTests(TArray<FString>& Names, TArray<FString>& Commands) const
 {
     for (const FString Name : {TEXT("LockedSmaller"), TEXT("LockedLarger"), TEXT("LockedPortrait"), TEXT("LockedWide"),
-        TEXT("FreeSmaller"), TEXT("FreeLarger"), TEXT("FreePortrait"), TEXT("FreeNativeSize"), TEXT("Reported1440x1000"), TEXT("FixedSource"), TEXT("FailureGameView"), TEXT("FailureDetached"), TEXT("FailureWrite")})
+        TEXT("FreeSmaller"), TEXT("FreeLarger"), TEXT("FreePortrait"), TEXT("FreeNativeSize"), TEXT("FreeBlackScene"), TEXT("Reported1440x1000"), TEXT("FixedSource"), TEXT("FailureGameView"), TEXT("FailureDetached"), TEXT("FailureWrite"), TEXT("FailureExistingOutput")})
     { Names.Add(Name); Commands.Add(Name); }
 }
 
@@ -1003,6 +1019,8 @@ bool FMCPCaptureSizeTest::RunTest(const FString& Parameters)
     UWorld* World = FAutomationEditorCommonUtils::CreateNewMap();
     auto Cube = World->SpawnActor<AStaticMeshActor>(); Cube->GetStaticMeshComponent()->SetStaticMesh(LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube")));
     auto Fixture = MakeShared<FMCPCaptureFixture>();
+    Fixture->ExpectBlack = Parameters == TEXT("FreeBlackScene");
+    if (Fixture->ExpectBlack) Cube->SetIsTemporarilyHiddenInEditor(true);
     const bool Free = Parameters.StartsWith(TEXT("Free"));
     int32 Width = Parameters.Contains(TEXT("Smaller")) ? 320 : 1440;
     int32 Height = Parameters.Contains(TEXT("Smaller")) ? 240 : 1000;
@@ -1058,7 +1076,126 @@ bool FMCPCaptureSizeTest::RunTest(const FString& Parameters)
         Fixture->CreatedOutputDirectory = IFileManager::Get().MakeDirectory(*Fixture->Filename, true);
         TestTrue(TEXT("Create output collision after capture acceptance"), Fixture->CreatedOutputDirectory);
     }
+    if (Parameters == TEXT("FailureExistingOutput"))
+    {
+        Fixture->ExpectFailure = true;
+        Fixture->CreatedOutputFile = FFileHelper::SaveStringToFile(TEXT("owned_existing_output"), *Fixture->Filename);
+        TestTrue(TEXT("Create owned output after capture accepted"), Fixture->CreatedOutputFile);
+    }
     ADD_LATENT_AUTOMATION_COMMAND(FMCPCheckCapture(this, Fixture));
     return true;
+}
+
+class FMCPCaptureBatch : public IAutomationLatentCommand
+{
+public:
+    FMCPCaptureBatch(FAutomationTestBase* InTest, TSharedPtr<FMCPCaptureFixture> InFixture, FString InPrefix)
+        : Test(InTest), Fixture(InFixture), Prefix(MoveTemp(InPrefix)) {}
+    bool Update() override
+    {
+        if (!Current)
+        {
+            Current = MakeShared<FJsonObject>(*Fixture->Request);
+            Current->SetStringField(TEXT("request_id"), Prefix + FString::Printf(TEXT("_%d"), Next));
+            const auto Started = UnrealMCPScene::Capture(Current); FString Error; Started->TryGetStringField(TEXT("error"), Error);
+            if (!Test->TestTrue(FString::Printf(TEXT("Capture %d accepted: %s"), Next, *Error), Started->GetBoolField(TEXT("success")))) return true;
+            Test->TestTrue(TEXT("Same pending ID is idempotent"), UnrealMCPScene::Capture(Current) == Started);
+            auto Concurrent = MakeShared<FJsonObject>(*Current); Concurrent->SetStringField(TEXT("request_id"), Prefix + TEXT("_concurrent"));
+            const auto Refused = UnrealMCPScene::Capture(Concurrent);
+            Test->TestEqual(TEXT("Different pending ID gets busy, not cache-full"), Refused->GetStringField(TEXT("error_code")), FString(TEXT("capture_active")));
+            Test->TestEqual(TEXT("Busy receipt identifies active request"), Refused->GetStringField(TEXT("active_request_id")), Current->GetStringField(TEXT("request_id")));
+            Test->TestFalse(TEXT("Cannot clear memory while pending"), UnrealMCPScene::ClearCaptureMemoryForTests());
+            Filename = FPaths::ConvertRelativePathToFull(FPaths::ProjectSavedDir() / TEXT("Screenshots/UnrealMCP") / (Current->GetStringField(TEXT("request_id")) + TEXT(".png")));
+            if (Next == 0) Fixture->Client->SetGameView(false);
+            if (Next == 1) Test->TestTrue(TEXT("Owned output failure fixture"), IFileManager::Get().MakeDirectory(*Filename, true));
+            if (Next == 2) UnrealMCPScene::ExpireCaptureForTests();
+            if (Next == 3) UnrealMCPScene::SetCapturePersistenceFailureForTests(true);
+            Deadline = FPlatformTime::Seconds() + 65;
+        }
+        const auto Receipt = UnrealMCPScene::Task(Current); const auto State = Receipt->GetStringField(TEXT("state"));
+        if (State == TEXT("pending"))
+        {
+            if (FPlatformTime::Seconds() < Deadline) return false;
+            Test->AddError(TEXT("Batch timed out; capture not retried")); return true;
+        }
+        if (!Test->TestEqual(TEXT("Real terminal state"), State, Next < 3 ? FString(TEXT("failed")) : FString(TEXT("completed")))) return true;
+        Test->TestEqual(TEXT("Receipt persistence failure is truthful"), Receipt->GetBoolField(TEXT("receipt_persisted")), Next != 3);
+        if (Next == 3)
+        {
+            Test->TestTrue(TEXT("PNG saved despite receipt failure"), Receipt->GetBoolField(TEXT("saved")));
+            Test->TestTrue(TEXT("Failed persistence warning retained"), Receipt->HasField(TEXT("persistence_error")));
+            UnrealMCPScene::SetCapturePersistenceFailureForTests(false);
+        }
+        Test->TestTrue(TEXT("History remains bounded"), UnrealMCPScene::CaptureTaskCountForTests() <= 32);
+        Test->TestFalse(TEXT("Capture releases busy"), UnrealMCPScene::IsBusy());
+        Test->TestTrue(TEXT("Source viewport pointer remains stable"), Fixture->Client->Viewport == Fixture->Viewport.Get());
+        if (Next == 0) Fixture->Client->SetGameView(true);
+        if (Next == 1) IFileManager::Get().DeleteDirectory(*Filename, false, false);
+        if (Next >= 3)
+        {
+            Test->TestTrue(TEXT("Real PNG saved"), Receipt->GetBoolField(TEXT("saved")));
+            Test->TestTrue(TEXT("Every result is opaque"), Receipt->GetBoolField(TEXT("opaque")));
+            Test->TestTrue(TEXT("Every PNG exists"), IFileManager::Get().FileSize(*Filename) > 0);
+        }
+        else Test->TestFalse(TEXT("Failed capture not saved"), Receipt->GetBoolField(TEXT("saved")));
+        ++Next; Current.Reset();
+        if (Next < 103) return false;
+        Test->TestFalse(TEXT("100 captures do not dirty map"), Fixture->Client->GetWorld()->GetPackage()->IsDirty());
+        Test->TestEqual(TEXT("100 captures preserve source dimensions"), Fixture->Viewport->GetSizeXY(), Fixture->SourceSize);
+        Test->TestTrue(TEXT("Successful PNG with non-durable receipt stays pinned"), UnrealMCPScene::HasCaptureTaskForTests(Prefix + TEXT("_3")));
+        auto Old = MakeShared<FJsonObject>(); Old->SetStringField(TEXT("project_path"), Fixture->Request->GetStringField(TEXT("project_path"))); Old->SetStringField(TEXT("request_id"), Prefix + TEXT("_4"));
+        Test->TestFalse(TEXT("Old successful ID evicted from memory"), UnrealMCPScene::HasCaptureTaskForTests(Prefix + TEXT("_4")));
+        const auto Before = UnrealMCPScene::Task(Old); const auto Hash = FMD5Hash::HashFile(*Before->GetStringField(TEXT("file_path")));
+        Test->TestEqual(TEXT("Old success status still readable"), Before->GetStringField(TEXT("state")), FString(TEXT("completed")));
+        Test->TestEqual(TEXT("Old success replay does not require original world/viewport"), UnrealMCPScene::Capture(Old)->GetStringField(TEXT("receipt_source")), FString(TEXT("disk")));
+        Test->TestTrue(TEXT("Old PNG unchanged by replay"), Hash == FMD5Hash::HashFile(*Before->GetStringField(TEXT("file_path"))));
+        Old->SetStringField(TEXT("request_id"), Prefix + TEXT("_0")); Test->TestEqual(TEXT("Old failure remains queryable"), UnrealMCPScene::Capture(Old)->GetStringField(TEXT("state")), FString(TEXT("failed")));
+        Test->AddInfo(TEXT("Capture cold-read ID: ") + Prefix + TEXT("_4")); return true;
+    }
+private:
+    FAutomationTestBase* Test;
+    TSharedPtr<FMCPCaptureFixture> Fixture;
+    TSharedPtr<FJsonObject> Current;
+    FString Prefix, Filename;
+    int32 Next = 0;
+    double Deadline = 0;
+};
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMCPCaptureCapacityTest, "UnrealMCP.Scene.CaptureCapacity", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMCPCaptureCapacityTest::RunTest(const FString& Parameters)
+{
+    if (!FParse::Param(FCommandLine::Get(), TEXT("UnrealMCPNoServer"))) { AddError(TEXT("Requires isolated NoServer process")); return false; }
+    UWorld* World = FAutomationEditorCommonUtils::CreateNewMap();
+    auto Cube = World->SpawnActor<AStaticMeshActor>(); Cube->GetStaticMeshComponent()->SetStaticMesh(LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube")));
+    auto Fixture = MakeShared<FMCPCaptureFixture>(); Fixture->SourceSize = FIntPoint(128, 128);
+    Fixture->Client = MakeUnique<FLevelEditorViewportClient>(nullptr); Fixture->Viewport = MakeUnique<FSceneViewport>(Fixture->Client.Get(), nullptr);
+    Fixture->Viewport->UpdateViewportRHI(false, 128, 128, EWindowMode::Windowed, PF_B8G8R8A8); Fixture->Client->Viewport = Fixture->Viewport.Get();
+    Fixture->Client->SetViewportType(LVT_Perspective); Fixture->Client->SetViewMode(VMI_Unlit); Fixture->Client->SetGameView(true);
+    Fixture->Client->SetViewLocation(FVector(-300, 0, 100)); Fixture->Client->SetViewRotation(FRotator(-15, 0, 0));
+    Fixture->Request = MakeShared<FJsonObject>(); Fixture->Request->SetStringField(TEXT("project_path"), FPaths::ConvertRelativePathToFull(FPaths::GetProjectFilePath()));
+    Fixture->Request->SetStringField(TEXT("level_path"), World->GetPackage()->GetName()); Fixture->Request->SetNumberField(TEXT("viewport_id"), GEditor->GetLevelViewportClients().IndexOfByKey(Fixture->Client.Get()));
+    Fixture->Request->SetNumberField(TEXT("width"), 64); Fixture->Request->SetNumberField(TEXT("height"), 64); Fixture->Request->SetNumberField(TEXT("warmup_frames"), 1); Fixture->Request->SetNumberField(TEXT("timeout_seconds"), 60);
+    World->GetPackage()->SetDirtyFlag(false);
+    ADD_LATENT_AUTOMATION_COMMAND(FMCPCaptureBatch(this, Fixture, TEXT("CaptureBatch_") + FGuid::NewGuid().ToString(EGuidFormats::Digits)));
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMCPCaptureColdTest, "UnrealMCP.Scene.CaptureColdRead", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMCPCaptureColdTest::RunTest(const FString& Parameters)
+{
+    FString Id;
+    if (!FParse::Value(FCommandLine::Get(), TEXT("MCPCaptureReplay="), Id)) { AddInfo(TEXT("Requires explicit CaptureCapacity ID; skipped")); return true; }
+    auto Request = MakeShared<FJsonObject>(); Request->SetStringField(TEXT("project_path"), FPaths::ConvertRelativePathToFull(FPaths::GetProjectFilePath())); Request->SetStringField(TEXT("request_id"), Id);
+    TestEqual(TEXT("Fresh process has empty capture memory"), UnrealMCPScene::CaptureTaskCountForTests(), 0);
+    auto Before = UnrealMCPScene::Task(Request);
+    if (!TestTrue(TEXT("Persisted old capture found"), Before->GetBoolField(TEXT("success")))) return false;
+    TestEqual(TEXT("Cold terminal state"), Before->GetStringField(TEXT("state")), FString(TEXT("completed")));
+    const auto Hash = FMD5Hash::HashFile(*Before->GetStringField(TEXT("file_path")));
+    TestEqual(TEXT("Cold replay reads without starting work"), UnrealMCPScene::Capture(Request)->GetStringField(TEXT("receipt_source")), FString(TEXT("disk")));
+    TestEqual(TEXT("Cold reads never refill memory"), UnrealMCPScene::CaptureTaskCountForTests(), 0);
+    TestTrue(TEXT("Cold replay does not alter PNG"), Hash == FMD5Hash::HashFile(*Before->GetStringField(TEXT("file_path"))));
+    TestFalse(TEXT("Cold replay does not capture"), UnrealMCPScene::IsBusy()); return !HasAnyErrors();
 }
 #endif

@@ -333,8 +333,18 @@ def register_scene_tools(mcp: FastMCP):
         Waits for detectable asset/shader compilation then 1..300 rendered warmup frames;
         this does not guarantee Lumen/auto-exposure convergence. Timeout 5..120 seconds.
         On completion returns validated PNG dimensions and real file path. Fixed camera,
-        exposure and resolution are needed for A/B comparisons. 32 cached tasks/session.
-        Editor restart expires status; inspect existing files before retrying.
+        exposure and resolution are needed for A/B comparisons. Matching native fixes
+        return capture_receipt_contract=1, alpha_mode='opaque', opaque=True on saved
+        output; all PNG pixels are opaque and decoded RGB is verified unchanged.
+        No transparent-background mode is offered. Old DLLs lack these guarantees.
+        The native memory window is bounded to 32 records; durable completed/failed
+        receipts are reclaimed, not a lifetime 32-capture limit. JSON history lives
+        under Saved/UnrealMCP/SceneCaptures and survives eviction/editor restart;
+        querying/replaying old IDs reads history, never recaptures or deletes PNGs.
+        Check receipt_persisted and persistence_error separately from saved: a saved
+        PNG may have a non-durable final receipt, which stays pinned in memory.
+        Interrupted/invalid history is unknown outcome; inspect output, never retry
+        the same ID blindly. capture_active and capture_cache_pinned are distinct.
         Updated native plugins use an offscreen render target independent of the editor
         window size; no image stretching or resizing of the visible viewport. Receipts
         distinguish requested_width/height, actual_width/height (render target; final
@@ -354,6 +364,10 @@ def register_scene_tools(mcp: FastMCP):
         """Read capture receipt without restarting work, e.g. request_id='lighting_A_001'.
 
         Requires the exact project path. Check state, success and file_path. Pending
-        only means accepted. Failed/unknown status is never proof of rollback.
+        only means accepted. Matching native plugins read evicted/previous-editor
+        terminal receipts from disk without starting work. Interrupted or corrupt
+        history reports interrupted_unknown, not false saved/modified flags.
+        Failed/unknown status is never proof of rollback. Read persistence_error;
+        history cleanup never deletes a previously saved screenshot.
         """
         return call_scene("get_scene_task_status", dict(project_path=project_path, request_id=request_id))

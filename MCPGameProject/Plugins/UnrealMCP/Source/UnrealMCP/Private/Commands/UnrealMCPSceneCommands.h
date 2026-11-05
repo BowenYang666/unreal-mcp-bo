@@ -23,4 +23,11 @@ namespace UnrealMCPScene
     TSharedPtr<FJsonObject> Manifest(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> RecaptureSky(const TSharedPtr<FJsonObject>& Params);
     bool IsBusy();
+#if WITH_DEV_AUTOMATION_TESTS
+    int32 CaptureTaskCountForTests();
+    bool HasCaptureTaskForTests(const FString& Id);
+    void ExpireCaptureForTests();
+    void SetCapturePersistenceFailureForTests(bool Fail);
+    bool ClearCaptureMemoryForTests();
+#endif
 }
