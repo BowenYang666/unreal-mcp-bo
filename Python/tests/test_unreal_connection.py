@@ -1,6 +1,9 @@
 import json
+import asyncio
 import socket
+import os
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import Mock, patch
 
 import test_grouped_tools
@@ -73,6 +76,99 @@ class UnrealConnectionReceiveTests(unittest.TestCase):
             self.receive([socket.timeout("timed out")])
         with self.assertRaises(ConnectionResetError):
             self.receive([b'{"result":', ConnectionResetError("peer reset")])
+
+    def test_bound_requests_require_native_identity_without_fallback(self):
+        expected = self.server.os.path.normcase(self.server.os.path.normpath("C:/Projects/NF/NF.uproject"))
+        arguments = {"asset_path": "/Game/DA_Test"}
+        for binding, success in (({"contract": 1, "project_path": expected, "matched": True}, True),
+                                 ({}, False),
+                                 ({"contract": 1, "project_path": "C:/Projects/SkillTest/SkillTest.uproject", "matched": True}, False)):
+            with self.subTest(binding=binding), patch.object(self.server, "UNREAL_EXPECTED_PROJECT", expected):
+                response = {"status": "success", "result": {"saved": True}, "project_binding": binding}
+                sock = Mock(spec=socket.socket); sock.recv.return_value = json.dumps(response).encode()
+                def connect():
+                    self.connection.socket = sock
+                    return True
+                with patch.object(self.connection, "connect", side_effect=connect) as connected:
+                    result = self.connection.send_command("set_asset_properties", arguments)
+                self.assertEqual(result["status"], "success" if success else "error")
+                if not success:
+                    self.assertNotIn("result", result)
+                    self.assertIn("outcome unknown", result["error"])
+                self.assertEqual(json.loads(sock.sendall.call_args.args[0]), {"type": "execute_project_command", "params": {
+                    "expected_project": expected, "command": "set_asset_properties", "arguments": arguments}})
+                connected.assert_called_once(); sock.sendall.assert_called_once(); sock.close.assert_called_once()
+
+    def test_service_lifespan_does_not_reserve_an_idle_editor_socket(self):
+        async def run():
+            with patch.object(self.server, "_unreal_connection", None), patch.object(self.server, "get_unreal_connection") as factory:
+                async with self.server.server_lifespan(self.server.mcp):
+                    factory.assert_not_called()
+                factory.assert_not_called()
+        asyncio.run(run())
+
+    def test_project_profile_validation(self):
+        for value in ("relative/NF.uproject", "C:/Projects/NF", "C:/Projects/NF.txt", "C:/" + "x" * 4096 + ".uproject"):
+            with self.subTest(value=value), patch.dict(os.environ, {"UNREAL_MCP_EXPECTED_PROJECT": value}), self.assertRaises(ValueError):
+                test_grouped_tools.GroupedServerTests().load_server()
+
+    def test_two_profiles_use_separate_real_sockets_and_refuse_wrong_target(self):
+        projects = [self.server.os.path.normcase(self.server.os.path.normpath(path)) for path in
+                    ("C:/Projects/NF/NF.uproject", "C:/Projects/SkillTest/SkillTest.uproject")]
+        listeners = [socket.socket(socket.AF_INET, socket.SOCK_STREAM) for _ in projects]
+        for listener in listeners:
+            self.addCleanup(listener.close); listener.bind(("127.0.0.1", 0)); listener.listen(3); listener.settimeout(8)
+        def serve(listener, project):
+            requests = []
+            for request_index in range(2):
+                peer, _ = listener.accept()
+                with peer:
+                    peer.settimeout(5); data = b""
+                    while True:
+                        chunk = peer.recv(4096)
+                        if not chunk: raise ConnectionError("Incomplete test request")
+                        data += chunk
+                        try:
+                            request = json.loads(data); break
+                        except json.JSONDecodeError:
+                            continue
+                    requests.append(request); self.assertEqual(request["type"], "execute_project_command")
+                    matched = request["params"]["expected_project"] == project
+                    response = {"status": "success" if matched else "error", "project_binding": {
+                        "contract": 1, "project_path": project, "matched": matched}}
+                    response["result"] = {"project": project, "asset_path": request["params"]["arguments"].get("asset_path")} if matched else {
+                        "success": False, "stage": "project_binding", "execution_state": "not_started", "modified": False, "saved": False}
+                    if not matched: response["error"] = "Wrong project"
+                    peer.sendall(json.dumps(response).encode())
+            return requests
+        profiles = []
+        for listener, project in zip(listeners, projects):
+            with patch.dict(os.environ, {"UNREAL_MCP_PORT": str(listener.getsockname()[1]), "UNREAL_MCP_EXPECTED_PROJECT": project}):
+                profiles.append(test_grouped_tools.GroupedServerTests().load_server())
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            servers = [workers.submit(serve, listener, project) for listener, project in zip(listeners, projects)]
+            clients = [profile.UnrealConnection() for profile in profiles]
+            for client, project in zip(clients, projects):
+                result = client.send_command("get_class_properties", {"asset_path": "/Game/Shared/DA_Test"})
+                self.assertEqual(result["result"]["project"], project)
+            self.assertEqual(clients[0].send_command("get_class_properties", {"asset_path": "/Game/Shared/DA_Test"})["result"]["project"], projects[0])
+            with patch.object(profiles[0], "UNREAL_PORT", listeners[1].getsockname()[1]):
+                refused = clients[0].send_command("close_editor", {})
+                self.assertEqual(refused["result"]["execution_state"], "not_started")
+            histories = [server.result(timeout=10) for server in servers]
+            self.assertEqual([len(history) for history in histories], [2, 2])
+
+    def test_bound_native_refusal_preserves_not_started_receipt(self):
+        response = {"status": "error", "error": "Wrong project", "project_binding": {
+            "contract": 1, "project_path": "C:/Projects/SkillTest/SkillTest.uproject", "matched": False},
+            "result": {"success": False, "execution_state": "not_started", "modified": False, "saved": False, "stage": "project_binding"}}
+        sock = Mock(spec=socket.socket); sock.recv.return_value = json.dumps(response).encode()
+        def connect():
+            self.connection.socket = sock
+            return True
+        with patch.object(self.server, "UNREAL_EXPECTED_PROJECT", "C:/Projects/NF/NF.uproject"), patch.object(self.connection, "connect", side_effect=connect) as connected:
+            self.assertEqual(self.connection.send_command("close_editor", {}), response)
+            connected.assert_called_once(); sock.sendall.assert_called_once()
 
     def test_send_command_preserves_fragmented_response_and_does_not_retry(self):
         response = {"status": "success", "result": {"saved": True, "label": "\u4e2d\U0001f600"}}

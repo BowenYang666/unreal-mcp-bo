@@ -41,6 +41,8 @@ MCP client (VS Code/Copilot or Claude Code)
 ```
 
 Build/load the plugin in the target project. Keep the shared Python server here.
+For simultaneous editors, use [persistent project ports and request binding](Docs/copy_plugin_to_project.md#multiple-editors-and-project-binding)
+so each Agent targets its intended project without special launch shortcuts.
 
 ## Onboard a Project
 

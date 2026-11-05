@@ -211,6 +211,123 @@ Claude project servers require one-time approval: launch `claude` in the project
 
 Use `UNREAL_MCP_READ_ONLY=1` for project inspection. Set it to `0` only when authoring is requested.
 
+## Multiple Editors and Project Binding
+
+With the updated native plugin, persist each project's listener settings in its
+`Config/DefaultEngine.ini`. Normal double-clicking of the `.uproject` then reads
+these settings; no special shortcut or per-launch argument is needed:
+
+```ini
+[UnrealMCP]
+Port=13091
+RequireProjectBinding=True
+```
+
+Assign distinct loopback ports, for example NF=13090 and SkillTest=13091.
+Configuration priority is command-line `-UnrealMCPPort=...`, then the editor
+process's `UNREAL_MCP_PORT`, then this project's INI, then legacy default 13090.
+Avoid a machine-wide environment override that makes every editor use one port.
+Invalid selected ports refuse startup; occupied ports are not automatically
+replaced or retried with another port. New listeners disable address reuse.
+This is not a guarantee of Windows exclusive binding against an old or unrelated
+program using socket reuse; upgrade both projects and give them different ports.
+
+For each project-local MCP service, use the matching client environment:
+
+```json
+{
+    "UNREAL_MCP_PORT": "13091",
+    "UNREAL_MCP_EXPECTED_PROJECT": "E:/04_UnrealProjects/UE5Test/SkillTest/SkillTest.uproject",
+    "UNREAL_MCP_READ_ONLY": "1"
+}
+```
+
+These are example settings, **not automatically applied to NF or SkillTest**.
+Each service is a separate Python process with a fixed port and expected absolute
+`.uproject` path. In VS Code place its environment under `servers.<name>.env`;
+in Claude use `mcpServers.<name>.env`. Preserve existing category filters and
+authoring permissions; choose read/write only when authorized. Never replace an
+active project's configuration or restart its editor while another agent works.
+
+An NF workspace can expose both `unrealNF` (NF's authorized access) and
+`unrealSkillTest` (read-only by default). Choose the client-visible server prefix,
+not an ambiguous `/Game/...` path. Each profile still has its own grouped
+discovery and permission filters. Two workspaces can independently use the same
+shared Python source; they do not share a connection instance.
+
+Setting `UNREAL_MCP_EXPECTED_PROJECT` wraps **every command** in the native
+`execute_project_command` protocol. The UE game-thread gate compares the full
+normalized project path before dispatching the internal command, and returns a
+`project_binding` contract1 attestation with the actual project path. A mismatch,
+malformed/nested wrapper, or an unbound request to a strict project is rejected
+before execution with `stage=project_binding`, `execution_state=not_started`,
+`modified=false`, `saved=false`. Existing operation receipts/defaults are retained.
+Path matching is lexical full-path normalization (case-insensitive on Windows),
+not symlink/junction equivalence; configure the path actually used to launch UE.
+
+An old DLL cannot execute the unknown wrapper command. The bound client requires
+native attestation and never falls back to an unbound write or retries. Missing,
+malformed or unexpected attestation is an unknown outcome, not a rollback claim.
+Transport timeout/reset also stays unknown. This prevents accidental wrong-project
+dispatch; it is **not TCP authentication or a new native read-only security layer**.
+Legacy unbound profiles remain compatible unless the project opts into
+`RequireProjectBinding=True`; do not call those legacy profiles project-safe.
+
+After deploying the native changes and configuring both projects during an
+authorized maintenance window, restart each matching editor/client and verify
+`get_editor_context` through the selected service. Do not equate copied source or
+an available Python schema with a deployed DLL. This does not isolate shared CPU,
+GPU, memory, or two agents editing the same asset in the same project.
+
+Source verification: real loopback clients with two independent profiles/ports,
+same-path asset reads to distinct test identities and intentional wrong-target
+refusal; native startup INI port/strict reads, correct/wrong project, legacy/nested
+refusal, real fragmented bound TCP, two ephemeral listeners and port-collision
+refusal. All editor tests use the repository's isolated NoServer process, not NF
+or SkillTest. NF and SkillTest deployment and simultaneous GUI acceptance were
+subsequently authorized and completed on 2026-11-04 as described below.
+
+### NF and SkillTest Deployment
+
+Both projects now persist `RequireProjectBinding=True` with NF port13090 and
+SkillTest port13091. Their existing primary service remains named `unrealMCP`
+with original permissions/category filters. NF also has `skillTestReadOnly` in
+its Claude and new workspace VS Code configuration; that service binds SkillTest
+and exposes only read tools. SkillTest's other configured services remain intact.
+No per-launch port argument was used for either accepted GUI startup.
+
+Both deployed DLLs passed startup-INI, project-identity, bound TCP and temporary
+port-collision tests. Actual NF/SkillTest GUIs then ran simultaneously: configured
+VS Code/Claude primary and cross-read profiles (six profiles total) returned the
+correct project, same-path Engine asset properties and narrow Blueprint reads.
+NF stayed on its original L_map01/13090/PID while SkillTest opened on Entry/13091.
+An intentional wrong-port read was rejected as `not_started`; both dirty counts
+were zero at acceptance. This does not claim gameplay or asset-migration validation.
+
+The first six-profile run exposed a startup idle-connection timeout. Python startup
+now connects lazily only for actual commands, so extra services do not reserve idle
+UE sockets. Its new lifecycle regression and all96 Python tests passed; the fresh
+six-profile run passed. Initial timeout/raw records were retained, no write retried.
+
+Backups and receipts in each project:
+`Saved/UnrealMCPBackups/ProjectBinding_20261104_220742` and
+`Saved/UnrealMCPDeployment/ProjectBinding_20261104_220742`.
+Only connection-layer files and project/client binding configuration were deployed;
+local plugin customizations were preserved. SkillTest did not receive unrelated
+component-default or FText authoring upgrades. During the long deployment window,
+NF had three existing Content hashes change and an added inventory item; SkillTest
+had350 old paths disappear within NiagaraExplosion01 while total Content count was
+unchanged. These concurrent content changes were recorded and not restored; do
+not describe the projects' entire Content as unchanged. No production asset
+authoring/move/delete/save request was issued by deployment acceptance.
+
+Existing Agent/MCP processes must restart/reconnect once to load the new environment
+and lazy client. Claude still reports project approval pending; the user approves
+each service normally. Existing unbound services are refused by strict native
+projects, never silently redirected. Future normal double-click project launches
+read the persistent INI. Both GUIs were left open at acceptance; always verify live
+PID/port rather than treating this dated deployment record as permanent state.
+
 ## Step 9: Launch and Verify
 
 1. Launch the target `.uproject` with the matching `UnrealEditor.exe`.

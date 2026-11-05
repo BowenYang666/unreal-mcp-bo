@@ -1,6 +1,7 @@
 #if WITH_DEV_AUTOMATION_TESTS
 #include "MCPServerRunnable.h"
 #include "MCPCommandQueue.h"
+#include "MCPProjectBinding.h"
 #include "UnrealMCPBridge.h"
 #include "Async/Async.h"
 #include "Async/TaskGraphInterfaces.h"
@@ -19,6 +20,7 @@ struct FMCPTransportTestState
     TUniquePtr<FMCPServerRunnable> Runnable;
     TUniquePtr<FRunnableThread> Thread;
     TFuture<FString> Response;
+    bool Bound = false;
 
     ~FMCPTransportTestState()
     {
@@ -39,6 +41,11 @@ bool FMCPAwaitTransport::Update()
     {
         Test->TestEqual(TEXT("Request routed through bridge"), Result->GetStringField(TEXT("status")), FString(TEXT("success")));
         Test->TestEqual(TEXT("Ping response"), Result->GetObjectField(TEXT("result"))->GetStringField(TEXT("message")), FString(TEXT("pong")));
+        if (State->Bound)
+        {
+            Test->TestTrue(TEXT("Native project identity survived real TCP dispatch"), Result->GetObjectField(TEXT("project_binding"))->GetBoolField(TEXT("matched")));
+            Test->TestEqual(TEXT("Real TCP project path"), Result->GetObjectField(TEXT("project_binding"))->GetStringField(TEXT("project_path")), UnrealMCPProjectBinding::NormalizeProject(FPaths::GetProjectFilePath()));
+        }
     }
     State->Runnable->Stop();
     State->Thread->WaitForCompletion();
@@ -68,7 +75,10 @@ bool FMCPTransportSocketTest::RunTest(const FString& Parameters)
     State->Thread.Reset(FRunnableThread::Create(State->Runnable.Get(), TEXT("MCPTransportTest")));
     if (!TestTrue(TEXT("Server thread started"), State->Thread.IsValid())) return false;
     const int32 Port = Address->GetPort();
-    State->Response = Async(EAsyncExecution::Thread, [Port]() -> FString
+    State->Bound = FParse::Param(FCommandLine::Get(), TEXT("MCPTransportBound"));
+    const bool Bound = State->Bound;
+    const FString Project = FPaths::ConvertRelativePathToFull(FPaths::GetProjectFilePath());
+    State->Response = Async(EAsyncExecution::Thread, [Port, Bound, Project]() -> FString
     {
         ISocketSubsystem* Subsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
         TSharedPtr<FSocket> Socket(Subsystem->CreateSocket(NAME_Stream, TEXT("MCPTestClient"), false),
@@ -81,8 +91,16 @@ bool FMCPTransportSocketTest::RunTest(const FString& Parameters)
         if (!Socket->Connect(*Destination)) return TEXT("Connect failed");
         Socket->SetNonBlocking(true);
         const FString Prefix = TEXT("{\"type\":\"ping\",\"params\":{\"padding\":\"");
-        const FString Json = Prefix + FString::ChrN(8191 - Prefix.Len(), TEXT('x'))
+        FString Json = Prefix + FString::ChrN(8191 - Prefix.Len(), TEXT('x'))
             + TEXT("\\u4e2d") + FString::ChrN(25000, TEXT('x')) + TEXT("\"}}");
+        if (Bound)
+        {
+            TSharedPtr<FJsonObject> Original; FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Json), Original);
+            auto Params = MakeShared<FJsonObject>(); Params->SetStringField(TEXT("expected_project"), Project); Params->SetStringField(TEXT("command"), TEXT("ping"));
+            Params->SetObjectField(TEXT("arguments"), Original->GetObjectField(TEXT("params")));
+            auto Envelope = MakeShared<FJsonObject>(); Envelope->SetStringField(TEXT("type"), TEXT("execute_project_command")); Envelope->SetObjectField(TEXT("params"), Params);
+            Json = UnrealMCPProjectBinding::Serialize(Envelope);
+        }
         FTCHARToUTF8 Encoded(*Json);
         const double Deadline = FPlatformTime::Seconds() + 15.0;
         int32 Offset = 0;
@@ -111,6 +129,68 @@ bool FMCPTransportSocketTest::RunTest(const FString& Parameters)
     });
     ADD_LATENT_AUTOMATION_COMMAND(FMCPAwaitTransport(State, this));
     return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMCPProjectBindingTest, "UnrealMCP.Transport.ProjectBinding",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMCPProjectBindingTest::RunTest(const FString& Parameters)
+{
+    if (!FParse::Param(FCommandLine::Get(), TEXT("UnrealMCPNoServer"))) { AddError(TEXT("Requires isolated NoServer test process")); return false; }
+    int32 Port = 0;
+    TestTrue(TEXT("Default port"), UnrealMCPProjectBinding::ResolvePort(TEXT(""), TEXT(""), TEXT(""), Port)); TestEqual(TEXT("Default value"), Port, 13090);
+    TestTrue(TEXT("Persisted project setting"), UnrealMCPProjectBinding::ResolvePort(TEXT("13091"), TEXT(""), TEXT(""), Port)); TestEqual(TEXT("Persisted value"), Port, 13091);
+    TestTrue(TEXT("Environment override"), UnrealMCPProjectBinding::ResolvePort(TEXT("13091"), TEXT("13092"), TEXT(""), Port)); TestEqual(TEXT("Environment value"), Port, 13092);
+    TestTrue(TEXT("Command line override"), UnrealMCPProjectBinding::ResolvePort(TEXT("13091"), TEXT("13092"), TEXT("13093"), Port)); TestEqual(TEXT("Command value"), Port, 13093);
+    for (const TCHAR* Invalid : {TEXT("0"), TEXT("65536"), TEXT("-1"), TEXT("1.5"), TEXT("+13090"), TEXT("999999999999999999999")})
+        TestFalse(TEXT("Invalid selected port fails closed"), UnrealMCPProjectBinding::ResolvePort(Invalid, TEXT(""), TEXT(""), Port));
+    auto* Bridge = GEditor->GetEditorSubsystem<UUnrealMCPBridge>(); if (!TestNotNull(TEXT("Bridge"), Bridge)) return false;
+    int32 ExpectedPort = 0;
+    if (FParse::Value(FCommandLine::Get(), TEXT("MCPExpectedPort="), ExpectedPort)) TestEqual(TEXT("Subsystem read actual startup INI port"), static_cast<int32>(Bridge->Port), ExpectedPort);
+    if (FParse::Param(FCommandLine::Get(), TEXT("MCPExpectedStrict"))) TestTrue(TEXT("Subsystem read actual startup INI strict mode"), Bridge->RequireProjectBinding);
+    TGuardValue<bool> Strict(Bridge->RequireProjectBinding, true);
+    auto Request = MakeShared<FJsonObject>(); Request->SetStringField(TEXT("expected_project"), FPaths::ConvertRelativePathToFull(FPaths::GetProjectFilePath()));
+    Request->SetStringField(TEXT("command"), TEXT("ping")); Request->SetObjectField(TEXT("arguments"), MakeShared<FJsonObject>());
+    auto Parse = [&](const FString& Text)
+    {
+        TSharedPtr<FJsonObject> Response; FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Text), Response); return Response;
+    };
+    auto Valid = Parse(Bridge->ExecuteCommandOnGameThread(TEXT("execute_project_command"), Request));
+    if (!TestTrue(TEXT("Bound request parsed"), Valid.IsValid())) return false;
+    TestEqual(TEXT("Correct project allowed in strict mode"), Valid->GetStringField(TEXT("status")), FString(TEXT("success")));
+    if (Valid->HasField(TEXT("result"))) TestEqual(TEXT("Inner command executed"), Valid->GetObjectField(TEXT("result"))->GetStringField(TEXT("message")), FString(TEXT("pong")));
+    TestTrue(TEXT("Native verified identity"), Valid->GetObjectField(TEXT("project_binding"))->GetBoolField(TEXT("matched")));
+    auto AssertRefused = [&](const FString& Label, const FString& Text)
+    {
+        auto Refused = Parse(Text); if (!TestTrue(Label + TEXT(" response"), Refused.IsValid())) return;
+        TestEqual(Label + TEXT(" status"), Refused->GetStringField(TEXT("status")), FString(TEXT("error")));
+        auto Receipt = Refused->GetObjectField(TEXT("result")); TestEqual(Label + TEXT(" did not start"), Receipt->GetStringField(TEXT("execution_state")), FString(TEXT("not_started")));
+        TestFalse(Label + TEXT(" not modified"), Receipt->GetBoolField(TEXT("modified"))); TestFalse(Label + TEXT(" not saved"), Receipt->GetBoolField(TEXT("saved")));
+    };
+    Request->SetStringField(TEXT("expected_project"), FPaths::ConvertRelativePathToFull(FPaths::ProjectDir() / TEXT("Other/Other.uproject")));
+    Request->SetStringField(TEXT("command"), TEXT("close_editor"));
+    AssertRefused(TEXT("Wrong project cannot close editor"), Bridge->ExecuteCommandOnGameThread(TEXT("execute_project_command"), Request));
+    AssertRefused(TEXT("Legacy raw command rejected by strict project"), Bridge->ExecuteCommandOnGameThread(TEXT("ping"), MakeShared<FJsonObject>()));
+    Request->SetStringField(TEXT("expected_project"), FPaths::ConvertRelativePathToFull(FPaths::GetProjectFilePath()));
+    Request->SetStringField(TEXT("command"), TEXT("execute_project_command"));
+    AssertRefused(TEXT("Nested envelope refused"), Bridge->ExecuteCommandOnGameThread(TEXT("execute_project_command"), Request));
+    Request->SetStringField(TEXT("command"), TEXT("ping")); Request->SetBoolField(TEXT("unexpected"), true);
+    AssertRefused(TEXT("Malformed envelope refused"), Bridge->ExecuteCommandOnGameThread(TEXT("execute_project_command"), Request));
+    auto* First = NewObject<UUnrealMCPBridge>(); auto* Second = NewObject<UUnrealMCPBridge>(); auto* Collision = NewObject<UUnrealMCPBridge>();
+    FIPv4Address::Parse(TEXT("127.0.0.1"), First->ServerAddress); Second->ServerAddress = First->ServerAddress; Collision->ServerAddress = First->ServerAddress;
+    First->Port = 0; Second->Port = 0;
+    First->StartServer(); Second->StartServer();
+    TestTrue(TEXT("First independent temporary listener"), First->IsRunning()); TestTrue(TEXT("Second independent temporary listener"), Second->IsRunning());
+    if (First->IsRunning() && Second->IsRunning())
+    {
+        TestNotEqual(TEXT("Two listeners use distinct ephemeral ports"), First->ListenerSocket->GetPortNo(), Second->ListenerSocket->GetPortNo());
+        Collision->Port = static_cast<uint16>(First->ListenerSocket->GetPortNo());
+        AddExpectedError(TEXT("Failed to bind listener socket"), EAutomationExpectedErrorFlags::Contains, 1);
+        Collision->StartServer(); TestFalse(TEXT("Duplicate configured port refuses startup"), Collision->IsRunning());
+        TestTrue(TEXT("Original listener not replaced"), First->IsRunning());
+    }
+    Collision->StopServer(); Second->StopServer(); First->StopServer();
+    return !HasAnyErrors();
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMCPCommandQueueTest, "UnrealMCP.Transport.CommandQueue",

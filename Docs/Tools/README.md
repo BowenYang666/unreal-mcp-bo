@@ -48,8 +48,9 @@ An exact `tool` name (or exact name in `query`) returns the original description
 `input_schema`, `effect` and `call_tool`. Unknown/disabled names are rejected.
 Exact `tool` takes precedence over other search parameters. Keyword searches
 return summaries and a `next_call` for exact lookup; a single match additionally
-includes its full `contract`. Search never invokes an editor operation, although
-the existing server startup still attempts its normal editor connection.
+includes its full `contract`. Search never invokes an editor operation. Server
+startup/discovery is lazy: it does not reserve an idle editor TCP connection;
+each actual editor command opens and closes its own connection.
 
 Example MCP calls, in order:
 

@@ -31,6 +31,12 @@ UNREAL_HOST = "127.0.0.1"
 UNREAL_PORT = int(os.environ.get("UNREAL_MCP_PORT", "13090"))
 if not 1 <= UNREAL_PORT <= 65535:
     raise ValueError("UNREAL_MCP_PORT must be 1..65535")
+UNREAL_EXPECTED_PROJECT = os.environ.get("UNREAL_MCP_EXPECTED_PROJECT", "").strip()
+if UNREAL_EXPECTED_PROJECT:
+    if (len(UNREAL_EXPECTED_PROJECT) > 4096 or "\0" in UNREAL_EXPECTED_PROJECT
+            or not os.path.isabs(UNREAL_EXPECTED_PROJECT) or not UNREAL_EXPECTED_PROJECT.lower().endswith(".uproject")):
+        raise ValueError("UNREAL_MCP_EXPECTED_PROJECT must be an absolute .uproject file path")
+    UNREAL_EXPECTED_PROJECT = os.path.normcase(os.path.normpath(UNREAL_EXPECTED_PROJECT))
 
 class UnrealConnection:
     """Connection to an Unreal Engine instance."""
@@ -146,6 +152,9 @@ class UnrealConnection:
                 "type": command,  # Use "type" instead of "command"
                 "params": params or {}  # Use Unity's params or {} pattern
             }
+            if UNREAL_EXPECTED_PROJECT:
+                command_obj = {"type": "execute_project_command", "params": {
+                    "expected_project": UNREAL_EXPECTED_PROJECT, "command": command, "arguments": params or {}}}
             
             # Send without newline, exactly like Unity
             command_json = json.dumps(command_obj)
@@ -155,6 +164,17 @@ class UnrealConnection:
             # Read response using improved handler
             response_data = self.receive_full_response(self.socket)
             response = json.loads(response_data.decode('utf-8'))
+            if UNREAL_EXPECTED_PROJECT:
+                binding = response.get("project_binding", {})
+                actual = binding.get("project_path", "") if isinstance(binding, dict) else ""
+                matched = (isinstance(binding, dict) and binding.get("matched") is True and isinstance(actual, str)
+                           and actual and os.path.normcase(os.path.normpath(actual)) == UNREAL_EXPECTED_PROJECT)
+                receipt = response.get("result", {})
+                refused = (isinstance(binding, dict) and response.get("status") == "error" and binding.get("matched") is False
+                           and isinstance(receipt, dict) and receipt.get("execution_state") == "not_started"
+                           and receipt.get("stage") == "project_binding" and receipt.get("modified") is False and receipt.get("saved") is False)
+                if not isinstance(binding, dict) or type(binding.get("contract")) is not int or binding.get("contract") != 1 or not (matched or refused):
+                    raise ConnectionError("Project binding was not verified by the native plugin; outcome unknown. No fallback or automatic retry. Update the plugin or inspect the target.")
             
             # Log complete response for debugging
             logger.info(f"Complete response from Unreal: {response}")
@@ -300,15 +320,7 @@ async def server_lifespan(server: FastMCP) -> AsyncIterator[Dict[str, Any]]:
     """Handle server startup and shutdown."""
     global _unreal_connection
     logger.info("UnrealMCP server starting up")
-    try:
-        _unreal_connection = get_unreal_connection()
-        if _unreal_connection and _unreal_connection.connect():
-            logger.info("Connected to Unreal Engine on startup")
-        else:
-            logger.warning("Could not connect to Unreal Engine on startup")
-    except Exception as e:
-        logger.error(f"Error connecting to Unreal Engine on startup: {e}")
-        _unreal_connection = None
+    logger.info("Editor connections are opened only for commands; discovery does not reserve a socket")
     
     try:
         yield {}

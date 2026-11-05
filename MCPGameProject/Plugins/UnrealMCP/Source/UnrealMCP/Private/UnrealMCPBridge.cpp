@@ -10,6 +10,8 @@
 #include "Commands/UnrealMCPPhysicalMaterialCommands.h"
 #include "MCPServerRunnable.h"
 #include "MCPCommandQueue.h"
+#include "MCPProjectBinding.h"
+#include "Misc/ConfigCacheIni.h"
 #include "Misc/CoreDelegates.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Sockets.h"
@@ -110,16 +112,19 @@ void UUnrealMCPBridge::Initialize(FSubsystemCollectionBase& Collection)
     ConnectionSocket = nullptr;
     ServerThread = nullptr;
     Port = MCP_SERVER_PORT;
-    FString RequestedPort = FPlatformMisc::GetEnvironmentVariable(TEXT("UNREAL_MCP_PORT"));
-    FParse::Value(FCommandLine::Get(), TEXT("UnrealMCPPort="), RequestedPort);
-    if (!RequestedPort.IsEmpty())
+    FString ConfigPort, CommandPort;
+    const bool HasConfigPort = GConfig->GetString(TEXT("UnrealMCP"), TEXT("Port"), ConfigPort, GEngineIni);
+    GConfig->GetBool(TEXT("UnrealMCP"), TEXT("RequireProjectBinding"), RequireProjectBinding, GEngineIni);
+    const bool HasCommandPort = FParse::Value(FCommandLine::Get(), TEXT("UnrealMCPPort="), CommandPort);
+    if (HasConfigPort && ConfigPort.IsEmpty()) ConfigPort = TEXT("invalid empty configured port");
+    if (HasCommandPort && CommandPort.IsEmpty()) CommandPort = TEXT("invalid empty command-line port");
+    int32 RequestedPort = MCP_SERVER_PORT;
+    if (!UnrealMCPProjectBinding::ResolvePort(ConfigPort, FPlatformMisc::GetEnvironmentVariable(TEXT("UNREAL_MCP_PORT")), CommandPort, RequestedPort))
     {
-        if (!RequestedPort.IsNumeric() || !LexTryParseString(Port, *RequestedPort) || Port < 1 || Port > 65535)
-        {
-            UE_LOG(LogTemp, Error, TEXT("UnrealMCP: invalid port; refusing to start server"));
-            return;
-        }
+        UE_LOG(LogTemp, Error, TEXT("UnrealMCP: invalid port; refusing to start server"));
+        return;
     }
+    Port = static_cast<uint16>(RequestedPort);
     FIPv4Address::Parse(MCP_SERVER_HOST, ServerAddress);
     BeginFrameHandle = FCoreDelegates::OnBeginFrame.AddUObject(this, &UUnrealMCPBridge::DrainCommands);
 
@@ -163,8 +168,11 @@ void UUnrealMCPBridge::StartServer()
         return;
     }
 
-    // Allow address reuse for quick restarts
-    NewListenerSocket->SetReuseAddr(true);
+    if (!NewListenerSocket->SetReuseAddr(false))
+    {
+        UE_LOG(LogTemp, Error, TEXT("UnrealMCP: cannot disable port reuse; refusing to start server"));
+        return;
+    }
     NewListenerSocket->SetNonBlocking(true);
 
     // Bind to address
@@ -262,9 +270,28 @@ void UUnrealMCPBridge::DrainCommands()
     CommandQueue->RunNext(Safe);
 }
 
-FString UUnrealMCPBridge::ExecuteCommandOnGameThread(const FString& CommandType, const TSharedPtr<FJsonObject>& Params)
+FString UUnrealMCPBridge::ExecuteCommandOnGameThread(const FString& CommandType, const TSharedPtr<FJsonObject>& Params, bool ProjectVerified)
 {
     check(IsInGameThread());
+    if (CommandType == TEXT("execute_project_command"))
+    {
+        FString ExpectedProject, InnerCommand;
+        const TSharedPtr<FJsonObject>* Arguments = nullptr;
+        if (!Params || Params->Values.Num() != 3 || !Params->TryGetStringField(TEXT("expected_project"), ExpectedProject)
+            || !UnrealMCPProjectBinding::ValidProject(ExpectedProject)
+            || !Params->TryGetStringField(TEXT("command"), InnerCommand) || InnerCommand.IsEmpty() || InnerCommand.Len() > 128
+            || InnerCommand == TEXT("execute_project_command") || !Params->TryGetObjectField(TEXT("arguments"), Arguments))
+            return UnrealMCPProjectBinding::Reject(TEXT("Invalid project-bound request; no internal command executed"));
+        if (UnrealMCPProjectBinding::NormalizeProject(ExpectedProject) != UnrealMCPProjectBinding::NormalizeProject(FPaths::GetProjectFilePath()))
+            return UnrealMCPProjectBinding::Reject(TEXT("Target project mismatch; no internal command executed"));
+        const FString InnerResponse = ExecuteCommandOnGameThread(InnerCommand, *Arguments, true);
+        TSharedPtr<FJsonObject> Response;
+        if (!FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(InnerResponse), Response) || !Response)
+            return InnerResponse;
+        Response->SetObjectField(TEXT("project_binding"), UnrealMCPProjectBinding::Identity(true));
+        return UnrealMCPProjectBinding::Serialize(Response.ToSharedRef());
+    }
+    if (RequireProjectBinding && !ProjectVerified) return UnrealMCPProjectBinding::Reject(TEXT("Project binding is required; configure UNREAL_MCP_EXPECTED_PROJECT on this MCP service"));
     UE_LOG(LogTemp, Display, TEXT("UnrealMCPBridge: Executing command: %s"), *CommandType);
     {
         TSharedPtr<FJsonObject> ResponseJson = MakeShareable(new FJsonObject);

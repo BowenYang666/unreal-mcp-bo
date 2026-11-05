@@ -50,9 +50,10 @@ public:
 private:
 #if WITH_DEV_AUTOMATION_TESTS
 	friend class FMCPFrameDispatchTest;
+	friend class FMCPProjectBindingTest;
 #endif
 	void DrainCommands();
-	FString ExecuteCommandOnGameThread(const FString& CommandType, const TSharedPtr<FJsonObject>& Params);
+	FString ExecuteCommandOnGameThread(const FString& CommandType, const TSharedPtr<FJsonObject>& Params, bool ProjectVerified = false);
 	TSharedPtr<FMCPCommandQueue, ESPMode::ThreadSafe> CommandQueue;
 	FDelegateHandle BeginFrameHandle;
 
@@ -65,6 +66,7 @@ private:
 	// Server configuration
 	FIPv4Address ServerAddress;
 	uint16 Port;
+	bool RequireProjectBinding = false;
 
 	// Command handler instances
 	TSharedPtr<FUnrealMCPEditorCommands> EditorCommands;
