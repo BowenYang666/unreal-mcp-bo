@@ -244,6 +244,82 @@ class MaterialInstanceParametersTests(unittest.TestCase):
         self.assertNotIn("saved", result)
         self.connection.send_command.assert_called_once()
 
+    def test_niagara_particle_reader_contracts_and_failures(self):
+        from tools.niagara_tools import register_niagara_tools
+        sys.modules["unreal_mcp_server"].spill_if_oversized = lambda result, *args, **kwargs: result
+        server = FastMCP("particle-reader-test")
+        register_niagara_tools(server)
+        read = server._tool_manager.get_tool("read_niagara_particle_reader")
+        bind = server._tool_manager.get_tool("bind_niagara_particle_reader")
+        self.assertEqual(read.parameters["required"], ["asset_path", "emitter_handle_id", "script_type", "module_node_guid", "input_name"])
+        self.connection.send_command.return_value = {"status": "success", "result": {
+            "success": True, "authoring_contract": 1, "reader_contract": 1, "particle_reader": {"state": "local", "source_handle_id": "head"}}}
+        result = read.fn(None, "/Game/NS_Test", "child", "emitter_update", "node", "Module.Attribute Reader")
+        self.assertEqual(result["particle_reader"]["source_handle_id"], "head")
+        bind.fn(None, "/Game/NS_Test", "child", "emitter_update", "node", "baseline", "Module.Attribute Reader", "head")
+        arguments = self.connection.send_command.call_args.args[1]
+        self.assertTrue(arguments["dry_run"])
+        self.assertFalse(arguments["save"])
+        self.assertEqual(arguments["source_emitter_handle_id"], "head")
+        self.connection.send_command.return_value = {"status": "error", "result": {
+            "success": False, "modified": True, "saved": False, "stage": "save", "after": {"package_dirty": True}}}
+        result = bind.fn(None, "/Game/NS_Test", "child", "emitter_update", "node", "baseline", "Module.Attribute Reader", "head", False, True)
+        self.assertTrue(result["modified"])
+        self.assertFalse(result["saved"])
+        self.assertTrue(result["after"]["package_dirty"])
+        self.connection.reset_mock()
+        self.connection.send_command.side_effect = TimeoutError("timeout")
+        result = bind.fn(None, "/Game/NS_Test", "child", "emitter_update", "node", "baseline", "Module.Attribute Reader", "head", False, True)
+        self.assertEqual(result["execution_state"], "unknown")
+        self.assertNotIn("saved", result)
+        self.connection.send_command.assert_called_once()
+
+    def test_niagara_reader_copy_mapping_requires_native_contract(self):
+        from tools.niagara_tools import register_niagara_tools
+        sys.modules["unreal_mcp_server"].spill_if_oversized = lambda result, *args, **kwargs: result
+        server = FastMCP("reader-copy-contract-test")
+        register_niagara_tools(server)
+        copy = server._tool_manager.get_tool("add_emitter_to_system")
+        self.assertEqual(copy.parameters["properties"]["reader_source_bindings"]["type"], "array")
+        mappings = [{"source_handle_id": "head-source", "target_handle_id": "head-target"}]
+        self.connection.send_command.return_value = {"status": "success", "result": {"success": True, "authoring_contract": 1}}
+        result = copy.fn(None, "/Game/NS_Target", "Child", "Child", "/Game/NS_Source", reader_source_bindings=mappings)
+        self.assertFalse(result["success"])
+        self.connection.send_command.assert_called_once_with("read_niagara_authoring", {"asset_path": "/Game/NS_Target", "target": "system"})
+        self.connection.reset_mock()
+        self.connection.send_command.side_effect = [
+            {"status": "success", "result": {"success": True, "authoring_contract": 1, "reader_copy_contract": 1}},
+            {"status": "success", "result": {"success": True, "saved": True, "created_handle_id": "child"}}]
+        result = copy.fn(None, "/Game/NS_Target", "Child", "Child", "/Game/NS_Source", reader_source_bindings=mappings)
+        self.assertTrue(result["saved"])
+        arguments = self.connection.send_command.call_args.args[1]
+        self.assertEqual(arguments["reader_source_bindings"], mappings)
+        self.assertEqual(arguments["source_system_path"], "/Game/NS_Source")
+
+    def test_niagara_removal_requires_native_contract_and_preserves_receipts(self):
+        from tools.niagara_tools import register_niagara_tools
+        sys.modules["unreal_mcp_server"].spill_if_oversized = lambda result, *args, **kwargs: result
+        server = FastMCP("removal-contract-test")
+        register_niagara_tools(server)
+        remove = server._tool_manager.get_tool("remove_emitter_from_system")
+        self.connection.send_command.return_value = {"status": "success", "result": {"success": True, "authoring_contract": 1}}
+        result = remove.fn(None, "/Game/NS_Test", "Child", False, "child-guid")
+        self.assertFalse(result["success"])
+        self.connection.send_command.assert_called_once_with("read_niagara_authoring", {"asset_path": "/Game/NS_Test", "target": "system"})
+        self.connection.reset_mock()
+        capability = {"status": "success", "result": {"success": True, "authoring_contract": 1, "emitter_removal_contract": 1}}
+        failure = {"status": "error", "result": {"success": False, "modified": True, "saved": False, "removed_handle_id": "child-guid", "stage": "save"}}
+        self.connection.send_command.side_effect = [capability, failure]
+        result = remove.fn(None, "/Game/NS_Test", "Child", False, "child-guid")
+        self.assertTrue(result["modified"])
+        self.assertEqual(result["removed_handle_id"], "child-guid")
+        self.connection.send_command.assert_called_with("remove_emitter_from_system", {"path": "/Game/NS_Test", "emitter_name": "Child", "save": False, "expected_handle_id": "child-guid"})
+        self.connection.reset_mock()
+        self.connection.send_command.side_effect = [capability, TimeoutError("timeout")]
+        result = remove.fn(None, "/Game/NS_Test", "Child", False, "child-guid")
+        self.assertEqual(result["execution_state"], "unknown")
+        self.assertEqual(self.connection.send_command.call_count, 2)
+
     def test_niagara_authoring_never_retries_unknown_transport(self):
         from tools.niagara_tools import register_niagara_tools
         server = FastMCP("niagara-authoring-timeout-test")

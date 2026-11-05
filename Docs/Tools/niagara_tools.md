@@ -304,6 +304,82 @@ Backups are local `Saved/UnrealMCPBackups/LinkExtensions_20261101_*`;
 full public smoke receipts are in each project's `Saved/UnrealMCPDeployment`.
 Python discovery alone is still not deployment verification; no commit/push is automatic.
 
+## Particle Attribute Readers
+
+`read_niagara_particle_reader` reads a canonical module input without creating an
+override. Require exact `/Game` `asset_path`, `emitter_handle_id`, `script_type`,
+`module_node_guid` and `input_name` from `read_niagara_authoring`. The returned
+`reader_contract=1` distinguishes default/unconfigured, local, shared/external and
+unsupported overrides, and reports DI class/path/owner, BindingMode, EmitterName,
+resolved source Handle/unique name/version and an optimistic baseline. Read complete
+spill JSON before editing. The baseline includes actual Reader fields and every
+emitter's Handle/name/selected/resolved version, so renames invalidate stale reads.
+
+`bind_niagara_particle_reader` adds `expected_baseline` and an exact
+`source_emitter_handle_id` from that same system. Defaults are `dry_run=true` and
+`save=false`. Only distinct stateful CPU source/target emitters are supported.
+Preflight rejects stale/dirty targets, self/cycles, missing/wrong inputs and existing
+different/shared/external/complex overrides. It creates a target-local DI with
+BindingMode Other and the source's exact unique name; no suffix guessing, source
+setting edits or implicit rebind. Same binding is a no-op, including no save.
+Apply uses an Undo transaction, compiles, verifies actual local ownership/binding,
+then optionally saves only the approved target. Failures retain real
+modified/compiled/saved/dirty, before/after and stage; timeout never auto-retries.
+
+The standard `SpawnParticlesFromOtherEmitter` module owns the canonical Reader
+input in Emitter Update. `SampleParticlesFromOtherEmitter` consumes its
+`Emitter.SpawnParticlesAttributeReader` output in Particle Spawn; it is not an
+independent local Module Reader slot. Discover actual schemas through
+`niagara_search`, then use the returned read/write endpoint. The old Renderer/Asset
+DI binder is not the Particle Reader authoring contract.
+
+2026-11-05 source verification: 100 Python tests and 11 actual native regressions
+passed, plus an explicit separate-process Reader cold read. The isolated standard
+module pair produced 49 live CPU child particles after 45 steps, sampling displaced
+moving/separated parents rather than an independent origin burst. Disabling the
+parents and advancing simulation produced no further children and no residue.
+Save-failure disk protection, Undo/Redo, no-op, stale/dirty/self/missing-source
+refusal, explicit renamed-source mapping and active-preview failed-copy cleanup
+also passed. These are bounded contract/runtime tests, not production art approval,
+Low/Medium budget acceptance, general GPU/rebind support or a proof of every
+possible Niagara crash. SkillTest and NF have now been built and deployed.
+
+SkillTest's deployed DLL passed the same 11 actual regressions and explicit cold
+read. Its original bound VSCode profile exercised exact Reader read/preview/no-op/
+stale refusal, then created and saved a real new local Reader through grouped MCP
+on a fresh `/Game/__Dev/ParticleReaderPublic_2702ddf2a08e43fea642a7b722f69343/NS_Test`.
+Original test source hash, map/viewport and dirty0 remained unchanged by acceptance.
+Backup/receipts: SkillTest Saved/UnrealMCPBackups and Saved/UnrealMCPDeployment,
+under ParticleReader_20261105_201849. Six incremental build actions succeeded in
+871.83s; its locally different Bridge retained everything outside two new routes.
+
+NF's four intended source files matched the pre-fix baseline. An external NF restart
+occupied DLLs during the first link; after a new user-approved maintenance window,
+fresh dirty0 checks and normal close saved0, the four link actions succeeded in
+4.79s. Original L_map01/13090 was restored. The actual original bound Claude profile
+confirmed authoring/Reader-copy/removal native contracts, both Reader routes' strict
+invalid-identity preflight rejection, unchanged sample hash and context/dirty0,
+plus Blueprint list/read. No NF production Reader was created, rebound or deleted;
+actual authoring/runtime/cold evidence is from the repository and SkillTest.
+NF backup/receipts use ParticleReader_20261105_211436 under its Saved directories.
+
+Both projects retain ports/binding/permissions and plugin customizations. Later
+protection audits found external/concurrent changes: SkillTest's 40 old ArrowTrail
+paths missing, and NF's four Content differences plus two T4 Blender source files.
+They were preserved, not restored; full hash/addition manifests remain in deployment
+receipts. Do not claim all project assets stayed unchanged throughout this interval.
+NF/SkillTest Git was not managed. Existing clients reconnect; Claude trust remains
+user-controlled. No commit/push is automatic.
+
+Final runtime observation is separate from completed acceptance: an external
+session later normally closed SkillTest (21:51) and restarted NF as PID43756
+(21:54). NF still listened on13090, but the final bound read-only context request
+returned no response; that new session's readiness was not proven. The maintenance
+did not close/relaunch either again. Saved receipts mark readiness false rather
+than claiming the original accepted PIDs remain active; the current owner should
+restore readiness before use. This does not erase the earlier completed target
+builds, native/public acceptance or recorded source/DLL identities.
+
 ## Emitter Management
 
 ### `add_emitter_to_system`
@@ -313,6 +389,20 @@ Add an emitter to a system. Three modes:
 - **Cross-system copy**: specify `source_emitter_name` + `source_asset_full_path`.
 
 Optional `new_emitter_name` to rename the emitter after adding.
+
+Cross-system copies refuse preexisting dirty targets. Reader dependencies must
+already resolve to one exact target emitter, or supply
+`reader_source_bindings=[{"source_handle_id":"<source GUID>","target_handle_id":"<target GUID>"}]`
+for explicitly renamed sources. Python checks native `reader_copy_contract=1`
+before sending mapped copies; old DLLs cannot silently ignore the mapping.
+Only the newly copied author's current Reader objects are remapped; orphan/default
+DI instances and nested merge snapshots are not mistaken for active authoring.
+Remaining private source-cache references are localized to the uniquely equivalent
+current target Reader after compilation. The save preflight still refuses private
+source references reachable through the target's serialized object graph; removed,
+unreachable Handle snapshots are not treated as active exports. No PNG/asset deletion
+or unsafe global cache clear is used. Receipts include created_handle_id/new_emitter
+and actual dirty state, including reference-preflight failure.
 
 Cross-system copying now creates an **independent snapshot**, not an inheritance link
 to the source System's private embedded Emitter. The native add utility still performs
@@ -379,6 +469,16 @@ in Claude. Fresh stdio verification does not replace client trust approval.
 
 ### `remove_emitter_from_system`
 Remove an emitter by name from a system.
+
+Requires a full `/Game` target and matching native `emitter_removal_contract=1`,
+checked before mutation. `expected_handle_id` optionally guards the exact GUID
+from a read/copy receipt. Default `save=true` preserves automatic saving but refuses
+preexisting dirty packages; explicit `save=false` supports inspected unsaved cleanup
+without persisting a prior user draft. Sources still used by another Particle Reader
+are refused; remove dependents first. Existing Niagara ViewModels are reused, or a
+data-processing-only ViewModel is created; native DeleteEmitters resets handles and
+instances and rebuilds execution/overview graphs before compile. Receipts report
+removed GUID/counts, modified/compiled/saved/dirty; failed saves retain actual state.
 
 ### `list_niagara_emitter_templates`
 List all available engine emitter templates (Fountain, Smoke, etc.).

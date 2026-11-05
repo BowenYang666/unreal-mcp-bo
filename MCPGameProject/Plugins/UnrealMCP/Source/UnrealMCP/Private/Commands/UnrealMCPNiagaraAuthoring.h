@@ -8,6 +8,8 @@ class UNiagaraRendererProperties;
 namespace UnrealMCPNiagaraAuthoring
 {
     TSharedPtr<FJsonObject> Read(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> ReadParticleReader(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> BindParticleReader(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> CreateEffectType(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> WriteScalability(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> SaveDraft(const TSharedPtr<FJsonObject>& Params);
@@ -19,3 +21,10 @@ namespace UnrealMCPNiagaraAuthoring
     TSharedPtr<FJsonObject> SetMaterialBindings(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> ReadMaterialParameters(const UNiagaraRendererProperties* Renderer);
 }
+
+#if WITH_DEV_AUTOMATION_TESTS
+namespace UnrealMCPNiagaraTests
+{
+    void SetReaderLocalizationFailure(bool Fail);
+}
+#endif

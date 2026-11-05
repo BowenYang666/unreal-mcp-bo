@@ -1,4 +1,5 @@
 #include "Commands/UnrealMCPNiagaraCommands.h"
+#include "EdGraph/EdGraphPin.h"
 #include "Commands/UnrealMCPCommonUtils.h"
 #include "Commands/UnrealMCPNiagaraScalability.h"
 #include "Commands/UnrealMCPNiagaraAuthoring.h"
@@ -17,8 +18,10 @@
 #include "NiagaraNodeOutput.h"
 #include "NiagaraNodeFunctionCall.h"
 #include "ViewModels/Stack/NiagaraStackGraphUtilities.h"
+#include "ViewModels/NiagaraSystemViewModel.h"
 #include "EdGraphSchema_Niagara.h"
 #include "NiagaraEditorUtilities.h"
+#include "NiagaraEditorModule.h"
 #include "NiagaraSystemEditorData.h"
 #include "UObject/UObjectHash.h"
 #include "ScopedTransaction.h"
@@ -31,7 +34,9 @@
 #include "NiagaraParameterMapHistory.h"
 #include "NiagaraNode.h"
 #include "NiagaraDataInterface.h"
+#include "NiagaraDataInterfaceParticleRead.h"
 #include "NiagaraNodeInput.h"
+#include "Serialization/ArchiveReplaceObjectRef.h"
 #include "Curves/RichCurve.h"
 
 // Editor includes
@@ -204,6 +209,8 @@ FUnrealMCPNiagaraCommands::FUnrealMCPNiagaraCommands()
 TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleCommand(const FString& CommandType, const TSharedPtr<FJsonObject>& Params)
 {
 	if (CommandType == TEXT("read_niagara_authoring")) return UnrealMCPNiagaraAuthoring::Read(Params);
+	if (CommandType == TEXT("read_niagara_particle_reader")) return UnrealMCPNiagaraAuthoring::ReadParticleReader(Params);
+	if (CommandType == TEXT("bind_niagara_particle_reader")) return UnrealMCPNiagaraAuthoring::BindParticleReader(Params);
 	if (CommandType == TEXT("create_niagara_effect_type")) return UnrealMCPNiagaraAuthoring::CreateEffectType(Params);
 	if (CommandType == TEXT("set_niagara_scalability")) return UnrealMCPNiagaraAuthoring::WriteScalability(Params);
 	if (CommandType == TEXT("save_niagara_authoring")) return UnrealMCPNiagaraAuthoring::SaveDraft(Params);
@@ -1303,6 +1310,8 @@ static UNiagaraSystem* LoadNiagaraSystemByNameOrPath(const TSharedPtr<FJsonObjec
 // Helper: auto-save a Niagara system asset after modification
 #if WITH_DEV_AUTOMATION_TESTS
 static bool FailNiagaraSaveForTest = false;
+static bool FailReaderLocalizationForTest = false;
+void UnrealMCPNiagaraTests::SetReaderLocalizationFailure(bool Fail) { FailReaderLocalizationForTest = Fail; }
 #endif
 
 static bool SaveNiagaraSystemAsset(UNiagaraSystem* System)
@@ -1345,6 +1354,13 @@ static void SyncOverviewGraph(UNiagaraSystem* System)
 	{
 		EditorData->SynchronizeOverviewGraphWithSystem(*System);
 	}
+}
+
+static bool IsAuthoredParticleReader(const UNiagaraDataInterfaceParticleRead* Reader, const UNiagaraEmitter* Emitter)
+{
+	const auto* Node = Reader ? Cast<UNiagaraNodeInput>(Reader->GetOuter()) : nullptr;
+	const auto* Property = Node ? FindFProperty<FObjectPropertyBase>(Node->GetClass(), TEXT("DataInterface")) : nullptr;
+	return Property && Property->GetObjectPropertyValue_InContainer(Node) == Reader && Reader->GetTypedOuter<UNiagaraEmitter>() == Emitter;
 }
 
 TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleSetNiagaraRapidParameter(const TSharedPtr<FJsonObject>& Params)
@@ -1879,6 +1895,49 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleAddEmitterToSystem(cons
 	if (!SourceInstance.Emitter)
 		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Source emitter instance is null"));
 
+	auto CopyRejected = [&](const FString& Error)
+	{
+		auto Result = FUnrealMCPCommonUtils::CreateErrorResponse(Error);
+		Result->SetBoolField(TEXT("success"), false); Result->SetBoolField(TEXT("modified"), false); Result->SetBoolField(TEXT("saved"), false);
+		Result->SetStringField(TEXT("stage"), TEXT("preflight")); return Result;
+	};
+	if (TargetSystem->GetPackage()->IsDirty()) return CopyRejected(TEXT("Preexisting dirty copy target refused; explicitly save the approved draft first"));
+	TMap<FName, FName> ReaderNames;
+	const TArray<TSharedPtr<FJsonValue>>* ReaderBindings = nullptr;
+	if (Params->HasField(TEXT("reader_source_bindings")))
+	{
+		if (!Params->TryGetArrayField(TEXT("reader_source_bindings"), ReaderBindings) || ReaderBindings->Num() > 64)
+			return CopyRejected(TEXT("reader_source_bindings requires at most 64 exact source_handle_id/target_handle_id pairs"));
+		for (const auto& Value : *ReaderBindings)
+		{
+			FString FromId, ToId; FGuid FromGuid, ToGuid;
+			if (Value->Type != EJson::Object || Value->AsObject()->Values.Num() != 2
+				|| !Value->AsObject()->TryGetStringField(TEXT("source_handle_id"), FromId) || !FGuid::Parse(FromId, FromGuid)
+				|| !Value->AsObject()->TryGetStringField(TEXT("target_handle_id"), ToId) || !FGuid::Parse(ToId, ToGuid))
+				return CopyRejected(TEXT("Reader mapping requires exact source_handle_id and target_handle_id GUID strings"));
+			const auto* From = SourceSystem->GetEmitterHandles().FindByPredicate([&](const FNiagaraEmitterHandle& Handle) { return Handle.GetId() == FromGuid; });
+			const auto* To = TargetSystem->GetEmitterHandles().FindByPredicate([&](const FNiagaraEmitterHandle& Handle) { return Handle.GetId() == ToGuid; });
+			if (!From || !To || !From->GetInstance().Emitter || !To->GetInstance().Emitter || !To->GetEmitterData()
+				|| To->GetEmitterData()->SimTarget != ENiagaraSimTarget::CPUSim || From->GetId() == SourceHandle->GetId())
+				return CopyRejected(TEXT("Reader source mapping must resolve to existing distinct stateful CPU Handles in source/target systems"));
+			const FName FromName(*From->GetInstance().Emitter->GetUniqueEmitterName());
+			if (ReaderNames.Contains(FromName)) return CopyRejected(TEXT("Duplicate Reader source mapping"));
+			ReaderNames.Add(FromName, FName(*To->GetInstance().Emitter->GetUniqueEmitterName()));
+		}
+	}
+	TArray<UObject*> SourceObjects; GetObjectsWithOuter(SourceInstance.Emitter, SourceObjects, true);
+	for (auto* Object : SourceObjects) if (const auto* Reader = Cast<UNiagaraDataInterfaceParticleRead>(Object))
+	{
+		if (!IsAuthoredParticleReader(Reader, SourceInstance.Emitter)
+			|| Reader->EmitterBinding.BindingMode != ENiagaraDataInterfaceEmitterBindingMode::Other) continue;
+		const FName Desired = ReaderNames.Contains(Reader->EmitterBinding.EmitterName) ? ReaderNames[Reader->EmitterBinding.EmitterName] : Reader->EmitterBinding.EmitterName;
+		int32 Matches = 0;
+		for (const auto& Handle : TargetSystem->GetEmitterHandles())
+			if (Handle.GetInstance().Emitter && FName(*Handle.GetInstance().Emitter->GetUniqueEmitterName()) == Desired
+				&& Handle.GetEmitterData() && Handle.GetEmitterData()->SimTarget == ENiagaraSimTarget::CPUSim) ++Matches;
+		if (Matches != 1) return CopyRejected(FString::Printf(TEXT("Copied Reader source '%s' has %d target matches for emitter '%s' (%s); copy the source layer first or provide exact reader_source_bindings"),
+			*Desired.ToString(), Matches, *SourceEmitterName, *Reader->GetPathName()));
+	}
 	SourceSystem->WaitForCompilationComplete();
 	TargetSystem->WaitForCompilationComplete();
 	TSet<FGuid> PreviousHandles;
@@ -1887,10 +1946,13 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleAddEmitterToSystem(cons
 	FNiagaraEditorUtilities::AddEmitterToSystem(*TargetSystem, *SourceInstance.Emitter, SourceInstance.Version);
 
 	FString ActualEmitterName;
+	FVersionedNiagaraEmitter CopiedInstance;
+	FGuid CopiedHandleId;
 	for (FNiagaraEmitterHandle& Handle : TargetSystem->GetEmitterHandles())
 	{
 		if (!PreviousHandles.Contains(Handle.GetId()))
 		{
+			CopiedInstance = Handle.GetInstance(); CopiedHandleId = Handle.GetId();
 			if (auto EmitterData = Handle.GetEmitterData()) EmitterData->RemoveParent();
 			Handle.SetIsEnabled(SourceHandle->GetIsEnabled(), *TargetSystem, false);
 			if (!NewEmitterName.IsEmpty())
@@ -1906,18 +1968,98 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleAddEmitterToSystem(cons
 	ResultJson->SetStringField(TEXT("inheritance_mode"), TEXT("independent_snapshot"));
 	ResultJson->SetBoolField(TEXT("modified"), TargetSystem->GetEmitterHandles().Num() != PreviousHandles.Num());
 	ResultJson->SetBoolField(TEXT("saved"), false);
+	ResultJson->SetStringField(TEXT("created_handle_id"), CopiedHandleId.ToString(EGuidFormats::DigitsWithHyphens));
+	ResultJson->SetStringField(TEXT("new_emitter"), ActualEmitterName);
+	ResultJson->SetBoolField(TEXT("package_dirty"), TargetSystem->GetPackage()->IsDirty());
 	if (ActualEmitterName.IsEmpty() || TargetSystem->GetEmitterHandles().Num() != PreviousHandles.Num() + 1)
 	{
 		ResultJson->SetBoolField(TEXT("success"), false);
 		ResultJson->SetStringField(TEXT("error"), TEXT("Emitter copy did not produce exactly one handle; inspect target before retrying"));
 		return ResultJson;
 	}
+	TArray<UObject*> AuthorObjects; GetObjectsWithOuter(CopiedInstance.Emitter, AuthorObjects, true);
+	for (auto* Object : AuthorObjects) if (auto* Reader = Cast<UNiagaraDataInterfaceParticleRead>(Object))
+		if (IsAuthoredParticleReader(Reader, CopiedInstance.Emitter)
+			&& Reader->EmitterBinding.BindingMode == ENiagaraDataInterfaceEmitterBindingMode::Other)
+			if (const auto* Name = ReaderNames.Find(Reader->EmitterBinding.EmitterName))
+			{ Reader->Modify(); Reader->EmitterBinding.EmitterName = *Name; Reader->PostEditChange(); }
+	auto LocalizeReaders = [&]()
+	{
+		TArray<UObject*> CopiedObjects;
+		GetObjectsWithOuter(CopiedInstance.Emitter, CopiedObjects, true);
+#if WITH_DEV_AUTOMATION_TESTS
+		if (FailReaderLocalizationForTest)
+		{
+			for (auto* SourceObject : SourceObjects) if (auto* Foreign = Cast<UNiagaraDataInterfaceParticleRead>(SourceObject))
+				if (IsAuthoredParticleReader(Foreign, SourceInstance.Emitter))
+					for (auto* TargetObject : CopiedObjects) if (auto* Local = Cast<UNiagaraDataInterfaceParticleRead>(TargetObject))
+						if (IsAuthoredParticleReader(Local, CopiedInstance.Emitter))
+						{
+							auto* Node = Local->GetOuter();
+							auto* Property = FindFProperty<FObjectPropertyBase>(Node->GetClass(), TEXT("DataInterface"));
+							Property->SetObjectPropertyValue_InContainer(Node, Foreign);
+							return 0;
+						}
+			return 0;
+		}
+#endif
+		TMap<UObject*, UObject*> ReaderRemap;
+		TArray<TSharedPtr<FJsonValue>> ReaderCandidates;
+		auto DescribeReader = [&](UNiagaraDataInterfaceParticleRead* Reader)
+		{
+			auto Entry = MakeShared<FJsonObject>(); Entry->SetStringField(TEXT("object"), Reader->GetPathName());
+			Entry->SetStringField(TEXT("outer"), Reader->GetOuter()->GetPathName());
+			Entry->SetStringField(TEXT("binding_mode"), Reader->EmitterBinding.BindingMode == ENiagaraDataInterfaceEmitterBindingMode::Other ? TEXT("Other") : TEXT("Self"));
+			Entry->SetStringField(TEXT("emitter_name"), Reader->EmitterBinding.EmitterName.ToString());
+			ReaderCandidates.Add(MakeShared<FJsonValueObject>(Entry));
+		};
+		for (auto* Object : CopiedObjects) if (auto* Reader = Cast<UNiagaraDataInterfaceParticleRead>(Object)) DescribeReader(Reader);
+		for (UObject* Object : CopiedObjects)
+		{
+			TArray<UObject*> References;
+			FReferenceFinder Finder(References, nullptr, false, true, false, false); Finder.FindReferences(Object);
+			for (UObject* Reference : References)
+			{
+				auto* ForeignReader = Cast<UNiagaraDataInterfaceParticleRead>(Reference);
+				if (!ForeignReader || ForeignReader->GetPackage() != SourceSystem->GetPackage() || ForeignReader->HasAnyFlags(RF_Public | RF_Transient)) continue;
+				DescribeReader(ForeignReader);
+				auto Wanted = ForeignReader->EmitterBinding;
+				if (const auto* Name = ReaderNames.Find(Wanted.EmitterName)) Wanted.EmitterName = *Name;
+				UNiagaraDataInterfaceParticleRead* LocalReader = nullptr;
+				bool Ambiguous = false;
+				for (UObject* Candidate : CopiedObjects)
+				{
+					auto* Reader = Cast<UNiagaraDataInterfaceParticleRead>(Candidate);
+					if (!IsAuthoredParticleReader(Reader, CopiedInstance.Emitter) || Reader->GetPackage() != TargetSystem->GetPackage()
+						|| Reader->EmitterBinding != Wanted) continue;
+					if (LocalReader && LocalReader != Reader) { Ambiguous = true; break; }
+					LocalReader = Reader;
+				}
+				if (LocalReader && !Ambiguous) ReaderRemap.Add(ForeignReader, LocalReader);
+			}
+		}
+		for (UObject* Object : CopiedObjects)
+		{
+			FArchiveReplaceObjectRef<UObject> Remap(Object, ReaderRemap, EArchiveReplaceObjectFlags::IgnoreOuterRef | EArchiveReplaceObjectFlags::IgnoreArchetypeRef);
+		}
+		ResultJson->SetArrayField(TEXT("reader_localization_candidates"), ReaderCandidates);
+		return ReaderRemap.Num();
+	};
 	TargetSystem->PostEditChange();
 	TargetSystem->RequestCompile(true);
 	TargetSystem->WaitForCompilationComplete();
+	ResultJson->SetNumberField(TEXT("localized_reader_cache_references"), LocalizeReaders());
 	TargetSystem->MarkPackageDirty();
-	TArray<UObject*> Exports;
-	GetObjectsWithOuter(TargetSystem->GetPackage(), Exports, true);
+	TArray<UObject*> Exports{TargetSystem};
+	TSet<UObject*> Reachable{TargetSystem};
+	for (int32 Index = 0; Index < Exports.Num(); ++Index)
+	{
+		TArray<UObject*> References;
+		FReferenceFinder Finder(References, nullptr, false, true, false, false); Finder.FindReferences(Exports[Index]);
+		for (auto* Reference : References)
+			if (Reference && Reference->GetPackage() == TargetSystem->GetPackage() && !Reference->HasAnyFlags(RF_Transient) && !Reachable.Contains(Reference))
+			{ Reachable.Add(Reference); Exports.Add(Reference); }
+	}
 	TArray<TSharedPtr<FJsonValue>> PrivateReferences;
 	for (UObject* Export : Exports)
 	{
@@ -2045,6 +2187,45 @@ bool FMCPNiagaraCrossSystemCopyTest::RunTest(const FString& Parameters)
 	return !HasAnyErrors();
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMCPNiagaraEmitterRemovalTest, "UnrealMCP.Niagara.EmitterRemoval", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMCPNiagaraEmitterRemovalTest::RunTest(const FString& Parameters)
+{
+	FUnrealMCPNiagaraCommands Commands;
+	for (bool WithViewModel : {false, true})
+	{
+		const FString Path = TEXT("/Game/__Dev/EmitterRemoval_") + FGuid::NewGuid().ToString(EGuidFormats::Digits) + TEXT("/NS_Test");
+		auto System = Cast<UNiagaraSystem>(UEditorAssetLibrary::DuplicateAsset(TEXT("/Niagara/DefaultAssets/DefaultSystem"), Path));
+		if (!TestNotNull(TEXT("Isolated removal fixture"), System)) return false;
+		auto Add = MakeShared<FJsonObject>(); Add->SetStringField(TEXT("path"), Path);
+		Add->SetStringField(TEXT("template_name"), TEXT("SimpleSpriteBurst")); Add->SetStringField(TEXT("new_emitter_name"), TEXT("RemoveMe"));
+		if (!TestTrue(TEXT("Second fixture emitter added"), Commands.HandleCommand(TEXT("add_emitter_to_system"), Add)->HasField(TEXT("new_emitter")))) return false;
+		const auto Removed = System->GetEmitterHandles().FindByPredicate([](const FNiagaraEmitterHandle& Handle) { return Handle.GetName() == TEXT("RemoveMe"); });
+		if (!TestNotNull(TEXT("Removal selector resolves"), Removed)) return false;
+		const FGuid RemovedId = Removed->GetId(), KeptId = System->GetEmitterHandles()[0].GetId();
+		TSharedPtr<FNiagaraSystemViewModel> ViewModel;
+		if (WithViewModel)
+		{
+			ViewModel = MakeShared<FNiagaraSystemViewModel>();
+			FNiagaraSystemViewModelOptions Options; Options.bCanAutoCompile = false;
+			Options.MessageLogGuid = FGuid::NewGuid();
+			ViewModel->Initialize(*System, Options);
+			TestTrue(TEXT("Preview ViewModel registered"), FModuleManager::LoadModuleChecked<FNiagaraEditorModule>(TEXT("NiagaraEditor")).GetExistingViewModelForSystem(System) == ViewModel);
+		}
+		auto Remove = MakeShared<FJsonObject>(); Remove->SetStringField(TEXT("path"), Path); Remove->SetStringField(TEXT("emitter_name"), TEXT("RemoveMe"));
+		auto Result = Commands.HandleCommand(TEXT("remove_emitter_from_system"), Remove);
+		if (!TestTrue(TEXT("Removal completed and saved"), Result->HasField(TEXT("removed_emitter")) && Result->GetBoolField(TEXT("saved")))) return false;
+		TestEqual(TEXT("Exactly one handle remains"), System->GetEmitterHandles().Num(), 1);
+		TestFalse(TEXT("Removed GUID absent"), System->GetEmitterHandles().ContainsByPredicate([&](const FNiagaraEmitterHandle& Handle) { return Handle.GetId() == RemovedId; }));
+		TestTrue(TEXT("Unselected GUID preserved"), System->GetEmitterHandles().ContainsByPredicate([&](const FNiagaraEmitterHandle& Handle) { return Handle.GetId() == KeptId; }));
+		TestTrue(TEXT("Remaining system compiles"), System->IsValid() && System->IsReadyToRun());
+		TestFalse(TEXT("Saved package clean"), System->GetPackage()->IsDirty());
+		if (ViewModel) TestEqual(TEXT("ViewModel handles rebuilt"), ViewModel->GetEmitterHandleViewModels().Num(), 1);
+		AddInfo(TEXT("Emitter removal fixture: ") + Path);
+	}
+	return !HasAnyErrors();
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMCPNiagaraSaveFailureTest, "UnrealMCP.Niagara.SaveFailure", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FMCPNiagaraSaveFailureTest::RunTest(const FString& Parameters)
@@ -2106,20 +2287,68 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleRemoveEmitterFromSystem
 	if (!TargetHandle)
 		return FUnrealMCPCommonUtils::CreateErrorResponse(FString::Printf(TEXT("Emitter '%s' not found in system '%s'"), *EmitterName, *System->GetName()));
 
+	auto Reject = [&](const FString& Error)
+	{
+		auto Result = FUnrealMCPCommonUtils::CreateErrorResponse(Error);
+		Result->SetBoolField(TEXT("modified"), false); Result->SetBoolField(TEXT("saved"), false);
+		Result->SetStringField(TEXT("stage"), TEXT("preflight")); return Result;
+	};
+	bool SaveRequested = true;
+	if (Params->HasField(TEXT("save")) && !Params->TryGetBoolField(TEXT("save"), SaveRequested)) return Reject(TEXT("save must be bool"));
+	if (SaveRequested && System->GetPackage()->IsDirty()) return Reject(TEXT("Preexisting dirty system refused for automatic save; inspect draft and use explicit save=false for unsaved cleanup"));
+	FString ExpectedId;
+	if (Params->TryGetStringField(TEXT("expected_handle_id"), ExpectedId))
+	{
+		FGuid Expected;
+		if (!FGuid::Parse(ExpectedId, Expected) || Expected != TargetHandle->GetId()) return Reject(TEXT("Stale expected_handle_id; inspect exact emitter before deleting"));
+	}
+	const FName RemovedUniqueName(*TargetHandle->GetInstance().Emitter->GetUniqueEmitterName());
+	for (const auto& Other : EmitterHandles) if (Other.GetId() != TargetHandle->GetId() && Other.GetInstance().Emitter)
+	{
+		TArray<UObject*> Objects; GetObjectsWithOuter(Other.GetInstance().Emitter, Objects, true);
+		for (auto* Object : Objects) if (const auto* Reader = Cast<UNiagaraDataInterfaceParticleRead>(Object))
+			if (IsAuthoredParticleReader(Reader, Other.GetInstance().Emitter)
+				&& Reader->EmitterBinding.BindingMode == ENiagaraDataInterfaceEmitterBindingMode::Other && Reader->EmitterBinding.EmitterName == RemovedUniqueName)
+				return Reject(TEXT("Emitter is still referenced by another Particle Reader; remove dependent layers first"));
+	}
 	int32 OldCount = EmitterHandles.Num();
 
-	System->RemoveEmitterHandle(*TargetHandle);
+	TSet<FGuid> HandlesToRemove;
+	HandlesToRemove.Add(TargetHandle->GetId());
+	System->WaitForCompilationComplete();
+	auto ViewModel = FModuleManager::LoadModuleChecked<FNiagaraEditorModule>(TEXT("NiagaraEditor")).GetExistingViewModelForSystem(System);
+	if (!ViewModel)
+	{
+		ViewModel = MakeShared<FNiagaraSystemViewModel>();
+		FNiagaraSystemViewModelOptions Options;
+		Options.bCanAutoCompile = false; Options.bCanSimulate = false; Options.bIsForDataProcessingOnly = true;
+		Options.MessageLogGuid = FGuid::NewGuid();
+		ViewModel->Initialize(*System, Options);
+	}
+	ViewModel->DeleteEmitters(HandlesToRemove);
 
 	SyncOverviewGraph(System);
 	System->InvalidateCachedData();
+	System->PostEditChange();
 	System->RequestCompile(true);
 	System->WaitForCompilationComplete();
 	System->MarkPackageDirty();
-	if (!SaveNiagaraSystemAsset(System)) return NiagaraSaveFailure(System);
-	System->PostEditChange();
+	if (SaveRequested && !SaveNiagaraSystemAsset(System))
+	{
+		auto Failure = NiagaraSaveFailure(System);
+		Failure->SetStringField(TEXT("removed_handle_id"), HandlesToRemove.Array()[0].ToString(EGuidFormats::DigitsWithHyphens));
+		Failure->SetNumberField(TEXT("old_emitter_count"), OldCount); Failure->SetNumberField(TEXT("new_emitter_count"), System->GetEmitterHandles().Num());
+		return Failure;
+	}
 
 	TSharedPtr<FJsonObject> ResultJson = MakeShared<FJsonObject>();
 	ResultJson->SetStringField(TEXT("status"), TEXT("success"));
+	ResultJson->SetBoolField(TEXT("success"), true);
+	ResultJson->SetBoolField(TEXT("modified"), true);
+	ResultJson->SetBoolField(TEXT("saved"), SaveRequested);
+	ResultJson->SetBoolField(TEXT("compiled"), System->IsValid() && System->IsReadyToRun());
+	ResultJson->SetBoolField(TEXT("package_dirty"), System->GetPackage()->IsDirty());
+	ResultJson->SetStringField(TEXT("removed_handle_id"), HandlesToRemove.Array()[0].ToString(EGuidFormats::DigitsWithHyphens));
 	ResultJson->SetStringField(TEXT("message"), FString::Printf(TEXT("Emitter '%s' removed from system"), *EmitterName));
 	ResultJson->SetStringField(TEXT("system"), System->GetName());
 	ResultJson->SetStringField(TEXT("removed_emitter"), EmitterName);

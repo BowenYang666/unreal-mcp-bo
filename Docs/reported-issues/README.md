@@ -10,6 +10,8 @@
 
 | 问题 | 当前状态 | 结论边界 |
 | --- | --- | --- |
+| [Particle Attribute Reader作者能力缺口](niagara-particle-attribute-reader-authoring.md) | 有限合同已实现并构建部署SkillTest／NF，2026-11-05 | SkillTest实际公开创建／编译／保存、新DLL矩阵及冷读通过；NF实际合同／精确预检拒绝／只读烟测通过；未写生产VFX或批准艺术／分档预算 |
+| [跨系统Reader复制及失败副本删除崩溃](niagara-cross-system-reader-copy-removal-crash.md) | 修复及隔离回归通过，已构建部署SkillTest／NF，2026-11-05 | 受控复现、显式源映射／本地化／可达引用保护、活跃预览无保存清理通过；未重放生产故障路径，外部资产变化保留，不声称所有Niagara崩溃根治 |
 | [场景截图任务缓存耗尽](scene-capture-task-cache-exhaustion.md) | 已修复并构建部署NF／SkillTest，2026-11-05 | 两项目实际DLL18项矩阵／100截图／独立冷读及公开幂等烟测通过；SkillTest后续授权完成build，不删图或重拍旧ID |
 | [场景截图PNG近乎全透明](scene-capture-transparent-png.md) | 已修复并构建部署NF／SkillTest，2026-11-05 | 两项目公开PNG均57600像素全不透明、同ID哈希／时间不变；SkillTest原Review地图及全部业务资产保持，原报告PNG未改 |
 | [Blueprint 折叠子图不可读](cannot-read-bp-subgraph.md) | 已修复并验证，2026-08-15 | 支持可选子图遍历和引脚默认值；属于既有修复，不是本次新增代码 |

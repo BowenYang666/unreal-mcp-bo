@@ -32,7 +32,7 @@ def _spill_niagara_read(result: dict, operation: str) -> dict:
         count_keys=("emitters", "user_parameters", "unsupported"),
         hint="Read the complete JSON file for all saved rules, field states, versions and curve keys. A preview is not the full result.")
     if spilled is not result and spilled.get("overflow"):
-        for key in ("success", "reader_contract", "scalability_complete", "contract_version", "complete", "scope", "read_context", "scalability_status", "authoring_contract", "baseline", "target", "object_path"):
+        for key in ("success", "reader_contract", "emitter_removal_contract", "reader_copy_contract", "scalability_complete", "contract_version", "complete", "scope", "read_context", "scalability_status", "authoring_contract", "baseline", "target", "object_path"):
             if key in result:
                 spilled[key] = result[key]
     return spilled
@@ -49,7 +49,7 @@ def _authoring_call(operation: str, arguments: dict) -> dict:
         result = response.get("result", response)
         if result.get("success", True) and result.get("authoring_contract", 0) < 1:
             return {"success": False, "stage": "capability", "message": "Updated native Niagara authoring plugin required; no retry."}
-        if operation == "read_niagara_authoring":
+        if operation in ("read_niagara_authoring", "read_niagara_particle_reader"):
             return _spill_niagara_read(result, operation)
         return result
     except Exception as error:
@@ -79,6 +79,43 @@ def register_niagara_tools(mcp: FastMCP):
         return _authoring_call("read_niagara_authoring", dict(asset_path=asset_path, target=target,
             emitter_handle_id=emitter_handle_id, renderer_index=renderer_index, script_type=script_type, module_node_guid=module_node_guid,
             parent_input_name=parent_input_name, function_node_guid=function_node_guid))
+
+    @mcp.tool()
+    def read_niagara_particle_reader(ctx: Context, asset_path: str, emitter_handle_id: str,
+                                    script_type: str, module_node_guid: str, input_name: str) -> dict:
+        """Read an exact module Particle Attribute Reader, ownership, binding and baseline without changes.
+
+        Example: asset_path='/Game/VFX/NS_Test', emitter_handle_id='<Handle GUID>',
+        script_type='emitter_update', module_node_guid='<Node GUID>', input_name='Module.Attribute Reader'.
+        Copy canonical input/identity from read_niagara_authoring. Default/unconfigured,
+        local and unsupported/shared overrides are distinguished; resolved source Handle,
+        unique name and selected version are reported. Standard SpawnParticlesFromOtherEmitter
+        owns this input; SampleParticlesFromOtherEmitter consumes its Emitter-level output.
+        Read the complete spill JSON before editing. New native Reader contract 1 required.
+        """
+        return _authoring_call("read_niagara_particle_reader", dict(asset_path=asset_path,
+            emitter_handle_id=emitter_handle_id, script_type=script_type, module_node_guid=module_node_guid, input_name=input_name))
+
+    @mcp.tool()
+    def bind_niagara_particle_reader(ctx: Context, asset_path: str, emitter_handle_id: str,
+                                    script_type: str, module_node_guid: str, expected_baseline: str,
+                                    input_name: str, source_emitter_handle_id: str,
+                                    dry_run: bool = True, save: bool = False) -> dict:
+        """Preview/create a local Particle Reader for another exact CPU Handle in the same system.
+
+        Example: identities/input_name/baseline from read_niagara_particle_reader,
+        source_emitter_handle_id from emitter_identities; defaults dry_run=True/save=False.
+        Stateful CPU only; refuses self/cycles, dirty/stale targets and existing different,
+        complex/shared/external overrides. Same local source is no-op, never saves.
+        Creates Other plus the source's exact unique name; no guessed suffixes, source
+        setting edits, implicit rebind or cross-system binding. Undoable; apply receipts
+        preserve actual modified/compiled/saved/dirty and before/after, including failure.
+        Timeout is unknown: inspect once, never blindly retry. Matching native plugin required.
+        """
+        return _authoring_call("bind_niagara_particle_reader", dict(asset_path=asset_path,
+            emitter_handle_id=emitter_handle_id, script_type=script_type, module_node_guid=module_node_guid,
+            expected_baseline=expected_baseline, input_name=input_name, source_emitter_handle_id=source_emitter_handle_id,
+            dry_run=dry_run, save=save))
 
     @mcp.tool()
     def create_niagara_effect_type(ctx: Context, asset_path: str, dry_run: bool = True, save: bool = False) -> dict:
@@ -723,7 +760,8 @@ def register_niagara_tools(mcp: FastMCP):
         source_emitter_name: str = "",
         new_emitter_name: str = "",
         source_asset_full_path: str = "",
-        template_name: str = ""
+        template_name: str = "",
+        reader_source_bindings: list[dict] = None
     ) -> Dict[str, Any]:
         """Add an emitter to a Niagara system from an engine template, another system, or by duplicating within the same system.
 
@@ -740,6 +778,11 @@ def register_niagara_tools(mcp: FastMCP):
         Private source-object references remaining after copy cause a failure before
         saving (for example unsupported external scratch-pad references). Inspect the
         modified/saved receipt before retrying; partial in-memory work may remain.
+        Reader source names must already resolve in the target. For renamed sources,
+        reader_source_bindings=[{'source_handle_id':'<source GUID>', 'target_handle_id':'<target GUID>'}]
+        explicitly maps existing source/target Handles. No suffix guesses. Requires new
+        native reader_copy_contract=1, checked before sending a mapped copy. Dirty
+        cross-system targets are refused; this is not permission to save a user draft.
 
         Args:
             ctx: The MCP context
@@ -786,6 +829,16 @@ def register_niagara_tools(mcp: FastMCP):
                 else:
                     params["source_system_name"] = source_params["source_system_name"]
 
+            if reader_source_bindings is not None:
+                if template_name or not source_asset_full_path or not asset_full_path.startswith("/Game/"):
+                    return {"success": False, "modified": False, "saved": False, "stage": "preflight",
+                            "message": "Reader source mappings require a full /Game target and cross-system copy, not a template"}
+                capability = _authoring_call("read_niagara_authoring", dict(asset_path=asset_full_path.split(".", 1)[0], target="system"))
+                if not capability.get("success") or capability.get("reader_copy_contract") != 1:
+                    return {"success": False, "modified": False, "saved": False, "stage": "preflight",
+                            "message": "Updated native Reader copy contract 1 required; no emitter copy sent"}
+                params["reader_source_bindings"] = reader_source_bindings
+
             response = unreal.send_command("add_emitter_to_system", params)
 
             if not response:
@@ -806,12 +859,18 @@ def register_niagara_tools(mcp: FastMCP):
     def remove_emitter_from_system(
         ctx: Context,
         asset_full_path: str,
-        emitter_name: str
+        emitter_name: str,
+        save: bool = True,
+        expected_handle_id: str = ""
     ) -> Dict[str, Any]:
         """Remove an emitter from a Niagara system by name.
 
-        The system is automatically recompiled after the removal.
-        Use save_asset to persist the change to disk.
+        The system is recompiled; default save=True retains automatic target saving.
+        Preexisting dirty targets cannot be automatically saved. Explicit save=False
+        supports inspected unsaved cleanup without saving any prior user draft.
+        expected_handle_id from a read/copy receipt prevents stale-name deletion.
+        Refuses sources still referenced by another Particle Reader. Native removal
+        contract 1 is checked before mutation; old DLLs cannot silently ignore save=False.
 
         Args:
             ctx: The MCP context
@@ -834,10 +893,16 @@ def register_niagara_tools(mcp: FastMCP):
                 logger.error("Failed to connect to Unreal Engine")
                 return {"success": False, "message": "Failed to connect to Unreal Engine"}
 
-            params = {
-                **_map_asset_path(asset_full_path),
-                "emitter_name": emitter_name,
-            }
+            if not asset_full_path.startswith("/Game/"):
+                return {"success": False, "modified": False, "saved": False, "stage": "preflight",
+                        "message": "Safe removal requires a full /Game asset path, not a short name"}
+            capability = _authoring_call("read_niagara_authoring", dict(asset_path=asset_full_path.split(".", 1)[0], target="system"))
+            if not capability.get("success") or capability.get("emitter_removal_contract") != 1:
+                return {"success": False, "modified": False, "saved": False, "stage": "preflight",
+                        "message": "Updated native emitter removal contract 1 required; no removal command sent"}
+            params = {**_map_asset_path(asset_full_path), "emitter_name": emitter_name, "save": save}
+            if expected_handle_id:
+                params["expected_handle_id"] = expected_handle_id
 
             response = unreal.send_command("remove_emitter_from_system", params)
 

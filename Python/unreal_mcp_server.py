@@ -375,6 +375,7 @@ _READ_ONLY_TOOLS = {
     "read_data_asset_text_references",
     "read_input_mapping_context",
     "read_niagara_authoring",
+    "read_niagara_particle_reader",
     "read_string_table",
     "get_editor_context", "list_scene_actors", "inspect_scene_target",
     "get_scene_mesh", "get_scene_viewport", "get_scene_task_status",
@@ -475,6 +476,7 @@ _CATEGORY_TOOLS = {
     },
     "niagara": {
         "read_niagara_authoring", "create_niagara_effect_type", "set_niagara_scalability", "save_niagara_authoring",
+        "read_niagara_particle_reader", "bind_niagara_particle_reader",
         "set_niagara_user_parameters", "bind_niagara_module_input", "set_niagara_material_bindings",
         "redirect_niagara_user_link", "bind_niagara_dynamic_input", "multiply_niagara_float_input",
         "read_niagara_effect_type",

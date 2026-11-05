@@ -4,14 +4,14 @@ Fork of [chongdashu/unreal-mcp](https://github.com/chongdashu/unreal-mcp) for AI
 
 ## Tool Surface
 
-**167 internal operations**, exposed as **57 tools** in default grouped mode.
+**169 internal operations**, exposed as **57 tools** in default grouped mode.
 Material, Niagara, UMG, Scene, Blueprint and Asset use search/read/write entry
 points; other categories remain direct. `MCP_TOOL_MODE=direct` exposes original names.
 
 | Category | Operations | Access In Grouped Mode | Main Capabilities |
 |---|---:|---|---|
 | [Material](Docs/Tools/material_tools.md) | 17 | `material_search` | Material graphs, instances, parameters and physical-material assignment |
-| [Niagara](Docs/Tools/niagara_tools.md) | 36 | `niagara_search` | Systems, emitters, modules, curves, renderers, User bindings and scalability |
+| [Niagara](Docs/Tools/niagara_tools.md) | 38 | `niagara_search` | Systems, emitters, modules, curves, renderers, User/Particle Reader bindings and scalability |
 | [UMG](Docs/Tools/umg_tools.md) | 23 | `umg_search` | Widgets, layout, bindings, reparenting and Designer preview settings |
 | [Scene](Docs/Tools/scene_tools.md) | 20 | `scene_search` | Guarded level instances, placement, captures, imports, Outliner folders and undo |
 | [Blueprint](Docs/Tools/blueprint_tools.md) | 11 | `blueprint_search` | Asset structure, components, properties, inherited skeletal defaults and compilation |
@@ -59,7 +59,7 @@ The repository [mcp.json](mcp.json) is a template, not an auto-discovered client
 ## Read-Only Mode
 
 Set `UNREAL_MCP_READ_ONLY=1` for project learning, review, or reverse engineering.
-This retains 49 query operations as **29 grouped tools** or **49 direct tools**
+This retains 50 query operations as **29 grouped tools** or **50 direct tools**
 before category filtering. Write endpoints are absent. Authoring uses `0` (or unset).
 
 ## Category Filtering

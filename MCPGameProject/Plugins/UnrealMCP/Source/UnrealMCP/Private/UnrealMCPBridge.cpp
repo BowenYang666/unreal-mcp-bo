@@ -506,6 +506,8 @@ FString UUnrealMCPBridge::ExecuteCommandOnGameThread(const FString& CommandType,
             // Niagara Commands
             else if (CommandType == TEXT("list_niagara_systems") ||
                      CommandType == TEXT("read_niagara_authoring") ||
+                     CommandType == TEXT("read_niagara_particle_reader") ||
+                     CommandType == TEXT("bind_niagara_particle_reader") ||
                      CommandType == TEXT("create_niagara_effect_type") ||
                      CommandType == TEXT("set_niagara_scalability") ||
                      CommandType == TEXT("save_niagara_authoring") ||
