@@ -2,6 +2,7 @@
 
 #if WITH_DEV_AUTOMATION_TESTS
 #include "Commands/UnrealMCPAssetProperties.h"
+#include "AssetCompilingManager.h"
 #include "MCPRequestBuffer.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "EditorAssetLibrary.h"
@@ -27,6 +28,290 @@
 #include "Internationalization/Internationalization.h"
 #include "Internationalization/Culture.h"
 #include "Internationalization/TextLocalizationManager.h"
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMCPPropertyPathsTest, "UnrealMCP.PropertyPaths.TypedLeaves",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMCPPropertyPathsTest::RunTest(const FString& Parameters)
+{
+    const FString Root = TEXT("/Game/__Dev/PropertyPaths_") + FGuid::NewGuid().ToString(EGuidFormats::Digits);
+    auto Parse = [](const FString& Text) { TSharedPtr<FJsonObject> Value; FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Text), Value); return Value; };
+    auto* Parent = FKismetEditorUtilities::CreateBlueprint(UMCPPropertyPathModel::StaticClass(), CreatePackage(*(Root / TEXT("BP_Parent"))), TEXT("BP_Parent"), BPTYPE_Normal, UBlueprint::StaticClass(), UBlueprintGeneratedClass::StaticClass());
+    FAssetRegistryModule::AssetCreated(Parent); FKismetEditorUtilities::CompileBlueprint(Parent);
+    if (!TestTrue(TEXT("Save parent fixture"), UEditorAssetLibrary::SaveLoadedAsset(Parent, false))) return false;
+    auto MakeChild = [&](const TCHAR* Name)
+    {
+        auto* Blueprint = FKismetEditorUtilities::CreateBlueprint(Parent->GeneratedClass, CreatePackage(*(Root / Name)), FName(Name), BPTYPE_Normal, UBlueprint::StaticClass(), UBlueprintGeneratedClass::StaticClass());
+        FAssetRegistryModule::AssetCreated(Blueprint); FKismetEditorUtilities::CompileBlueprint(Blueprint); UEditorAssetLibrary::SaveLoadedAsset(Blueprint, false); return Blueprint;
+    };
+    auto* Blueprint = MakeChild(TEXT("BP_Target")); auto* Sibling = MakeChild(TEXT("BP_Sibling"));
+    auto* Asset = NewObject<UMCPAssetPropertyTestAsset>(CreatePackage(*(Root / TEXT("DA_Test"))), TEXT("DA_Test"), RF_Public | RF_Standalone | RF_Transactional);
+    FAssetRegistryModule::AssetCreated(Asset); Asset->MarkPackageDirty();
+    if (!TestTrue(TEXT("Save asset fixture"), UEditorAssetLibrary::SaveLoadedAsset(Asset, false))) return false;
+    FAssetCompilingManager::Get().FinishAllCompilation(); FAssetCompilingManager::Get().ProcessAsyncTasks(false);
+    const FString PathJson = TEXT("[\"Stages\",\"A\",{\"key\":3},\"Vortex\",\"PullOuterRadiusFraction\"]");
+    for (bool BlueprintTarget : {false, true})
+    {
+        UObject* Target = BlueprintTarget ? static_cast<UObject*>(Blueprint) : static_cast<UObject*>(Asset);
+        auto Table = [&]() -> FMCPPropertyPathTable&
+        { return BlueprintTarget ? CastChecked<UMCPPropertyPathModel>(Blueprint->GeneratedClass->GetDefaultObject())->Stages : Asset->Stages; };
+        auto Identity = Parse(TEXT("{\"paths\":[") + PathJson + TEXT("]}"));
+        const FString IdentityName = BlueprintTarget ? TEXT("blueprint_path") : TEXT("asset_path");
+        Identity->SetStringField(IdentityName, Target->GetPackage()->GetName());
+        auto Read = [&]() { return UnrealMCPAssetProperties::ReadPaths(Identity, BlueprintTarget); };
+        const auto Before = Read();
+        if (!TestTrue(TEXT("Shared typed leaf reader succeeds"), Before->GetBoolField(TEXT("success")) && Before->GetBoolField(TEXT("complete")))) return false;
+        TestTrue(TEXT("BlueprintReadOnly still editable defaults"), Before->GetArrayField(TEXT("properties"))[0]->AsObject()->GetBoolField(TEXT("writable")));
+        auto Request = Parse(TEXT("{\"changes\":[{\"path\":") + PathJson + TEXT(",\"value\":0.5}]}"));
+        Request->SetStringField(IdentityName, Target->GetPackage()->GetName());
+        auto Refresh = [&]() { Request->SetStringField(TEXT("expected_baseline"), Read()->GetStringField(TEXT("baseline"))); };
+        Refresh();
+        auto Apply = [&]() { return UnrealMCPAssetProperties::PatchPaths(Request, BlueprintTarget); };
+        const auto Disk = FMD5Hash::HashFile(*FPackageName::LongPackageNameToFilename(Target->GetPackage()->GetName(), FPackageName::GetAssetPackageExtension()));
+        const float Old4 = Table().A[4].Vortex.PullOuterRadiusFraction, Old5 = Table().A[5].Vortex.PullOuterRadiusFraction;
+        const auto Preview = Apply();
+        if (!TestTrue(TEXT("Default preview accepted"), Preview->GetBoolField(TEXT("success")))) { AddError(Preview->GetStringField(TEXT("error"))); return false; }
+        TestFalse(TEXT("Preview does not dirty"), Target->GetPackage()->IsDirty()); TestEqual(TEXT("Preview preserves old value"), Table().A[3].Vortex.PullOuterRadiusFraction, 1.0f / 3.0f);
+        auto Changes = Request->GetArrayField(TEXT("changes"));
+        auto Bad = Parse(TEXT("{\"path\":[\"Stages\",\"A\",{\"key\":999},\"Vortex\",\"PullOuterRadiusFraction\"],\"value\":0.8}"));
+        auto Invalid = Changes; Invalid.Add(MakeShared<FJsonValueObject>(Bad)); Request->SetArrayField(TEXT("changes"), Invalid);
+        TestFalse(TEXT("Missing final key rejects whole batch"), Apply()->GetBoolField(TEXT("success"))); TestFalse(TEXT("Missing key never inserted"), Table().A.Contains(999));
+        Request->SetArrayField(TEXT("changes"), Changes);
+        for (const FString& BadPath : {
+            FString(TEXT("[\"Stages\",\"A\",{\"index\":3},\"Vortex\",\"PullOuterRadiusFraction\"]")),
+            FString(TEXT("[\"Stages\",\"A\",{\"key\":\"3\"},\"Vortex\",\"PullOuterRadiusFraction\"]")),
+            FString(TEXT("[\"Stages\",\"A\",{\"key\":3},\"Vortex\",\"Hidden\"]")),
+            FString(TEXT("[\"Stages\",\"Rows\",{\"index\":99},\"Vortex\",\"PullOuterRadiusFraction\"]"))})
+        {
+            auto Check = Parse(TEXT("{\"paths\":[") + BadPath + TEXT("]}")); Check->SetStringField(IdentityName, Target->GetPackage()->GetName());
+            const auto InvalidRead = UnrealMCPAssetProperties::ReadPaths(Check, BlueprintTarget);
+            TestTrue(TEXT("Unsupported path explicitly partial with null baseline"), !InvalidRead->GetBoolField(TEXT("complete")) && InvalidRead->Values[TEXT("baseline")]->IsNull());
+        }
+        Request->SetStringField(TEXT("expected_baseline"), TEXT("stale")); TestFalse(TEXT("Stale selection refused"), Apply()->GetBoolField(TEXT("success"))); Refresh();
+        auto Disabled = Parse(TEXT("{\"path\":[\"Stages\",\"A\",{\"key\":3},\"Vortex\",\"bEnabled\"],\"value\":false}"));
+        auto ConditionalPaths = Identity->GetArrayField(TEXT("paths")); ConditionalPaths.Add(MakeShared<FJsonValueArray>(Disabled->GetArrayField(TEXT("path"))));
+        auto ConditionalRead = MakeShared<FJsonObject>(*Identity); ConditionalRead->SetArrayField(TEXT("paths"), ConditionalPaths);
+        auto Conditional = MakeShared<FJsonObject>(*Request); auto ConditionalChanges = Changes; ConditionalChanges.Add(MakeShared<FJsonValueObject>(Disabled));
+        Conditional->SetArrayField(TEXT("changes"), ConditionalChanges); Conditional->SetStringField(TEXT("expected_baseline"), UnrealMCPAssetProperties::ReadPaths(ConditionalRead, BlueprintTarget)->GetStringField(TEXT("baseline")));
+        const auto ConditionFailure = UnrealMCPAssetProperties::PatchPaths(Conditional, BlueprintTarget);
+        TestFalse(TEXT("Final staged sibling condition cannot be bypassed"), ConditionFailure->GetBoolField(TEXT("success")));
+        TestEqual(TEXT("Condition failure reason"), ConditionFailure->GetStringField(TEXT("stage")), FString(TEXT("edit_condition")));
+        auto Alias = Parse(TEXT("{\"changes\":[{\"path\":[\"Stages\",\"Names\",{\"key\":\"Named\"},\"Vortex\",\"PullOuterRadiusFraction\"],\"value\":0.6},{\"path\":[\"Stages\",\"Names\",{\"key\":\"named\"},\"Vortex\",\"PullOuterRadiusFraction\"],\"value\":0.7}]}"));
+        Alias->SetStringField(IdentityName, Target->GetPackage()->GetName()); Alias->SetStringField(TEXT("expected_baseline"), TEXT("unused"));
+        TestFalse(TEXT("Native case-equivalent Name key duplicates refused"), UnrealMCPAssetProperties::PatchPaths(Alias, BlueprintTarget)->GetBoolField(TEXT("success")));
+        auto Boundary = Parse(TEXT("{\"paths\":[[\"Texture\",\"SRGB\"]]}")); Boundary->SetStringField(IdentityName, Target->GetPackage()->GetName());
+        const auto BoundaryRead = UnrealMCPAssetProperties::ReadPaths(Boundary, BlueprintTarget);
+        TestFalse(TEXT("Object references remain traversal boundaries"), BoundaryRead->GetBoolField(TEXT("complete")));
+        TestFalse(TEXT("All rejected paths preserve clean target"), Target->GetPackage()->IsDirty());
+        Request->SetBoolField(TEXT("dry_run"), false); const auto Draft = Apply();
+        if (!TestTrue(TEXT("Typed leaf draft accepted and protected"), Draft->GetBoolField(TEXT("success")) && Draft->GetBoolField(TEXT("existing_data_preserved")))) { AddError(Draft->GetStringField(TEXT("error"))); return false; }
+        TestTrue(TEXT("Draft modified/dirty/unsaved"), Draft->GetBoolField(TEXT("modified")) && Draft->GetBoolField(TEXT("package_dirty")) && !Draft->GetBoolField(TEXT("saved")));
+        TestFalse(TEXT("Dirty writer refused"), Apply()->GetBoolField(TEXT("success")));
+        TestEqual(TEXT("A3 leaf changed"), Table().A[3].Vortex.PullOuterRadiusFraction, 0.5f);
+        TestTrue(TEXT("A4 exact float bits"), FMemory::Memcmp(&Old4, &Table().A[4].Vortex.PullOuterRadiusFraction, sizeof(float)) == 0);
+        TestTrue(TEXT("A5 exact float bits"), FMemory::Memcmp(&Old5, &Table().A[5].Vortex.PullOuterRadiusFraction, sizeof(float)) == 0);
+        TestEqual(TEXT("Hidden float retained"), Table().A[3].Vortex.Hidden, 0.123456791f); TestEqual(TEXT("Unspecified Peak retained"), Table().A[3].Vortex.PullPeakRadiusFraction, 0.3f);
+        TestEqual(TEXT("Parent unchanged"), CastChecked<UMCPPropertyPathModel>(Parent->GeneratedClass->GetDefaultObject())->Stages.A[3].Vortex.PullOuterRadiusFraction, 1.0f / 3.0f);
+        TestEqual(TEXT("Sibling unchanged"), CastChecked<UMCPPropertyPathModel>(Sibling->GeneratedClass->GetDefaultObject())->Stages.A[3].Vortex.PullOuterRadiusFraction, 1.0f / 3.0f);
+        GEditor->UndoTransaction(); TestEqual(TEXT("Undo leaf"), Table().A[3].Vortex.PullOuterRadiusFraction, 1.0f / 3.0f);
+        GEditor->RedoTransaction(); TestEqual(TEXT("Redo leaf"), Table().A[3].Vortex.PullOuterRadiusFraction, 0.5f);
+        GEditor->UndoTransaction(); Target->GetPackage()->SetDirtyFlag(false); Refresh(); Request->SetBoolField(TEXT("save"), true);
+        if (BlueprintTarget)
+        {
+            UnrealMCPAssetProperties::SetPropertyPathFailuresForTests(true, false); const auto CompileFailed = Apply(); UnrealMCPAssetProperties::SetPropertyPathFailuresForTests(false, false);
+            TestTrue(TEXT("Compile failure reports actual applied unsaved state"), !CompileFailed->GetBoolField(TEXT("success")) && CompileFailed->GetBoolField(TEXT("modified")) && !CompileFailed->GetBoolField(TEXT("saved")));
+            TestEqual(TEXT("Compile failure stage"), CompileFailed->GetStringField(TEXT("stage")), FString(TEXT("compile")));
+            GEditor->UndoTransaction(); Target->GetPackage()->SetDirtyFlag(false); Refresh();
+        }
+        UnrealMCPAssetProperties::SetPropertyPathFailuresForTests(false, true); const auto Failed = Apply(); UnrealMCPAssetProperties::SetPropertyPathFailuresForTests(false, false);
+        TestTrue(TEXT("Save failure truthful"), !Failed->GetBoolField(TEXT("success")) && Failed->GetBoolField(TEXT("modified")) && !Failed->GetBoolField(TEXT("saved")));
+        TestTrue(TEXT("Save failure disk unchanged"), Disk == FMD5Hash::HashFile(*FPackageName::LongPackageNameToFilename(Target->GetPackage()->GetName(), FPackageName::GetAssetPackageExtension())));
+        GEditor->UndoTransaction(); Target->GetPackage()->SetDirtyFlag(false); Refresh(); const auto Saved = Apply();
+        if (!TestTrue(TEXT("Apply compile/readback/save passed"), Saved->GetBoolField(TEXT("success")) && Saved->GetBoolField(TEXT("saved")))) { AddError(Saved->GetStringField(TEXT("error"))); return false; }
+        Refresh(); const auto NoOp = Apply(); TestTrue(TEXT("Same values no-op/no-save"), NoOp->GetBoolField(TEXT("success")) && !NoOp->GetBoolField(TEXT("modified")) && !NoOp->GetBoolField(TEXT("saved")));
+        auto Browse = Parse(TEXT("{\"paths\":[[\"Stages\",\"A\"]]}")); Browse->SetStringField(IdentityName, Target->GetPackage()->GetName());
+        const auto Browsed = UnrealMCPAssetProperties::ReadPaths(Browse, BlueprintTarget);
+        TestEqual(TEXT("Existing integer keys discoverable"), Browsed->GetArrayField(TEXT("properties"))[0]->AsObject()->GetArrayField(TEXT("existing_keys")).Num(), 3);
+        for (const FString& ExtraPath : {
+            FString(TEXT("[\"Stages\",\"Names\",{\"key\":\"Named\"},\"Vortex\",\"PullOuterRadiusFraction\"]")),
+            FString(TEXT("[\"Stages\",\"Labels\",{\"key\":\"literal.key[3]\"},\"Vortex\",\"PullOuterRadiusFraction\"]")),
+            FString(TEXT("[\"Stages\",\"Surfaces\",{\"key\":\"SurfaceType1\"},\"Vortex\",\"PullOuterRadiusFraction\"]")),
+            FString(TEXT("[\"Stages\",\"A\",{\"key\":3},\"Samples\",{\"index\":0},\"PullOuterRadiusFraction\"]")),
+            FString(TEXT("[\"Stages\",\"Rows\",{\"index\":0},\"Samples\",{\"index\":0},\"PullOuterRadiusFraction\"]"))})
+        {
+            auto Selection = Parse(TEXT("{\"paths\":[") + ExtraPath + TEXT("]}")); Selection->SetStringField(IdentityName, Target->GetPackage()->GetName());
+            const auto State = UnrealMCPAssetProperties::ReadPaths(Selection, BlueprintTarget);
+            auto Extra = Parse(TEXT("{\"changes\":[{\"path\":") + ExtraPath + TEXT(",\"value\":0.6}],\"dry_run\":false,\"save\":true}"));
+            Extra->SetStringField(IdentityName, Target->GetPackage()->GetName()); Extra->SetStringField(TEXT("expected_baseline"), State->GetStringField(TEXT("baseline")));
+            const auto Applied = UnrealMCPAssetProperties::PatchPaths(Extra, BlueprintTarget);
+            if (!TestTrue(TEXT("Composable key/index types apply"), Applied->GetBoolField(TEXT("success")))) { AddError(Applied->GetStringField(TEXT("error"))); return false; }
+        }
+        if (BlueprintTarget)
+        {
+            auto* Instance = NewObject<UMCPPropertyPathModel>(GetTransientPackage(), Blueprint->GeneratedClass);
+            TestEqual(TEXT("Actual new instance consumes saved CDO"), Instance->Stages.A[3].Vortex.PullOuterRadiusFraction, 0.5f);
+        }
+        FString Snapshot; FJsonSerializer::Serialize(Read().ToSharedRef(), TJsonWriterFactory<>::Create(&Snapshot));
+        const FString File = FPaths::ProjectSavedDir() / TEXT("PropertyPathsAcceptance") / FPackageName::GetShortName(Root) / (BlueprintTarget ? TEXT("blueprint.json") : TEXT("asset.json"));
+        IFileManager::Get().MakeDirectory(*FPaths::GetPath(File), true); TestTrue(TEXT("Save independent cold oracle"), FFileHelper::SaveStringToFile(Snapshot, *File, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM));
+    }
+    auto ParentRead = Parse(TEXT("{\"paths\":[") + PathJson + TEXT("]}")); ParentRead->SetStringField(TEXT("blueprint_path"), Parent->GetPackage()->GetName());
+    const auto ParentScope = UnrealMCPAssetProperties::ReadPaths(ParentRead, true);
+    TestTrue(TEXT("Actual Blueprint descendants are identified"), ParentScope->GetBoolField(TEXT("has_blueprint_descendants")));
+    TestFalse(TEXT("Parent default propagation refused explicitly"), ParentScope->GetArrayField(TEXT("properties"))[0]->AsObject()->GetBoolField(TEXT("writable")));
+    AddInfo(TEXT("Property paths fixture: ") + Root); return !HasAnyErrors();
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMCPPropertyPathsReloadTest, "UnrealMCP.PropertyPaths.Cold",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FMCPPropertyPathsReloadTest::RunTest(const FString& Parameters)
+{
+    FString Root; if (!FParse::Value(FCommandLine::Get(), TEXT("MCPPropertyPathsReload="), Root)) { AddInfo(TEXT("Explicit fixture root required; no cold evidence")); return true; }
+    if (!Root.StartsWith(TEXT("/Game/__Dev/PropertyPaths_"))) return false;
+    for (bool BlueprintTarget : {false, true})
+    {
+        FString Text; TSharedPtr<FJsonObject> Expected;
+        const FString File = FPaths::ProjectSavedDir() / TEXT("PropertyPathsAcceptance") / FPackageName::GetShortName(Root) / (BlueprintTarget ? TEXT("blueprint.json") : TEXT("asset.json"));
+        if (!FFileHelper::LoadFileToString(Text, *File) || !FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Text), Expected)) return false;
+        auto Params = MakeShared<FJsonObject>(); Params->SetStringField(BlueprintTarget ? TEXT("blueprint_path") : TEXT("asset_path"), Root / (BlueprintTarget ? TEXT("BP_Target") : TEXT("DA_Test")));
+        TArray<TSharedPtr<FJsonValue>> Paths; for (const auto& Row : Expected->GetArrayField(TEXT("properties"))) Paths.Add(MakeShared<FJsonValueArray>(Row->AsObject()->GetArrayField(TEXT("path")))); Params->SetArrayField(TEXT("paths"), Paths);
+        const auto Actual = UnrealMCPAssetProperties::ReadPaths(Params, BlueprintTarget);
+        if (!TestTrue(TEXT("Cold reader succeeds"), Actual->GetBoolField(TEXT("success")))) return false;
+        TestEqual(TEXT("Cold exact baseline and bit witnesses"), Actual->GetStringField(TEXT("baseline")), Expected->GetStringField(TEXT("baseline")));
+        TestFalse(TEXT("Cold clean"), Actual->GetBoolField(TEXT("package_dirty")));
+    }
+    return !HasAnyErrors();
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMCPAssetStructArrayTest, "UnrealMCP.AssetProperties.StructArrayInitialization",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMCPAssetStructArrayTest::RunTest(const FString& Parameters)
+{
+    const FString Root = TEXT("/Game/__Dev/StructArrayInitialization_") + FGuid::NewGuid().ToString(EGuidFormats::Digits);
+    auto* Asset = NewObject<UMCPAssetPropertyTestAsset>(CreatePackage(*(Root / TEXT("DA_Test"))), TEXT("DA_Test"), RF_Public | RF_Standalone | RF_Transactional);
+    FAssetRegistryModule::AssetCreated(Asset);
+    Asset->MarkPackageDirty();
+    if (!TestTrue(TEXT("Initial isolated asset saved"), UEditorAssetLibrary::SaveLoadedAsset(Asset, false))) return false;
+    auto Params = MakeShared<FJsonObject>(); Params->SetStringField(TEXT("asset_path"), Asset->GetPackage()->GetName());
+    Params->SetArrayField(TEXT("property_paths"), {MakeShared<FJsonValueString>(TEXT("UpgradeStages"))});
+    auto Result = UnrealMCPAssetProperties::Read(Params);
+    if (!TestTrue(TEXT("Isolated ordinary struct array readable"), Result->GetBoolField(TEXT("success")))) return false;
+    auto Field = Result->GetArrayField(TEXT("properties"))[0]->AsObject();
+    TestFalse(TEXT("Whole struct-array replacement remains unsupported"), Field->GetBoolField(TEXT("writable")));
+    if (!TestTrue(TEXT("Default-construction append capability is discoverable"), Field->HasTypedField<EJson::Object>(TEXT("array_append")))) return false;
+    TestTrue(TEXT("Capability read leaves array empty"), Asset->UpgradeStages.IsEmpty());
+    const auto Capability = Field->GetObjectField(TEXT("array_append"));
+    TestEqual(TEXT("Native hidden default reported"), Capability->GetObjectField(TEXT("defaults"))->GetNumberField(TEXT("DamageMultiplier")), 1.0);
+    TestEqual(TEXT("Only editable Cost is offered"), Capability->GetArrayField(TEXT("editable_fields")).Num(), 1);
+    auto Read = [&]() { return UnrealMCPAssetProperties::Read(Params)->GetArrayField(TEXT("properties"))[0]->AsObject()->GetObjectField(TEXT("array_append")); };
+    auto Request = MakeShared<FJsonObject>(); Request->SetStringField(TEXT("asset_path"), Asset->GetPackage()->GetName());
+    Request->SetStringField(TEXT("array_path"), TEXT("UpgradeStages")); Request->SetStringField(TEXT("expected_baseline"), Capability->GetStringField(TEXT("baseline")));
+    auto First = MakeShared<FJsonObject>(); First->SetNumberField(TEXT("Cost"), 75);
+    auto Second = MakeShared<FJsonObject>(); Second->SetNumberField(TEXT("Cost"), 100);
+    Request->SetArrayField(TEXT("items"), {MakeShared<FJsonValueObject>(First), MakeShared<FJsonValueObject>(Second)});
+    auto Preview = UnrealMCPAssetProperties::AppendStructArray(Request);
+    if (!TestTrue(TEXT("Default append preview succeeds"), Preview->GetBoolField(TEXT("success")))) { AddError(Preview->GetStringField(TEXT("error"))); return false; }
+    TestTrue(TEXT("Preview is dry run"), Preview->GetBoolField(TEXT("dry_run")));
+    TestFalse(TEXT("Preview does not save"), Preview->GetBoolField(TEXT("saved")));
+    TestTrue(TEXT("Preview leaves array empty"), Asset->UpgradeStages.IsEmpty());
+    TestFalse(TEXT("Preview leaves clean"), Asset->GetPackage()->IsDirty());
+    Request->SetBoolField(TEXT("dry_run"), false);
+    Second->SetNumberField(TEXT("DamageMultiplier"), 2);
+    auto Invalid = UnrealMCPAssetProperties::AppendStructArray(Request);
+    TestFalse(TEXT("Noneditable member rejected"), Invalid->GetBoolField(TEXT("success")));
+    TestFalse(TEXT("Bad last row never modifies first row"), Invalid->GetBoolField(TEXT("modified")));
+    TestTrue(TEXT("Rejected batch leaves array empty"), Asset->UpgradeStages.IsEmpty());
+    Second->RemoveField(TEXT("DamageMultiplier"));
+    const auto Applied = UnrealMCPAssetProperties::AppendStructArray(Request);
+    if (!TestTrue(TEXT("Empty array initializes two default-constructed items"), Applied->GetBoolField(TEXT("success")))) { AddError(Applied->GetStringField(TEXT("error"))); return false; }
+    if (!TestEqual(TEXT("Two initialized entries"), Asset->UpgradeStages.Num(), 2)) return false;
+    TestEqual(TEXT("First cost"), Asset->UpgradeStages[0].Cost, 75); TestEqual(TEXT("Second cost"), Asset->UpgradeStages[1].Cost, 100);
+    TestEqual(TEXT("Hidden damage default preserved"), Asset->UpgradeStages[0].DamageMultiplier, 1.0f);
+    TestEqual(TEXT("Hidden fire-rate default preserved"), Asset->UpgradeStages[1].FireRateMultiplier, 1.0f);
+    TestFalse(TEXT("Default append is unsaved"), Applied->GetBoolField(TEXT("saved")));
+    TestTrue(TEXT("New draft is dirty"), Applied->GetBoolField(TEXT("package_dirty")));
+    TestFalse(TEXT("Preexisting dirty draft refused"), UnrealMCPAssetProperties::AppendStructArray(Request)->GetBoolField(TEXT("success")));
+    GEditor->UndoTransaction(); TestTrue(TEXT("Undo returns to empty array"), Asset->UpgradeStages.IsEmpty());
+    GEditor->RedoTransaction(); TestEqual(TEXT("Redo returns two entries"), Asset->UpgradeStages.Num(), 2);
+    if (!TestTrue(TEXT("Explicit inspected draft save"), UEditorAssetLibrary::SaveLoadedAsset(Asset, false))) return false;
+    TestFalse(TEXT("Old baseline cannot append twice"), UnrealMCPAssetProperties::AppendStructArray(Request)->GetBoolField(TEXT("success")));
+    Asset->UpgradeStages[0].DamageMultiplier = 1.25f;
+    Request->SetStringField(TEXT("expected_baseline"), Read()->GetStringField(TEXT("baseline")));
+    Request->SetArrayField(TEXT("items"), {MakeShared<FJsonValueObject>(First)}); Request->SetBoolField(TEXT("save"), true);
+    const auto Extended = UnrealMCPAssetProperties::AppendStructArray(Request);
+    if (!TestTrue(TEXT("Existing array appends without replacing old items"), Extended->GetBoolField(TEXT("success")) && Extended->GetBoolField(TEXT("saved")))) return false;
+    TestEqual(TEXT("Old hidden nondefault value preserved"), Asset->UpgradeStages[0].DamageMultiplier, 1.25f);
+    TestEqual(TEXT("Appended hidden value uses native default"), Asset->UpgradeStages[2].DamageMultiplier, 1.0f);
+    TestEqual(TEXT("Append count"), Asset->UpgradeStages.Num(), 3);
+    auto OldWrite = MakeShared<FJsonObject>(); OldWrite->SetStringField(TEXT("asset_path"), Asset->GetPackage()->GetName()); OldWrite->SetBoolField(TEXT("save"), false);
+    auto Change = MakeShared<FJsonObject>(); Change->SetStringField(TEXT("path"), TEXT("UpgradeStages")); Change->SetArrayField(TEXT("value"), {});
+    OldWrite->SetArrayField(TEXT("changes"), {MakeShared<FJsonValueObject>(Change)});
+    TestFalse(TEXT("Whole-array writer remains guarded"), UnrealMCPAssetProperties::Write(OldWrite)->GetBoolField(TEXT("success")));
+    Change->SetStringField(TEXT("path"), TEXT("UpgradeStages[0].Cost")); Change->SetNumberField(TEXT("value"), 80);
+    TestTrue(TEXT("Existing editable Cost leaf still supported"), UnrealMCPAssetProperties::Write(OldWrite)->GetBoolField(TEXT("success")));
+    TestEqual(TEXT("Leaf update preserves hidden old value"), Asset->UpgradeStages[0].DamageMultiplier, 1.25f);
+    if (!TestTrue(TEXT("Save inspected leaf edit"), UEditorAssetLibrary::SaveLoadedAsset(Asset, false))) return false;
+    const FString File = FPackageName::LongPackageNameToFilename(Asset->GetPackage()->GetName(), FPackageName::GetAssetPackageExtension());
+    const auto BeforeFailureHash = FMD5Hash::HashFile(*File);
+    Request->SetStringField(TEXT("expected_baseline"), Read()->GetStringField(TEXT("baseline"))); First->SetNumberField(TEXT("Cost"), 90);
+    UnrealMCPAssetProperties::SetArrayAppendSaveFailureForTests(true);
+    const auto FailedSave = UnrealMCPAssetProperties::AppendStructArray(Request);
+    UnrealMCPAssetProperties::SetArrayAppendSaveFailureForTests(false);
+    if (!TestTrue(TEXT("Append save failure accurately retains applied draft"), !FailedSave->GetBoolField(TEXT("success"))
+        && FailedSave->GetBoolField(TEXT("modified")) && !FailedSave->GetBoolField(TEXT("saved")) && FailedSave->GetStringField(TEXT("stage")) == TEXT("save"))) return false;
+    TestTrue(TEXT("Append failure leaves disk unchanged"), BeforeFailureHash == FMD5Hash::HashFile(*File));
+    TestEqual(TEXT("Failure includes true after count"), FailedSave->GetObjectField(TEXT("after"))->GetIntegerField(TEXT("count")), 4);
+    if (!TestTrue(TEXT("Explicit append failure recovery saves target"), UEditorAssetLibrary::SaveLoadedAsset(Asset, false))) return false;
+    auto GroupsRead = MakeShared<FJsonObject>(); GroupsRead->SetStringField(TEXT("asset_path"), Asset->GetPackage()->GetName());
+    GroupsRead->SetArrayField(TEXT("property_paths"), {MakeShared<FJsonValueString>(TEXT("HitGroups"))});
+    auto GroupCapability = UnrealMCPAssetProperties::Read(GroupsRead)->GetArrayField(TEXT("properties"))[0]->AsObject()->GetObjectField(TEXT("array_append"));
+    Request->SetStringField(TEXT("array_path"), TEXT("HitGroups")); Request->SetStringField(TEXT("expected_baseline"), GroupCapability->GetStringField(TEXT("baseline")));
+    auto Group = MakeShared<FJsonObject>(); Group->SetBoolField(TEXT("bEnabled"), false);
+    Group->SetArrayField(TEXT("HeadRootBones"), {MakeShared<FJsonValueString>(TEXT("Head"))});
+    Request->SetArrayField(TEXT("items"), {MakeShared<FJsonValueObject>(Group)});
+    const auto ConditionRejected = UnrealMCPAssetProperties::AppendStructArray(Request);
+    TestFalse(TEXT("Array initialization cannot bypass false sibling EditCondition"), ConditionRejected->GetBoolField(TEXT("success")));
+    TestTrue(TEXT("Condition rejection leaves array empty"), Asset->HitGroups.IsEmpty());
+    Group->SetBoolField(TEXT("bEnabled"), true);
+    const auto Conditional = UnrealMCPAssetProperties::AppendStructArray(Request);
+    if (!TestTrue(TEXT("Final staged sibling enables field independent of patch order"), Conditional->GetBoolField(TEXT("success")) && Conditional->GetBoolField(TEXT("saved")))) return false;
+    TestEqual(TEXT("Conditional nested array initialized"), Asset->HitGroups[0].HeadRootBones.Num(), 1);
+    auto FinalSnapshot = Read(); FString SnapshotText; FJsonSerializer::Serialize(FinalSnapshot.ToSharedRef(), TJsonWriterFactory<>::Create(&SnapshotText));
+    const FString SnapshotFile = FPaths::ProjectSavedDir() / TEXT("StructArrayInitialization") / FPackageName::GetLongPackageAssetName(Root) / TEXT("snapshot.json");
+    IFileManager::Get().MakeDirectory(*FPaths::GetPath(SnapshotFile), true);
+    TestTrue(TEXT("Saved exact initialization snapshot for cold verification"), FFileHelper::SaveStringToFile(SnapshotText, *SnapshotFile));
+    AddInfo(TEXT("Struct array fixture: ") + Root);
+    return !HasAnyErrors();
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMCPAssetStructArrayReloadTest, "UnrealMCP.AssetProperties.StructArrayInitializationReload",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FMCPAssetStructArrayReloadTest::RunTest(const FString& Parameters)
+{
+    FString Root;
+    if (!FParse::Value(FCommandLine::Get(), TEXT("MCPStructArrayReload="), Root)) { AddInfo(TEXT("Requires explicit saved struct-array fixture root; skipped")); return true; }
+    if (!Root.StartsWith(TEXT("/Game/__Dev/StructArrayInitialization_")) || !FPackageName::IsValidLongPackageName(Root)) return false;
+    TestNull(TEXT("Independent asset not already loaded"), FindObject<UObject>(nullptr, *(Root / TEXT("DA_Test.DA_Test"))));
+    auto* Asset = Cast<UMCPAssetPropertyTestAsset>(UEditorAssetLibrary::LoadAsset(Root / TEXT("DA_Test")));
+    if (!TestNotNull(TEXT("Initialized array survives independent load"), Asset) || !TestEqual(TEXT("All appended entries survive"), Asset->UpgradeStages.Num(), 4)) return false;
+    TestEqual(TEXT("Cold first Cost"), Asset->UpgradeStages[0].Cost, 80); TestEqual(TEXT("Cold second Cost"), Asset->UpgradeStages[1].Cost, 100);
+    TestEqual(TEXT("Cold noneditable existing field preserved"), Asset->UpgradeStages[0].DamageMultiplier, 1.25f);
+    TestEqual(TEXT("Cold appended default preserved"), Asset->UpgradeStages[3].FireRateMultiplier, 1.0f);
+    TestEqual(TEXT("Cold failure-recovery Cost"), Asset->UpgradeStages[3].Cost, 90);
+    TestTrue(TEXT("Cold conditional default construction retained"), Asset->HitGroups.Num() == 1 && Asset->HitGroups[0].bEnabled && Asset->HitGroups[0].HeadRootBones.Num() == 1);
+    FString PreviousText; TSharedPtr<FJsonObject> Previous;
+    const FString File = FPaths::ProjectSavedDir() / TEXT("StructArrayInitialization") / FPackageName::GetLongPackageAssetName(Root) / TEXT("snapshot.json");
+    if (!TestTrue(TEXT("Prior exact array snapshot exists"), FFileHelper::LoadFileToString(PreviousText, *File))) return false;
+    if (!FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(PreviousText), Previous) || !Previous) return false;
+    auto Params = MakeShared<FJsonObject>(); Params->SetStringField(TEXT("asset_path"), Root / TEXT("DA_Test"));
+    Params->SetArrayField(TEXT("property_paths"), {MakeShared<FJsonValueString>(TEXT("UpgradeStages"))});
+    const auto Current = UnrealMCPAssetProperties::Read(Params)->GetArrayField(TEXT("properties"))[0]->AsObject()->GetObjectField(TEXT("array_append"));
+    TestEqual(TEXT("Full cold array baseline matches saved snapshot"), Current->GetStringField(TEXT("baseline")), Previous->GetStringField(TEXT("baseline")));
+    TestFalse(TEXT("Cold inspection leaves package clean"), Asset->GetPackage()->IsDirty());
+    return !HasAnyErrors();
+}
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMCPAssetTextReadTest, "UnrealMCP.AssetProperties.TextRead",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

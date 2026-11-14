@@ -44,6 +44,50 @@ def call_migration_command(command: str, params: dict) -> dict:
                 spilled[key] = result[key]
     return spilled
 
+def call_property_path_command(command: str, arguments: dict) -> dict:
+    """Keep typed path scopes and real partial failure/unknown outcomes complete."""
+    from unreal_mcp_server import spill_if_oversized
+    from uuid import uuid4
+
+    try:
+        if len(json.dumps(arguments, allow_nan=False).encode("utf-8")) > 65536:
+            raise ValueError("Property path requests are limited to 64KiB")
+    except (TypeError, ValueError) as error:
+        return {"success": False, "modified": False, "saved": False, "stage": "validation", "error": str(error)}
+    result = call_asset_command(command, arguments)
+    if result.get("stage") == "transport":
+        result.setdefault("execution_state", "unknown")
+    metadata = ("success", "property_paths_contract", "asset_path", "blueprint_path", "complete", "baseline",
+                "dry_run", "would_modify", "modified", "compiled", "saved", "package_dirty", "stage", "error",
+                "execution_state", "existing_data_preserved")
+    spilled = spill_if_oversized(result, command, uuid4().hex, preview_keys=metadata,
+        hint="Read full typed paths/identity/before/proposed/after. Unknown writes must never be retried blindly.")
+    if spilled is not result and spilled.get("overflow"):
+        for key in metadata:
+            if key in result:
+                spilled[key] = result[key]
+    return spilled
+
+
+def call_struct_array_append(params: dict) -> dict:
+    """Keep initialization snapshots and partial failures complete without retries."""
+    from unreal_mcp_server import spill_if_oversized
+    from uuid import uuid4
+
+    result = call_asset_command("append_data_asset_struct_array", params)
+    if result.get("stage") == "transport":
+        result.setdefault("execution_state", "unknown")
+    metadata = ("success", "array_append_contract", "asset_path", "array_path", "dry_run", "would_modify",
+                "modified", "saved", "package_dirty", "old_count", "new_count", "stage", "error", "execution_state")
+    spilled = spill_if_oversized(result, "append_data_asset_struct_array", uuid4().hex,
+        preview_keys=metadata, hint="Read complete before/after/defaults JSON. An unknown write outcome must never be retried blindly.")
+    if spilled is not result and spilled.get("overflow"):
+        for key in metadata:
+            if key in result:
+                spilled[key] = result[key]
+    return spilled
+
+
 def call_enhanced_input_command(command: str, params: dict) -> dict:
     """Keep complete IMC snapshots and truthful partial write receipts, including overflow."""
     from unreal_mcp_server import spill_if_oversized
@@ -69,9 +113,11 @@ def call_animation_command(command: str, params: dict) -> dict:
     from uuid import uuid4
 
     result = call_asset_command(command, params)
-    metadata = ("success", "animation_contract", "complete", "baseline", "asset_path", "notify_count",
+    if result.get("stage") == "transport":
+        result.setdefault("execution_state", "unknown")
+    metadata = ("success", "animation_contract", "notify_properties_contract", "complete", "baseline", "asset_path", "notify_count",
                 "dry_run", "would_modify", "modified", "saved", "package_dirty", "stage", "error",
-                "event_guid", "unsupported_count", "existing_data_preserved", "target_compilation_complete")
+                "event_guid", "unsupported_count", "existing_data_preserved", "target_compilation_complete", "execution_state")
     spilled = spill_if_oversized(result, command, uuid4().hex, preview_keys=metadata,
         hint="Review the complete animation snapshot/receipt file. Timeout means UNKNOWN execution state; never blindly retry writes.")
     if spilled is not result and spilled.get("overflow"):
@@ -99,6 +145,35 @@ def call_text_reference_command(command: str, params: dict) -> dict:
 
 def register_project_tools(mcp: FastMCP):
     """Register project tools with the MCP server."""
+
+    @mcp.tool()
+    def read_asset_property_paths(ctx: Context, asset_path: str, paths: list[list]) -> dict:
+        """Inspect typed existing property paths on DataAsset/allowlisted PhysicalMaterial.
+
+        Example: asset_path='/Game/Data/DA_Test', paths=[['Stages','A',{'key':3},'Radius']].
+        String steps name exact reflected fields; {'index':0} selects an existing array
+        element; {'key':3} selects an existing typed Map key, NEVER array position.
+        Up to 64 paths/16 steps. No object traversal or container growth. Returns actual
+        target identity, typed values/schema, per-path writable/restriction and a scoped
+        baseline. Read complete spill files. No mutation/save. Matching plugin required.
+        """
+        return call_property_path_command("read_asset_property_paths", dict(asset_path=asset_path, paths=paths))
+
+    @mcp.tool()
+    def patch_asset_property_paths(ctx: Context, asset_path: str, expected_baseline: str,
+                                   changes: list[dict], dry_run: bool = True, save: bool = False) -> dict:
+        """Preview/patch existing typed leaves without replacing unrelated container data.
+
+        Example: changes=[{'path':['Stages','A',{'key':3},'Radius'],'value':0.5}],
+        asset_path='/Game/Data/DA_Test', expected_baseline=<reader for exact paths>.
+        Ordinary structs, existing arrays and typed Map keys compose; no implicit insert,
+        resize/delete/reorder or object traversal. Reader restrictions/identity/baseline,
+        dirty/stale/finite values and final edit conditions are checked before mutation.
+        Defaults preview/no save. Target-only optional save; no-op never dirties/saves.
+        Inspect actual after/modified/saved/stage on failure; timeout is unknown, no retry.
+        """
+        return call_property_path_command("patch_asset_property_paths", dict(asset_path=asset_path,
+            expected_baseline=expected_baseline, changes=changes, dry_run=dry_run, save=save))
 
     @mcp.tool()
     def read_data_asset_text_references(ctx: Context, asset_path: str, property_paths: list[str]) -> dict:
@@ -149,6 +224,43 @@ def register_project_tools(mcp: FastMCP):
         Requires matching native plugin; Python discovery is not deployment.
         """
         return call_animation_command("read_animation_asset", {"asset_path": asset_path})
+
+    @mcp.tool()
+    def read_montage_notify_properties(ctx: Context, asset_path: str, event_guid: str) -> dict:
+        """Read a bounded Niagara-appearance Notify patch contract by existing event GUID.
+
+        Example: asset_path='/Game/Animations/AM_Attack', event_guid=<stored hyphenated GUID>.
+        Returns notify_properties_contract=1, actual class/outer, typed editable fields,
+        all reflected stored Notify values and a dedicated baseline. The legacy animation
+        reader may remain partial; its baseline cannot be used here. Only native
+        Niagara-effect Notify classes with the finite appearance schema are supported.
+        No playback, creation, dirtying or saving. Read overflow.file_path in full.
+        Requires matching native plugin, not merely this Python schema.
+        """
+        return call_animation_command("read_montage_notify_properties", dict(asset_path=asset_path, event_guid=event_guid))
+
+    @mcp.tool()
+    def patch_montage_notify_properties(ctx: Context, asset_path: str, event_guid: str,
+                                       expected_class: str, expected_outer: str, expected_baseline: str,
+                                       changes: list[dict], dry_run: bool = True, save: bool = False) -> dict:
+        """Preview/patch finite typed fields on one existing native Niagara-appearance Notify.
+
+        Example: asset_path='/Game/Animations/AM_Attack', event_guid=<reader GUID>,
+        expected_class=<reader notify_class>, expected_outer=<reader outer_path>,
+        expected_baseline=<reader baseline>, changes=[{'path':'Appearance.SizeParameter',
+        'value':'User.Size'},{'path':'Appearance.SizeMultiplier','value':0.1}].
+        Up to 32 unique supported leaf paths; no array resizing, object traversal,
+        ImportText, Blueprint execution or new Notify. Class, outer, dirty/stale,
+        reference types and finite values are checked before a single Undo transaction.
+        Omitted fields, other Notifies, event GUID/order/time/tracks and Montage settings
+        are preserved. Defaults preview/no save; no-op never dirties or saves. Optional
+        save targets this Montage only. Failures can leave applied changes: inspect
+        modified/saved/package_dirty/stage/after. Timeout is unknown; never blindly retry.
+        This stored-authoring contract is not proof of runtime Niagara parameter delivery.
+        """
+        return call_animation_command("patch_montage_notify_properties", dict(asset_path=asset_path, event_guid=event_guid,
+            expected_class=expected_class, expected_outer=expected_outer, expected_baseline=expected_baseline,
+            changes=changes, dry_run=dry_run, save=save))
 
     @mcp.tool()
     def set_anim_sequence_additive(ctx: Context, asset_path: str, expected_baseline: str,
@@ -522,6 +634,42 @@ def register_project_tools(mcp: FastMCP):
             return response.get("result", response)
         except Exception as error:
             return {"success": False, "stage": "transport", "message": f"{error}; creation/save state unknown"}
+
+    @mcp.tool()
+    def append_data_asset_struct_array(ctx: Context, asset_path: str, array_path: str,
+                                       expected_baseline: str, items: list[dict],
+                                       dry_run: bool = True, save: bool = False) -> dict:
+        """Default-construct ordinary struct array items, then patch only their editable fields.
+
+        First get_class_properties(asset_path=..., structured=True, property_paths=['BaseLevels']).
+        Copy array_append.baseline; inspect can_append/defaults/editable_fields/count/limits.
+        Example: array_path='BaseLevels', items=[{'Cost':75},{'Cost':100}],
+        expected_baseline='<array_append baseline>', dry_run=True, save=False.
+        Each object maps relative new-item paths to typed values; an empty object uses
+        native defaults. Hidden/readonly fields cannot be supplied or overridden.
+        Only existing DataAsset instances and non-fixed/non-instanced ordinary struct
+        arrays are supported, 1..64 new items and at most 1024 total. Existing entries
+        and their hidden values are preserved; no delete/resize/implicit replacement.
+        Whole-array replacement can remain writable=False; array_append separately
+        confirms safe construction. Dirty/stale/invalid/false EditCondition requests
+        refuse before editing; all rows preflight together. Defaults preview only;
+        apply is Undoable and save=True saves only the approved target after complete
+        readback. Inspect real modified/saved/after on failure. Timeout means unknown
+        outcome, no retry. Matching native array append contract 1 required; an
+        available Python schema alone does not deploy this capability.
+        """
+        if (not asset_path.startswith("/Game/") or asset_path.endswith("/")
+                or asset_path != asset_path.strip() or any(char in asset_path for char in ("\\", ":", "."))
+                or "//" in asset_path):
+            return {"success": False, "modified": False, "saved": False, "stage": "preflight", "error": "Require an exact /Game package asset_path"}
+        arguments = dict(asset_path=asset_path, array_path=array_path, expected_baseline=expected_baseline,
+                         items=items, dry_run=dry_run, save=save)
+        try:
+            if len(json.dumps(arguments, allow_nan=False).encode("utf-8")) > 256 * 1024:
+                raise ValueError("Array initialization request exceeds 256 KiB")
+        except (ValueError, TypeError) as error:
+            return {"success": False, "modified": False, "saved": False, "stage": "preflight", "error": str(error)}
+        return call_struct_array_append(arguments)
 
     @mcp.tool()
     def set_asset_properties(

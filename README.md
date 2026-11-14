@@ -4,7 +4,7 @@ Fork of [chongdashu/unreal-mcp](https://github.com/chongdashu/unreal-mcp) for AI
 
 ## Tool Surface
 
-**169 internal operations**, exposed as **57 tools** in default grouped mode.
+**176 internal operations**, exposed as **57 tools** in default grouped mode.
 Material, Niagara, UMG, Scene, Blueprint and Asset use search/read/write entry
 points; other categories remain direct. `MCP_TOOL_MODE=direct` exposes original names.
 
@@ -14,8 +14,8 @@ points; other categories remain direct. `MCP_TOOL_MODE=direct` exposes original 
 | [Niagara](Docs/Tools/niagara_tools.md) | 38 | `niagara_search` | Systems, emitters, modules, curves, renderers, User/Particle Reader bindings and scalability |
 | [UMG](Docs/Tools/umg_tools.md) | 23 | `umg_search` | Widgets, layout, bindings, reparenting and Designer preview settings |
 | [Scene](Docs/Tools/scene_tools.md) | 20 | `scene_search` | Guarded level instances, placement, captures, imports, Outliner folders and undo |
-| [Blueprint](Docs/Tools/blueprint_tools.md) | 11 | `blueprint_search` | Asset structure, components, properties, inherited skeletal defaults and compilation |
-| [Asset](Docs/Tools/project_tools.md) | 21 | `asset_search` | Asset management, DataAssets, FText/String Tables, animation, Enhanced Input and dependency migration |
+| [Blueprint](Docs/Tools/blueprint_tools.md) | 13 | `blueprint_search` | Asset structure, typed CDO paths, inherited skeletal defaults and compilation |
+| [Asset](Docs/Tools/project_tools.md) | 26 | `asset_search` | Asset management, typed property paths, FText/String Tables, animation, Enhanced Input and migration |
 | [Actor / Editor](Docs/Tools/editor_tools.md) | 18 | Direct | Actor inspection/editing, editor state, logs, opening assets/levels and explicit saves |
 | [Blueprint Node](Docs/Tools/node_tools.md) | 8 | Direct | Graph nodes, events, variables and connections |
 | [Project / AI](Docs/Tools/project_tools.md#ai--asset-reading) | 6 | Direct | Reflected properties, DataAsset/Behavior Tree/Blackboard/StateTree reads and legacy input mappings |
@@ -59,7 +59,7 @@ The repository [mcp.json](mcp.json) is a template, not an auto-discovered client
 ## Read-Only Mode
 
 Set `UNREAL_MCP_READ_ONLY=1` for project learning, review, or reverse engineering.
-This retains 50 query operations as **29 grouped tools** or **50 direct tools**
+This retains 53 query operations as **29 grouped tools** or **53 direct tools**
 before category filtering. Write endpoints are absent. Authoring uses `0` (or unset).
 
 ## Category Filtering

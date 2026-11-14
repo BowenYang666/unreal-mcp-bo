@@ -25,6 +25,51 @@ public:
 };
 
 USTRUCT()
+struct FMCPAnimationTestAppearance
+{
+    GENERATED_BODY()
+    UPROPERTY(EditAnywhere, Category="Test")
+    TArray<FLinearColor> Colors;
+    UPROPERTY(EditAnywhere, Category="Test")
+    FName SizeParameter;
+    UPROPERTY(EditAnywhere, Category="Test", meta=(ClampMin="0.01"))
+    float SizeMultiplier = 1;
+    UPROPERTY(EditAnywhere, Category="Test")
+    FName BrightnessParameter;
+    UPROPERTY(EditAnywhere, Category="Test")
+    float BrightnessMultiplier = 3;
+};
+
+UCLASS(NotBlueprintable, Hidden, meta=(MCPNiagaraAppearanceNotifyAuthoringSafe="true"))
+class UMCPAnimationAppearanceTestNotify : public UAnimNotify
+{
+    GENERATED_BODY()
+public:
+    UMCPAnimationAppearanceTestNotify() { bIsNativeBranchingPoint = true; bShouldFireInEditor = false; }
+    UPROPERTY(EditAnywhere, Category="Test")
+    TObjectPtr<UNiagaraSystem> Template;
+    UPROPERTY(EditAnywhere, Category="Test")
+    FName SocketName;
+    UPROPERTY(EditAnywhere, Category="Test")
+    bool bAttached = true;
+    UPROPERTY(EditAnywhere, Category="Test")
+    bool bAbsoluteScale = false;
+    UPROPERTY(EditAnywhere, Category="Test")
+    FVector LocationOffset = FVector::ZeroVector;
+    UPROPERTY(EditAnywhere, Category="Test")
+    FRotator RotationOffset = FRotator::ZeroRotator;
+    UPROPERTY(EditAnywhere, Category="Test", meta=(ClampMin="0.01"))
+    FVector Scale = FVector::OneVector;
+    UPROPERTY(EditAnywhere, Category="Test")
+    FMCPAnimationTestAppearance Appearance;
+    UPROPERTY()
+    int32 HiddenSentinel = 73;
+    static inline int32 CallCount = 0;
+    static inline float DeliveredSize = 0;
+    virtual void BranchingPointNotify(FBranchingPointNotifyPayload& Payload) override;
+};
+
+USTRUCT()
 struct FMCPAssetPropertyTestStats
 {
     GENERATED_BODY()
@@ -93,6 +138,18 @@ public:
     TMap<TEnumAsByte<EPhysicalSurface>, FMCPImpactTestSurface> Surfaces;
 };
 
+USTRUCT(BlueprintType)
+struct FMCPAssetPropertyTestUpgrade
+{
+    GENERATED_BODY()
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Test", meta=(ClampMin="0"))
+    int32 Cost = 0;
+    UPROPERTY()
+    float DamageMultiplier = 1;
+    UPROPERTY()
+    float FireRateMultiplier = 1;
+};
+
 USTRUCT()
 struct FMCPAssetTextTestBranch
 {
@@ -105,12 +162,78 @@ struct FMCPAssetTextTestBranch
     int32 Cost = 17;
 };
 
+USTRUCT(BlueprintType)
+struct FMCPPropertyPathVortex
+{
+    GENERATED_BODY()
+    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Test")
+    bool bEnabled = true;
+    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Test", meta=(ClampMin="0", ClampMax="1", EditCondition="bEnabled"))
+    float PullOuterRadiusFraction = 1.0f / 3.0f;
+    UPROPERTY(EditAnywhere, Category="Test")
+    float PullPeakRadiusFraction = 0.3f;
+    UPROPERTY(EditAnywhere, Category="Test")
+    float CoreSlowRadiusFraction = 0.5f;
+    UPROPERTY()
+    float Hidden = 0.123456791f;
+};
+
+USTRUCT(BlueprintType)
+struct FMCPPropertyPathStage
+{
+    GENERATED_BODY()
+    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Test")
+    FMCPPropertyPathVortex Vortex;
+    UPROPERTY(EditAnywhere, Category="Test")
+    TArray<FMCPPropertyPathVortex> Samples;
+};
+
+USTRUCT(BlueprintType)
+struct FMCPPropertyPathTable
+{
+    GENERATED_BODY()
+    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Test")
+    TMap<int32, FMCPPropertyPathStage> A;
+    UPROPERTY(EditAnywhere, Category="Test")
+    TMap<FName, FMCPPropertyPathStage> Names;
+    UPROPERTY(EditAnywhere, Category="Test")
+    TMap<FString, FMCPPropertyPathStage> Labels;
+    UPROPERTY(EditAnywhere, Category="Test")
+    TMap<TEnumAsByte<EPhysicalSurface>, FMCPPropertyPathStage> Surfaces;
+    UPROPERTY(EditAnywhere, Category="Test")
+    TArray<FMCPPropertyPathStage> Rows;
+
+    FMCPPropertyPathTable()
+    {
+        A.Add(3); A.Add(4); A.Add(5);
+        A[4].Vortex.PullOuterRadiusFraction = 0.123456791f;
+        A[5].Vortex.PullOuterRadiusFraction = 0.987654328f;
+        A[3].Samples.AddDefaulted();
+        Names.Add(TEXT("Named")); Labels.Add(TEXT("literal.key[3]")); Surfaces.Add(SurfaceType1);
+        Rows.AddDefaulted(); Rows[0].Samples.AddDefaulted();
+    }
+};
+
+UCLASS(Blueprintable, BlueprintType)
+class UMCPPropertyPathModel : public UObject
+{
+    GENERATED_BODY()
+public:
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Test")
+    FMCPPropertyPathTable Stages;
+    UPROPERTY(EditDefaultsOnly, Category="Test")
+    TObjectPtr<UTexture2D> Texture;
+};
+
 UCLASS(NotBlueprintable, Hidden)
 class UMCPAssetPropertyTestAsset : public UDataAsset
 {
     GENERATED_BODY()
 
 public:
+    UPROPERTY(EditAnywhere, Category="Test")
+    FMCPPropertyPathTable Stages;
+
     UPROPERTY(EditAnywhere, Category="Test")
     FText DisplayName;
 
@@ -122,6 +245,9 @@ public:
 
     UPROPERTY(EditDefaultsOnly, Category="Test")
     TArray<FMCPAssetPropertyTestBulletHits> HitGroups;
+
+    UPROPERTY(EditDefaultsOnly, Category="Test")
+    TArray<FMCPAssetPropertyTestUpgrade> UpgradeStages;
 
     UPROPERTY(EditDefaultsOnly, Category="Test", meta=(EditCondition="Enabled"))
     FMCPAssetPropertyTestStats ConditionalStats;

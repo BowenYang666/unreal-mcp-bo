@@ -47,6 +47,10 @@ TSharedPtr<FJsonObject> FUnrealMCPProjectCommands::HandleCommand(const FString& 
 	{
 		return UnrealMCPAssetProperties::Write(Params);
 	}
+	else if (CommandType == TEXT("append_data_asset_struct_array"))
+	{
+		return UnrealMCPAssetProperties::AppendStructArray(Params);
+	}
 	else if (CommandType == TEXT("read_data_asset"))
     {
         return HandleReadDataAsset(Params);

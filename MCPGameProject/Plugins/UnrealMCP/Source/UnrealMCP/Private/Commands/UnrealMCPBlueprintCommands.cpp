@@ -983,6 +983,9 @@ TSharedPtr<FJsonObject> FUnrealMCPBlueprintCommands::HandleSetBlueprintProperty(
         return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing 'property_name' parameter"));
     }
 
+    if (PropertyName.Contains(TEXT(".")) || PropertyName.Contains(TEXT("[")) || PropertyName.Contains(TEXT("{")))
+        return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Legacy setter accepts one top-level field only. Use read_blueprint_property_paths then patch_blueprint_property_paths with field strings and explicit {key:...}/{index:...} steps; do not round-trip an entire ExportText table."));
+
     // Find the blueprint
     UBlueprint* Blueprint = FUnrealMCPCommonUtils::FindBlueprint(BlueprintName);
     if (!Blueprint)

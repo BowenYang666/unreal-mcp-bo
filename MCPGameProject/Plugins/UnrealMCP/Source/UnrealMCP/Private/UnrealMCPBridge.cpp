@@ -343,10 +343,16 @@ FString UUnrealMCPBridge::ExecuteCommandOnGameThread(const FString& CommandType,
                 ResultJson->SetStringField(TEXT("message"), TEXT("pong"));
             }
             else if (CommandType == TEXT("read_blueprint_component_defaults")) ResultJson = UnrealMCPComponentDefaults::Read(Params);
+            else if (CommandType == TEXT("read_blueprint_property_paths")) ResultJson = UnrealMCPAssetProperties::ReadPaths(Params, true);
+            else if (CommandType == TEXT("patch_blueprint_property_paths")) ResultJson = UnrealMCPAssetProperties::PatchPaths(Params, true);
+            else if (CommandType == TEXT("read_asset_property_paths")) ResultJson = UnrealMCPAssetProperties::ReadPaths(Params, false);
+            else if (CommandType == TEXT("patch_asset_property_paths")) ResultJson = UnrealMCPAssetProperties::PatchPaths(Params, false);
             else if (CommandType == TEXT("set_blueprint_skeletal_component_defaults")) ResultJson = UnrealMCPComponentDefaults::Write(Params);
             else if (CommandType == TEXT("read_data_asset_text_references")) ResultJson = UnrealMCPAssetProperties::ReadText(Params);
             else if (CommandType == TEXT("bind_data_asset_text_references")) ResultJson = UnrealMCPAssetProperties::BindText(Params);
             else if (CommandType == TEXT("read_animation_asset")) ResultJson = UnrealMCPAnimation::Read(Params);
+            else if (CommandType == TEXT("read_montage_notify_properties")) ResultJson = UnrealMCPAnimation::ReadNotifyProperties(Params);
+            else if (CommandType == TEXT("patch_montage_notify_properties")) ResultJson = UnrealMCPAnimation::PatchNotifyProperties(Params);
             else if (CommandType == TEXT("set_anim_sequence_additive")) ResultJson = UnrealMCPAnimation::SetAdditive(Params);
             else if (CommandType == TEXT("add_montage_native_notify")) ResultJson = UnrealMCPAnimation::AddNotify(Params);
             else if (CommandType == TEXT("read_input_mapping_context")) ResultJson = UnrealMCPEnhancedInput::Read(Params);
@@ -447,6 +453,7 @@ FString UUnrealMCPBridge::ExecuteCommandOnGameThread(const FString& CommandType,
                      CommandType == TEXT("create_data_asset") ||
                      CommandType == TEXT("create_physical_material") ||
                      CommandType == TEXT("set_asset_properties") ||
+                     CommandType == TEXT("append_data_asset_struct_array") ||
                      CommandType == TEXT("read_data_asset") ||
                      CommandType == TEXT("get_class_properties") ||
                      CommandType == TEXT("read_behavior_tree") ||
@@ -585,11 +592,15 @@ FString UUnrealMCPBridge::ExecuteCommandOnGameThread(const FString& CommandType,
                 if (NiagaraCommand || CommandType.Contains(TEXT("string_table")) || CommandType == TEXT("duplicate_asset") || CommandType == TEXT("set_material_instance_parameters")
                     || CommandType == TEXT("read_input_mapping_context") || CommandType == TEXT("append_input_mapping_context_mappings")
                     || CommandType == TEXT("read_animation_asset") || CommandType == TEXT("set_anim_sequence_additive") || CommandType == TEXT("add_montage_native_notify")
+                    || CommandType == TEXT("read_montage_notify_properties") || CommandType == TEXT("patch_montage_notify_properties")
                     || CommandType == TEXT("read_blueprint_component_defaults") || CommandType == TEXT("set_blueprint_skeletal_component_defaults")
+                    || CommandType == TEXT("read_blueprint_property_paths") || CommandType == TEXT("patch_blueprint_property_paths")
+                    || CommandType == TEXT("read_asset_property_paths") || CommandType == TEXT("patch_asset_property_paths")
                     || CommandType == TEXT("read_data_asset_text_references") || CommandType == TEXT("bind_data_asset_text_references")
                     || CommandType == TEXT("delete_material_expression") || CommandType == TEXT("add_emitter_to_system")
                     || CommandType == TEXT("reparent_widget") || CommandType == TEXT("set_widget_preview_settings") || CommandType == TEXT("get_widget_preview_settings")
                     || CommandType == TEXT("set_asset_properties") || CommandType == TEXT("create_data_asset")
+                    || CommandType == TEXT("append_data_asset_struct_array")
                     || CommandType == TEXT("create_physical_material") || CommandType == TEXT("set_material_physical_material")
                     || CommandType == TEXT("set_component_physical_material") || CommandType == TEXT("set_component_property")
                     || CommandType == TEXT("plan_asset_migration") || CommandType == TEXT("execute_asset_migration")

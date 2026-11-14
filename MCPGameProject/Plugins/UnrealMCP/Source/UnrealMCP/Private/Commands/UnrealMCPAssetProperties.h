@@ -12,9 +12,14 @@ namespace UnrealMCPAssetProperties
     TSharedPtr<FJsonObject> CreatePhysicalMaterial(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> Read(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> Write(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> AppendStructArray(const TSharedPtr<FJsonObject>& Params);
+    TSharedPtr<FJsonObject> ReadPaths(const TSharedPtr<FJsonObject>& Params, bool BlueprintTarget);
+    TSharedPtr<FJsonObject> PatchPaths(const TSharedPtr<FJsonObject>& Params, bool BlueprintTarget);
     TSharedPtr<FJsonObject> ReadText(const TSharedPtr<FJsonObject>& Params);
     TSharedPtr<FJsonObject> BindText(const TSharedPtr<FJsonObject>& Params);
 #if WITH_DEV_AUTOMATION_TESTS
     void SetTextSaveFailureForTests(bool Fail);
+    void SetArrayAppendSaveFailureForTests(bool Fail);
+    void SetPropertyPathFailuresForTests(bool Compile, bool Save);
 #endif
 }

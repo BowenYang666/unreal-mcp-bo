@@ -25,6 +25,109 @@ do not create a second Legacy mapping as an Enhanced Input workaround.
 - `key` (string) - Key or axis to bind (e.g. "SpaceBar", "Gamepad_FaceButton_Bottom")
 - `input_type` (string, optional) - `"Action"` or `"Axis"` (default: `"Action"`)
 
+## Typed Property Paths
+
+Four operations share one reflected path resolver, value codec, condition checker
+and binary preservation core. Target lifecycle is kept separate: DataAsset / exact
+allowlisted PhysicalMaterial instances belong to **Asset**; ordinary Blueprint
+generated-class default objects belong to **Blueprint**. Independent category and
+read-only filters still apply. The Blueprint adapter does not depend on GameplayAbility
+or project class names. Animation, Widget, Level and function-library Blueprints,
+arbitrary UObjects and instanced subobject writes require specialized editors.
+
+This addition passed maintenance UE5.7.4 native authoring, independent cold load,
+106 Python tests and actual public grouped MCP on 2026-11-13. Subsequently authorized
+**NF deployment passed matching DLL/native/cold/public read acceptance**; SkillTest
+source was subsequently copied at the user's request, with build/restart deferred.
+Its existing DLL is unchanged and does not yet provide these operations. Clients must reconnect;
+discovery alone does not update DLLs. NF production GA values were only read, not edited.
+Old DataAsset whole-value, FText, Notify and component-default contracts remain.
+
+### read_asset_property_paths
+
+Required: `asset_path`, `paths` (0..64 arrays). Exact `/Game/...` package path.
+For Blueprint CDOs use [read_blueprint_property_paths](blueprint_tools.md#read_blueprint_property_paths)
+under `blueprint_search`, not this Asset operation or DataAsset `structured=true`.
+
+Every path is an ordered array of exact field-name strings and explicit selectors:
+
+```json
+{
+  "asset_path": "/Game/Data/DA_Test",
+  "paths": [
+    ["Stages", "A", {"key": 3}, "Vortex", "PullOuterRadiusFraction"],
+    ["Stages", "Rows", {"index": 0}, "Samples", {"index": 0}, "PullOuterRadiusFraction"]
+  ]
+}
+```
+
+`{"key":3}` means an existing integer Map key, not an array index or fourth item.
+`{"index":0}` means an existing array element, never a Map key. Integer, Enum,
+Name and String Map keys use their actual JSON types; enums use canonical native
+names. String keys such as `literal.key[3]` are literal, not parsed as path syntax.
+Native-equivalent Name aliases normalize to the actual stored key; duplicate and
+overlapping selections reject. Structs, Maps and arrays compose up to 16 steps;
+existing containers are bounded to 1024 elements. No implicit growth/insertion,
+deletion/reordering, key coercion from string to integer, or UObject traversal.
+
+Use `paths=[]` to discover up to 64 editable roots; select a struct/Map/array to
+inspect its schema and `traversable` status, then select a leaf. Selected Maps
+expose `existing_keys`; arrays expose `count`. Ordinary struct/container replacement
+is not a leaf patch, even when traversal is possible. Hidden/noneditable fields
+stay protected. `BlueprintReadOnly` does not itself mean editor defaults are read-only.
+
+Returns `property_paths_contract=1`, actual target kind/class/object/Outer, Blueprint
+GUID/parent when applicable, per-path canonical steps, typed values/schema,
+`writable`, restrictions and `failed_step` for unsupported paths. Missing/invalid
+paths yield explicit `complete=false` and `baseline=null`, not a guessed value.
+Container inspection can be complete but non-writable. Scoped baseline includes
+selected canonical paths, exact stored-root binary witnesses, inherited defaults,
+owned-object witnesses and saved-file bytes. No ExportText float re-parsing is used.
+Raw source samples are never restore instructions. Reads do not mutate/compile/save.
+
+### patch_asset_property_paths
+
+Required: `asset_path`, `expected_baseline`, `changes` (1..64 exact `{path,value}`
+rows). Read the same selected paths first. Defaults `dry_run=true`, `save=false`.
+Discover through `asset_search` and use the returned write endpoint.
+
+```json
+{
+  "asset_path": "/Game/Data/DA_Test",
+  "expected_baseline": "<reader baseline for these exact paths>",
+  "changes": [
+    {"path": ["Stages", "A", {"key": 3}, "Vortex", "PullOuterRadiusFraction"], "value": 0.5}
+  ],
+  "dry_run": true,
+  "save": false
+}
+```
+
+Supported leaves use the shared typed codec: Bool, bounded finite numeric/enum,
+Name/String, compatible saved asset references, registered GameplayTag and native
+Vector/Rotator/Color values. Arbitrary ordinary-struct/container replacement and
+FText history changes stay with specialized tools. Requests are bounded to 64KiB
+by Python and 64Ki characters natively; values and schema traversal are also bounded.
+
+Every root is staged before mutation. Validate the entire batch, metadata ranges,
+reference classes/dirty dependencies, duplicate/overlap and final merged EditConditions.
+Missing keys/indices never allocate. Same values are a clean no-op, even with save.
+Dirty target, stale exact selection/identity, PIE/simulation/save/GC/modal/slow-task/
+asset compilation conditions refuse. Apply uses one transaction with chained native
+property notifications; optional save targets only the selected asset. Blueprint
+uses the corresponding adapter below to compile and re-resolve its CDO after
+reinstancing. Blueprint targets with known derived Blueprint classes are refused:
+their implicit default propagation requires a separate authorized hierarchy edit.
+
+Unspecified values, all other Map items, references and float bits are compared
+against staged binary-root witnesses after edit/compile and again after save;
+parent and owned-object witnesses must remain unchanged. Receipts retain actual
+before/proposed/after, `modified`, `compiled`, `saved`, `package_dirty`, `stage`
+and `existing_data_preserved`. Compile/save/readback failure can leave real draft
+or saved changes; no fake rollback, Save All or automatic write retry. Timeout is
+unknown execution state. An editor-side custom callback or unsupported layout that
+changes protected data fails readback rather than being silently normalized.
+
 ## DataAsset Text References
 
 Two **Asset** operations; grouped by default, original names in direct mode.
@@ -122,14 +225,20 @@ hashes unchanged and zero dirty packages. No NF T1/T2/T3 or translation was edit
 
 ## Animation Assets
 
-Three **Asset** operations; grouped by default, original names in direct mode.
+Five **Asset** operations; grouped by default, original names in direct mode.
 `MCP_ASSET_ENABLED=0` hides all
-three; read-only mode retains only `read_animation_asset`. Requires the matching
+five; read-only mode retains `read_animation_asset` and `read_montage_notify_properties`. Requires the matching
 native plugin, including the AnimationBlueprintLibrary module dependency.
-**Deployed to SkillTest and NF on 2026-11-03, UE5.7.4.** SkillTest's native
+**The original three operations were deployed to SkillTest and NF on 2026-11-03, UE5.7.4.** SkillTest's native
 isolated authoring/playback/cold tests and configured public smoke passed; NF's
 transient reader plus complete four-asset read/preview/refusal smoke passed
 without production writes. Python schema visibility alone does not update DLLs.
+The two existing-Notify parameter operations below are a separate maintenance-source
+extension. Maintenance native authoring, independent cold load and real public MCP
+acceptance passed on 2026-11-13. Subsequently authorized NF/SkillTest matching DLL
+builds, native regressions, normal GUI startup and project-bound public read smoke
+also passed. Existing production configuration was preserved; NF four-layer visual
+playback was not replayed. Reconnect existing MCP clients for the updated registry.
 
 ### read_animation_asset
 
@@ -261,6 +370,86 @@ configuration, Undo/Redo, failure/negative paths and independent full cold load
 passed. Public stdio read/preview/save/refusal/no-op workflows passed on new
 repository __Dev copies. This does not validate NF's Cannon class, release time,
 muzzle/target snapshot/cooldown behavior or game integration.
+
+### read_montage_notify_properties
+
+Required: exact Montage package `asset_path`, existing hyphenated `event_guid`.
+Discover with `asset_search(tool="read_montage_notify_properties")`, then use
+the returned read endpoint. This is a separate `notify_properties_contract=1`,
+not permission to write a partial legacy animation snapshot.
+
+The finite adapter accepts the exact registered native class
+`/Script/NodeFall.NFAnimNotify_PlayNiagaraAppearance`, without a NodeFall module
+dependency. Other direct native UAnimNotify subclasses must explicitly opt in
+with `MCPNiagaraAppearanceNotifyAuthoringSafe="true"`. Every call validates
+the required reflected field types/editability; class names or metadata alone
+cannot bypass a different schema. Blueprint/NotifyState/derived class loading,
+shared Notify instances, wrong Outer, missing/duplicate event GUIDs, unsupported
+stored fields and other incomplete event data refuse. No arbitrary UObject editor.
+
+Returns actual `notify_class`, `object_path`, `outer_path`, reviewed `event_guid`,
+`editable_fields` with native types/current values, full reflected authoring scope,
+bounded serialized protection witnesses, saved-file hash and dedicated `baseline`.
+The ordinary `read_animation_asset` remains partial for this custom class. Reads
+do not create, execute, dirty or save a Notify. Read complete spill files.
+
+### patch_montage_notify_properties
+
+Required: `asset_path`, `event_guid`, `expected_class`, `expected_outer`,
+`expected_baseline`, `changes`. Identity and baseline come from the dedicated
+reader above, never from row indices or the legacy reader. Optional defaults:
+`dry_run=true`, `save=false`.
+
+```json
+{
+  "asset_path": "/Game/Animations/AM_Attack",
+  "event_guid": "<existing reader GUID>",
+  "expected_class": "<reader notify_class>",
+  "expected_outer": "<reader outer_path>",
+  "expected_baseline": "<dedicated reader baseline>",
+  "changes": [
+    {"path": "Template", "value": "/Game/VFX/NS_Muzzle.NS_Muzzle"},
+    {"path": "SocketName", "value": "Muzzle"},
+    {"path": "bAttached", "value": true},
+    {"path": "bAbsoluteScale", "value": true},
+    {"path": "Scale", "value": {"X": 1, "Y": 1, "Z": 1}},
+    {"path": "Appearance.SizeParameter", "value": "User.Size"},
+    {"path": "Appearance.SizeMultiplier", "value": 0.1}
+  ]
+}
+```
+
+Paths are a finite allowlist: the seven root fields `Template`, `SocketName`,
+`bAttached`, `bAbsoluteScale`, `LocationOffset`, `RotationOffset`, `Scale`, plus
+`Appearance.SizeParameter` and `Appearance.SizeMultiplier`. Vector values are
+`{X,Y,Z}`, Rotators `{Pitch,Yaw,Roll}`; no partial vector components, whole
+Appearance replacement, colors/brightness writer, array edits or object traversal.
+Omitted colors, brightness, offsets and hidden data are preserved.
+
+Require 1..32 unique `{path,value}` rows and at most 64Ki request characters.
+Typed staged-root copies validate the entire batch before mutation, including
+native clamps, finite numbers, reference types and final merged values. Template
+must be a saved NiagaraSystem, Scale components and size multiplier at least
+0.01; a non-None size name must be an existing exposed `User.*` Float. None
+requires multiplier 1. This validates the receiver declaration, not whether all
+emitter graphs actually consume it or whether the chosen socket exists at runtime.
+
+Dirty target/Skeleton/Template, stale identity/baseline, unsupported fields and
+busy PIE/simulation/save/GC/compilation/modal conditions refuse. Preview changes
+no objects; same values are a clean no-op even with `save=true`. Apply uses one
+transaction on Montage and Notify, property notifications and native cache refresh.
+GUID/order/time/track/tick/filter data, other Notify object identities/configuration,
+Slot/Segments/Sections/Blend/Skeleton/Sequence references and unspecified stored
+Notify fields are checked after apply and optional target-only save. Serialized
+witnesses are read-only evidence, never ImportText input or restore instructions.
+
+Receipts include before/proposed/actual after, modified/saved/package_dirty/stage
+and existing_data_preserved. Save/readback failures may leave an applied draft or
+saved changes; no fake rollback or retry. Timeout means unknown execution state.
+No creation, retiming, Add restrictions relaxation, Save All, CDO mutation, shared
+Niagara default edits or production asset changes are implied. Native cold-load
+and runtime parameter delivery are separate verification gates; NF four-layer
+visual behavior is not established by Python tests or stored parameter readback.
 
 ## Enhanced Input Assets
 
@@ -591,6 +780,72 @@ This reader does not follow object references or mutate the target. Bounds:
 narrower path when a large value cannot be represented. Legacy reflection reads
 remain available for other asset classes and unsupported DataAsset fields.
 
+### append_data_asset_struct_array
+
+Default-construct new items in an existing DataAsset's ordinary struct array, then
+patch only editable fields of those new items. This separate **Asset write** operation
+is absent in read-only mode; it does not relax whole-struct/whole-array replacement.
+Use the matching updated native plugin. Python discovery alone is not deployment.
+
+First call `get_class_properties(asset_path=..., structured=true,
+property_paths=["BaseLevels"])`. On supported arrays, the selected property includes
+`array_append` with contract1, operation, count/limits, native defaults, editable
+relative fields and baseline. Existing item values, including noneditable members,
+are read-only evidence. `writable=false` still means whole-value replacement is
+unsupported; the additional append contract concerns safe default construction.
+Its availability does not bypass category permissions or the clean/idle write guard.
+
+```text
+asset_search(tool="append_data_asset_struct_array")
+asset_call_write(tool="append_data_asset_struct_array", arguments={
+  "asset_path":"/Game/__Dev/Example/DA_Upgrades",
+  "array_path":"BaseLevels",
+  "expected_baseline":"<array_append.baseline from the current read>",
+  "items":[{"Cost":75},{"Cost":100}],
+  "dry_run":true,
+  "save":false
+})
+```
+
+Use the discovered call_tool/schema and actual identities, not this placeholder
+baseline. Each item object maps relative new-item property paths to typed values;
+an empty object uses native defaults. Hidden/readonly fields cannot be supplied,
+even with their default values. Existing items and their hidden data are preserved.
+This solves empty-array initialization without accepting arbitrary UObject edits,
+changing game UPROPERTY flags or treating an out-of-range index as an append.
+
+- Only existing DataAsset instances; no Blueprint classes/CDOs/redirectors or other
+  asset families. Only editable non-fixed ordinary struct arrays with fully supported
+  stored field types; sets, instanced/static/unsupported storage remain rejected.
+- 1..64 new items, up to 64 relative patches per item, at most1024 total items;
+  256KiB request and bounded traversal/snapshot sizes. No removal/truncation/replace.
+- Defaults `dry_run=true`, `save=false`. Require the exact array baseline, covering
+  class/path/element type, existing root including hidden values, defaults/schema and
+  saved file hash. Old baselines cannot append twice. Dirty assets are refused even
+  without saving; invalid last rows, overlaps, hidden fields and false/unsupported
+  EditConditions reject the entire request before mutation.
+- A temporary root copy receives native default construction and typed leaf edits;
+  sibling conditions validate the final staged batch, not patch order. Apply uses one
+  Undo transaction. All stored asset-root witnesses are read back before optional
+  target-only saving and after save. Failure retains actual modified/saved/dirty,
+  before/after, old/new counts and stage. Saved=false is not rollback.
+- Append is not idempotent on a newly read baseline. After transport timeout/reset,
+  inspect current items and output before any further action; never blindly resend.
+  Oversized results retain truthful metadata and a full JSON path; read that file.
+
+2026-11-13 maintenance-project verification: controlled red for missing capability,
+empty-to-two Cost75/100, hidden multiplier defaults1, existing nondefault hidden value
+preservation, illegal-member atomic refusal, preview/dirty/stale, Undo/Redo, save-fault
+disk protection/recovery, conditional nested-array construction and explicit independent
+cold snapshot all passed. Eight shared codec/surface regressions and two independent
+scalar/BP persistence checks passed; 102 Python tests passed. Actual grouped MCP on
+maintenance port13092 created/saved a fresh __Dev asset, previewed, rejected hidden
+fields atomically, applied/saved75/100, read back defaults and rejected stale replay,
+with unchanged context/dirty0. The own test editor closed normally saved0. A GUI
+Target-upgrade prompt was dismissed without changing build settings; unattended
+maintenance startup completed the public check. No NF/SkillTest testing, deployment,
+editor control or business-asset writes were performed after fix authorization.
+
 ### set_asset_properties
 
 Patch one existing `UDataAsset`/`UPrimaryDataAsset` instance, including instances
@@ -626,7 +881,8 @@ Supported values and boundaries:
   `[-9007199254740991, 9007199254740991]`. No silent integer truncation.
 - A struct value replaces all its fields and must supply every field. Use a
   dotted path for partial edits. An array value replaces the array; `[index]`
-  edits an existing element. No append/remove operations in v1. No traversal
+  edits an existing element. This operation does not append/remove; the separate
+  [struct-array append](#append_data_asset_struct_array) contract above default-constructs new items. No traversal
   through object references; editing a reference never edits the referenced asset.
 - Maps use a complete array of `{"key": typed_key, "value": typed_value}` entries.
   `[]` clears the map; single-key property paths are not supported. Hashable enum,

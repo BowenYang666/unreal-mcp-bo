@@ -2,7 +2,7 @@
 
 This document provides detailed information about the Blueprint tools available in the Unreal MCP integration.
 
-In default grouped mode these 11 Blueprint asset operations are internal names:
+In default grouped mode these 13 Blueprint asset operations are internal names:
 use `blueprint_search(tool="<operation>")`, then the returned `call_tool` with
 `tool` and `arguments` matching `input_schema`. Reuse discovered contracts.
 Examples below describe the underlying operation/payload, not a directly exposed
@@ -15,6 +15,62 @@ See the [calling guide](README.md#grouped-mode-default).
 Blueprint tools allow you to create and manipulate Blueprint assets in Unreal Engine, including creating new Blueprint classes, adding components, setting properties, and spawning Blueprint actors in the level.
 
 ## Blueprint Tools
+
+### read_blueprint_property_paths
+
+Required: exact `blueprint_path`, `paths` (0..64 explicit step arrays). Discover
+with `blueprint_search(tool="read_blueprint_property_paths")`, then use its read
+endpoint. Ordinary Blueprint CDOs, including custom reflected native/Blueprint
+data models, use the [shared typed property-path contract](project_tools.md#typed-property-paths).
+This is not the DataAsset structured reader, graph editor or arbitrary UObject writer.
+
+Example input:
+
+```json
+{
+  "blueprint_path": "/Game/Abilities/GA_Test",
+  "paths": [["Stages", "A", {"key": 3}, "Vortex", "PullOuterRadiusFraction"]]
+}
+```
+
+Use `paths=[]` to discover editable roots. Field names, typed Map keys and array
+indices are distinct steps; browse schema/existing keys before selecting leaves.
+Returns actual Blueprint/generated class/CDO/Outer/parent/GUID identity, typed
+values, writable/restrictions, protected stored-root witnesses and a dedicated
+exact-selection baseline. Invalid paths are partial with null baseline. No play,
+graph execution, compilation, dirtying or saving. Read full spill files.
+
+### patch_blueprint_property_paths
+
+Required: `blueprint_path`, `expected_baseline`, `changes`; optional defaults
+`dry_run=true`, `save=false`. Discover under Blueprint, independently of Asset filters.
+
+```json
+{
+  "blueprint_path": "/Game/Abilities/GA_Test",
+  "expected_baseline": "<exact paths reader baseline>",
+  "changes": [{"path": ["Stages", "A", {"key": 3}, "Vortex", "PullOuterRadiusFraction"], "value": 0.5}]
+}
+```
+
+The shared core validates typed leaf patches, final conditions and stale/dirty
+state, then applies one transaction to this Blueprint/CDO. Compile this target
+outside the transaction and re-resolve its generated CDO before protected readback.
+Optional target-only save occurs only after verification. Parent and sibling
+defaults are not edited; targets that themselves have derived Blueprint classes
+are explicitly refused rather than implicitly propagating defaults. No container
+insert/delete/reorder, object traversal or whole ExportText round-trip. Native
+clamps and unsupported/custom layouts remain fail-closed. Failure may leave applied
+state; inspect modified/compiled/saved/stage/after. No-op never compiles or saves.
+
+Maintenance native/actual MCP/independent cold acceptance passed on 2026-11-13,
+including numeric/Name/String/Enum keys, struct/array combinations, parent/sibling
+isolation, bit preservation, conditions, Undo/Redo, compile/save fault and actual
+new instance consumption. NF deployment subsequently passed its matching DLL/native
+matrix/explicit cold load and real GA typed-path public read smoke. SkillTest source
+was copied, but build/restart was explicitly deferred; its old DLL remains unchanged.
+Existing clients must reconnect after their matching DLL update; no production GA patch
+or hierarchy propagation was executed during NF deployment.
 
 ### create_blueprint
 
@@ -306,6 +362,11 @@ Compile a Blueprint.
 ```
 
 ### set_blueprint_property
+
+Legacy **top-level** CDO setter. For nested custom data use the typed
+[reader](#read_blueprint_property_paths) and [patch](#patch_blueprint_property_paths)
+above. Do not feed a semantic dot/Map path into property_name or re-import an entire
+ExportText table just to change one leaf. Legacy success is not a compile/save receipt.
 
 Set a property on a Blueprint class default object.
 

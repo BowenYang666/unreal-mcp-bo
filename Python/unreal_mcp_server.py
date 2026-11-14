@@ -371,7 +371,9 @@ _read_only = os.environ.get("UNREAL_MCP_READ_ONLY", "").strip() in ("1", "true",
 
 _READ_ONLY_TOOLS = {
     "read_blueprint_component_defaults",
+    "read_blueprint_property_paths", "read_asset_property_paths",
     "read_animation_asset",
+    "read_montage_notify_properties",
     "read_data_asset_text_references",
     "read_input_mapping_context",
     "read_niagara_authoring",
@@ -449,8 +451,11 @@ _CATEGORY_TOOLS = {
     "cascade": {"read_cascade_system"},
     "asset": {
         "read_animation_asset", "set_anim_sequence_additive", "add_montage_native_notify",
+        "read_montage_notify_properties", "patch_montage_notify_properties",
+        "read_asset_property_paths", "patch_asset_property_paths",
         "read_data_asset_text_references", "bind_data_asset_text_references",
         "read_input_mapping_context", "append_input_mapping_context_mappings",
+        "append_data_asset_struct_array",
         "create_string_table", "read_string_table", "update_string_table_entries", "import_string_table_csv",
         "rename_asset", "move_asset", "duplicate_asset", "set_asset_properties", "create_data_asset", "create_physical_material",
         "plan_asset_migration", "execute_asset_migration", "get_asset_migration_status", "verify_asset_migration",
@@ -497,6 +502,7 @@ _CATEGORY_TOOLS = {
     },
     "blueprint": {
         "read_blueprint_component_defaults", "set_blueprint_skeletal_component_defaults",
+        "read_blueprint_property_paths", "patch_blueprint_property_paths",
         "create_blueprint", "add_component_to_blueprint", "set_component_property",
         "set_physics_properties", "compile_blueprint", "set_blueprint_property",
         "set_static_mesh_properties", "read_blueprint", "list_blueprints",

@@ -50,6 +50,148 @@ class AssetPropertiesTests(unittest.TestCase):
                 with self.assertRaises(ToolError):
                     search.fn(tool=name)
 
+    def test_property_paths_schema_typed_selectors_and_receipts(self):
+        steps = ["Stages", "A", {"key": 3}, "Vortex", "PullOuterRadiusFraction"]
+        for kind in ("asset", "blueprint"):
+            reader = self.tools.get_tool("read_" + kind + "_property_paths")
+            writer = self.tools.get_tool("patch_" + kind + "_property_paths")
+            self.assertIsNotNone(reader)
+            self.assertIsNotNone(writer)
+            identity = {kind + "_path": "/Game/Test"}
+            asyncio.run(reader.run(dict(**identity, paths=[steps]), context=Mock()))
+            self.connection.send_command.assert_called_with("read_" + kind + "_property_paths", dict(**identity, paths=[steps]))
+            arguments = dict(**identity, expected_baseline="baseline", changes=[{"path": steps, "value": 0.5}])
+            asyncio.run(writer.run(arguments, context=Mock()))
+            self.connection.send_command.assert_called_with("patch_" + kind + "_property_paths", dict(**arguments, dry_run=True, save=False))
+            self.connection.send_command.return_value = {"status": "error", "error": "Save failed", "result": {
+                "modified": True, "saved": False, "package_dirty": True, "stage": "save", "after": {"value": 0.5}}}
+            result = writer.fn(None, **arguments, dry_run=False, save=True)
+            self.assertTrue(result["modified"])
+            self.assertFalse(result["saved"])
+            self.assertEqual(result["after"], {"value": 0.5})
+        self.connection.reset_mock()
+        self.connection.send_command.side_effect = TimeoutError("timeout")
+        result = writer.fn(None, **arguments, dry_run=False)
+        self.assertEqual(result["execution_state"], "unknown")
+        self.assertNotIn("modified", result)
+        self.connection.send_command.assert_called_once()
+
+    def test_property_paths_filters_overflow_and_validation(self):
+        server = test_grouped_tools.GroupedServerTests().load_server()
+        module = sys.modules["unreal_mcp_server"]
+        payload = {"success": False, "property_paths_contract": 1, "modified": True, "compiled": True,
+                   "saved": False, "package_dirty": True, "stage": "save", "after": {"data": "x" * 26000}}
+        self.connection.send_command.return_value = {"status": "error", "error": "Save failed", "result": payload}
+        with tempfile.TemporaryDirectory() as directory, patch("tempfile.gettempdir", return_value=directory), patch.object(module, "spill_if_oversized", server.spill_if_oversized):
+            result = self.tools.get_tool("patch_blueprint_property_paths").fn(None, "/Game/BP", "baseline", [{"path": ["Value"], "value": 0.5}])
+            self.assertTrue(result["overflow"])
+            self.assertTrue(result["modified"])
+            self.assertTrue(result["compiled"])
+            self.assertFalse(result["saved"])
+            self.assertEqual(json.loads(Path(result["file_path"]).read_text(encoding="utf-8"))["after"], payload["after"])
+        self.connection.reset_mock()
+        invalid = self.tools.get_tool("patch_asset_property_paths").fn(None, "/Game/DA", "baseline", [{"path": ["Value"], "value": float("nan")}])
+        self.assertFalse(invalid["success"])
+        self.connection.send_command.assert_not_called()
+        fixture = test_grouped_tools.GroupedServerTests()
+        for mode in ("direct", "grouped"):
+            for readonly in (False, True):
+                for disabled in ((), ("asset",), ("blueprint",), ("project",)):
+                    tools = fixture.load_server(mode, readonly, disabled).mcp._tool_manager
+                    for kind in ("asset", "blueprint"):
+                        for prefix in ("read", "patch"):
+                            self.assert_available(tools, prefix + "_" + kind + "_property_paths", kind not in disabled and (not readonly or prefix == "read"), kind)
+
+    def test_montage_notify_properties_schema_defaults_and_unknown(self):
+        reader = self.tools.get_tool("read_montage_notify_properties")
+        writer = self.tools.get_tool("patch_montage_notify_properties")
+        self.assertIsNotNone(reader)
+        self.assertIsNotNone(writer)
+        identity = dict(asset_path="/Game/AM_Test", event_guid="12345678-1234-1234-1234-123456789abc")
+        self.assertEqual(reader.parameters["required"], ["asset_path", "event_guid"])
+        self.assertEqual(writer.parameters["required"], ["asset_path", "event_guid", "expected_class", "expected_outer", "expected_baseline", "changes"])
+        asyncio.run(reader.run(identity, context=Mock()))
+        self.connection.send_command.assert_called_with("read_montage_notify_properties", identity)
+        arguments = dict(**identity, expected_class="/Script/Test.Notify", expected_outer="/Game/AM_Test.AM_Test",
+                         expected_baseline="baseline", changes=[{"path": "Appearance.SizeMultiplier", "value": 0.1}])
+        asyncio.run(writer.run(arguments, context=Mock()))
+        self.connection.send_command.assert_called_with("patch_montage_notify_properties", dict(**arguments, dry_run=True, save=False))
+        self.connection.send_command.return_value = {"status": "error", "error": "Save failed", "result": {
+            "modified": True, "saved": False, "package_dirty": True, "stage": "save", "after": {"size": 0.1}}}
+        result = writer.fn(None, **arguments, dry_run=False, save=True)
+        self.assertTrue(result["modified"])
+        self.assertFalse(result["saved"])
+        self.assertEqual(result["after"], {"size": 0.1})
+        self.connection.reset_mock()
+        self.connection.send_command.side_effect = TimeoutError("timeout")
+        result = writer.fn(None, **arguments, dry_run=False)
+        self.assertEqual(result["execution_state"], "unknown")
+        self.assertNotIn("modified", result)
+        self.assertNotIn("saved", result)
+        self.connection.send_command.assert_called_once()
+
+    def test_montage_notify_properties_full_overflow(self):
+        server = test_grouped_tools.GroupedServerTests().load_server()
+        module = sys.modules["unreal_mcp_server"]
+        payload = {"success": False, "notify_properties_contract": 1, "modified": True, "saved": False,
+                   "package_dirty": True, "stage": "save", "event_guid": "guid", "after": {"evidence": "x" * 26000}}
+        self.connection.send_command.return_value = {"status": "error", "error": "Save failed", "result": payload}
+        with tempfile.TemporaryDirectory() as directory, patch("tempfile.gettempdir", return_value=directory), patch.object(module, "spill_if_oversized", server.spill_if_oversized):
+            result = self.tools.get_tool("patch_montage_notify_properties").fn(None, "/Game/AM", "guid", "class", "outer", "baseline", [{"path": "SocketName", "value": "Muzzle"}])
+            self.assertTrue(result["overflow"])
+            for key, value in payload.items():
+                if key != "after":
+                    self.assertEqual(result[key], value)
+            actual = json.loads(Path(result["file_path"]).read_text(encoding="utf-8"))
+            for key, value in payload.items():
+                self.assertEqual(actual[key], value)
+
+    def test_struct_array_append_schema_defaults_failure_and_timeout(self):
+        writer = self.tools.get_tool("append_data_asset_struct_array")
+        self.assertEqual(writer.parameters["required"], ["asset_path", "array_path", "expected_baseline", "items"])
+        self.assertEqual(writer.parameters["properties"]["items"]["type"], "array")
+        items = [{"Cost": 75}, {"Cost": 100}]
+        self.connection.send_command.return_value = {"status": "success", "result": {"success": True, "array_append_contract": 1, "modified": False, "saved": False}}
+        asyncio.run(writer.run({"asset_path": "/Game/DA_Test", "array_path": "BaseLevels", "expected_baseline": "baseline", "items": items}, context=Mock()))
+        self.connection.send_command.assert_called_once_with("append_data_asset_struct_array", {
+            "asset_path": "/Game/DA_Test", "array_path": "BaseLevels", "expected_baseline": "baseline", "items": items, "dry_run": True, "save": False})
+        self.connection.send_command.return_value = {"status": "error", "error": "Save failed", "result": {
+            "success": False, "array_append_contract": 1, "modified": True, "saved": False, "stage": "save", "package_dirty": True,
+            "old_count": 0, "new_count": 2, "after": {"count": 2}}}
+        result = writer.fn(None, "/Game/DA_Test", "BaseLevels", "baseline", items, False, True)
+        self.assertTrue(result["modified"])
+        self.assertFalse(result["saved"])
+        self.assertEqual(result["after"]["count"], 2)
+        self.connection.reset_mock()
+        self.connection.send_command.side_effect = TimeoutError("timeout")
+        result = writer.fn(None, "/Game/DA_Test", "BaseLevels", "baseline", items, False, True)
+        self.assertEqual(result["execution_state"], "unknown")
+        self.assertNotIn("modified", result)
+        self.assertNotIn("saved", result)
+        self.connection.send_command.assert_called_once()
+
+    def test_struct_array_append_overflow_and_permissions(self):
+        server = test_grouped_tools.GroupedServerTests().load_server()
+        module = sys.modules["unreal_mcp_server"]
+        payload = {"success": False, "array_append_contract": 1, "modified": True, "saved": False, "stage": "save",
+                   "package_dirty": True, "old_count": 0, "new_count": 2, "after": {"evidence": "x" * 26000}}
+        self.connection.send_command.return_value = {"status": "error", "error": "Save failed", "result": payload}
+        with tempfile.TemporaryDirectory() as directory, patch("tempfile.gettempdir", return_value=directory), patch.object(module, "spill_if_oversized", server.spill_if_oversized):
+            result = self.tools.get_tool("append_data_asset_struct_array").fn(None, "/Game/DA", "BaseLevels", "baseline", [{"Cost": 75}])
+            self.assertTrue(result["overflow"])
+            self.assertFalse(result["success"])
+            self.assertTrue(result["modified"])
+            self.assertEqual(result["new_count"], 2)
+            actual = json.loads(Path(result["file_path"]).read_text(encoding="utf-8"))
+            for key, value in payload.items():
+                self.assertEqual(actual[key], value)
+        fixture = test_grouped_tools.GroupedServerTests()
+        for mode in ("direct", "grouped"):
+            for readonly in (False, True):
+                for disabled in ((), ("asset",), ("project",)):
+                    tools = fixture.load_server(mode, readonly, disabled).mcp._tool_manager
+                    self.assert_available(tools, "append_data_asset_struct_array", "asset" not in disabled and not readonly)
+
     def test_text_references_schema_defaults_receipts_and_timeout(self):
         reader = self.tools.get_tool("read_data_asset_text_references")
         writer = self.tools.get_tool("bind_data_asset_text_references")
@@ -207,7 +349,7 @@ class AssetPropertiesTests(unittest.TestCase):
             for readonly in (False, True):
                 for disabled in ((), ("asset",), ("project",)):
                     tools = fixture.load_server(mode, readonly, disabled).mcp._tool_manager
-                    for name in ("read_animation_asset", "set_anim_sequence_additive", "add_montage_native_notify"):
+                    for name in ("read_animation_asset", "set_anim_sequence_additive", "add_montage_native_notify", "read_montage_notify_properties", "patch_montage_notify_properties"):
                         self.assert_available(tools, name, "asset" not in disabled and (not readonly or name.startswith("read")))
 
     def test_component_defaults_schema_and_truthful_receipts(self):

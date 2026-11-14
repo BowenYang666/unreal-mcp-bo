@@ -33,6 +33,41 @@ def register_blueprint_tools(mcp: FastMCP):
     """Register Blueprint tools with the MCP server."""
 
     @mcp.tool()
+    def read_blueprint_property_paths(ctx: Context, blueprint_path: str, paths: list[list]) -> dict:
+        """Inspect typed existing Blueprint CDO leaves, including nested Struct/Map/Array.
+
+        Example: blueprint_path='/Game/Abilities/GA_Test', paths=[['Stages','A',{'key':3},
+        'Vortex','PullOuterRadiusFraction']]. Exact field-name strings, {'key':typed_key}
+        and {'index':existing_index} are distinct steps; no guessed dot/index syntax.
+        Returns generated/parent/CDO identity, full protection scope, typed values,
+        per-path writable/restrictions and exact-selection baseline. No object traversal,
+        editor script execution, creation, compilation, dirtying or saving. Read spill
+        files fully. Unsupported paths are explained, not treated as absent values.
+        """
+        from tools.project_tools import call_property_path_command
+        return call_property_path_command("read_blueprint_property_paths", dict(blueprint_path=blueprint_path, paths=paths))
+
+    @mcp.tool()
+    def patch_blueprint_property_paths(ctx: Context, blueprint_path: str, expected_baseline: str,
+                                       changes: list[dict], dry_run: bool = True, save: bool = False) -> dict:
+        """Preview/patch selected editable Blueprint CDO leaves through the shared typed core.
+
+        Example: blueprint_path='/Game/Abilities/GA_Test', expected_baseline=<exact reader>,
+        changes=[{'path':['Stages','A',{'key':3},'Vortex','PullOuterRadiusFraction'],'value':0.5}].
+        Native/Blueprint reflected custom structs are supported by type, not game names.
+        Existing Map keys/array indices only; omitted values/float bits/references stay.
+        Dirty/stale/unsupported/busy targets reject before mutation. One transaction,
+        target compilation and re-resolved CDO readback; optional target-only save.
+        Defaults preview/no save; same values no-op. No arbitrary UObject/subobject
+        traversal, parent/sibling writes, graph editing or whole-table ImportText.
+        Compile/save/readback failure may retain changes; inspect modified/compiled/saved/
+        package_dirty/stage/after. Timeout means unknown; no automatic retry or Save All.
+        """
+        from tools.project_tools import call_property_path_command
+        return call_property_path_command("patch_blueprint_property_paths", dict(blueprint_path=blueprint_path,
+            expected_baseline=expected_baseline, changes=changes, dry_run=dry_run, save=save))
+
+    @mcp.tool()
     def read_blueprint_component_defaults(ctx: Context, blueprint_path: str) -> dict:
         """Read exact SkeletalMeshComponent defaults and proven local/inherited/native origins.
 
@@ -400,7 +435,12 @@ def register_blueprint_tools(mcp: FastMCP):
         property_value
     ) -> Dict[str, Any]:
         """
-        Set a property on a Blueprint class default object.
+        Legacy top-level Blueprint CDO setter, not a nested path editor.
+
+        Prefer read_blueprint_property_paths / patch_blueprint_property_paths for typed
+        custom structs, existing arrays and Map keys, preview/baseline/protected writes.
+        Never round-trip an entire ExportText table merely to modify one nested leaf.
+        Example of this legacy operation: property_name='SomeTopLevelProperty'.
         
         Args:
             blueprint_path: Name of the target Blueprint

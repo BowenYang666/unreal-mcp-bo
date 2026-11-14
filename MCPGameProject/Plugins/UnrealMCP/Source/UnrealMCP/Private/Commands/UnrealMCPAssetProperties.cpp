@@ -19,6 +19,15 @@
 #include "Misc/Paths.h"
 #include "Policies/CondensedJsonPrintPolicy.h"
 #include "Serialization/JsonSerializer.h"
+#include "Serialization/MemoryWriter.h"
+#include "Serialization/ObjectAndNameAsStringProxyArchive.h"
+#include "Serialization/StructuredArchive.h"
+#include "Engine/Blueprint.h"
+#include "Engine/BlueprintGeneratedClass.h"
+#include "Kismet2/BlueprintEditorUtils.h"
+#include "Kismet2/KismetEditorUtilities.h"
+#include "Framework/Application/SlateApplication.h"
+#include "UObject/UObjectHash.h"
 
 namespace UnrealMCPAssetProperties
 {
@@ -38,7 +47,7 @@ namespace
         {
             Data = FMemory::Malloc(Property->GetSize(), Property->GetMinAlignment());
             Property->InitializeValue(Data);
-            Property->CopyCompleteValue(Data, Source);
+            if (Source) Property->CopyCompleteValue(Data, Source);
         }
         ~FValueStorage()
         {
@@ -64,6 +73,8 @@ namespace
         FProperty* Leaf = nullptr;
         void* Address = nullptr;
         TArray<FConditionContext> Conditions;
+        TArray<FProperty*> Chain;
+        TArray<TSharedPtr<FJsonValue>> CanonicalPath;
     };
 
     bool AllowedTargetProperty(UObject* Asset, FProperty* Property)
@@ -176,23 +187,25 @@ namespace
                 || (CastField<FNumericProperty>(Property) && CastField<FNumericProperty>(Property)->IsInteger()));
     }
 
-    bool Supported(FProperty* Property, int32 Depth = 0)
+    bool Supported(FProperty* Property, int32 Depth = 0, bool RequireEditableFields = true)
     {
         if (Depth > MaxDepth || Property->ArrayDim != 1
             || Property->HasAnyPropertyFlags(CPF_InstancedReference | CPF_ContainsInstancedReference)) return false;
         if ((CastField<FObjectProperty>(Property) || CastField<FSoftObjectProperty>(Property))
             && (Property->HasMetaData(TEXT("AllowedClasses")) || Property->HasMetaData(TEXT("DisallowedClasses"))
                 || Property->HasMetaData(TEXT("MustImplement")) || Property->HasMetaData(TEXT("ExactClass")))) return false;
-        if (FArrayProperty* Array = CastField<FArrayProperty>(Property)) return Supported(Array->Inner, Depth + 1);
+        if (FArrayProperty* Array = CastField<FArrayProperty>(Property)) return Supported(Array->Inner, Depth + 1, RequireEditableFields);
         if (FMapProperty* Map = CastField<FMapProperty>(Property))
-            return SupportedMapKey(Map->KeyProp) && Supported(Map->ValueProp, Depth + 1);
+            return SupportedMapKey(Map->KeyProp) && Supported(Map->ValueProp, Depth + 1, RequireEditableFields);
         if (FStructProperty* Struct = CastField<FStructProperty>(Property))
         {
             if (Struct->Struct == FGameplayTag::StaticStruct() || Struct->Struct == FGameplayTagContainer::StaticStruct()) return true;
             bool HasFields = false;
             for (TFieldIterator<FProperty> Field(Struct->Struct); Field; ++Field)
             {
-                if (!Editable(*Field) || !Supported(*Field, Depth + 1)) return false;
+                if ((RequireEditableFields && !Editable(*Field))
+                    || (!RequireEditableFields && Field->HasAnyPropertyFlags(CPF_Transient | CPF_Deprecated))
+                    || !Supported(*Field, Depth + 1, RequireEditableFields)) return false;
                 HasFields = true;
             }
             return HasFields;
@@ -488,63 +501,118 @@ namespace
         return false;
     }
 
-    bool Resolve(UObject* Asset, const FString& Path, FResolved& Result, FString& Error, void* RootStorage = nullptr)
+    bool ResolveSteps(UObject* Asset, const TArray<TSharedPtr<FJsonValue>>& Steps, FResolved& Result, FString& Error,
+        void* RootStorage = nullptr, bool AllowStructArray = false, bool BlueprintTarget = false, int32* FailedStep = nullptr,
+        bool InspectContainer = false)
     {
-        if (Path.IsEmpty() || Path.Len() > 512) { Error = TEXT("Invalid property path"); return false; }
-        TArray<FString> Parts;
-        Path.ParseIntoArray(Parts, TEXT("."), false);
-        if (Parts.Num() > MaxDepth) { Error = TEXT("Property path too deep"); return false; }
+        if (Steps.IsEmpty() || Steps.Num() > 16) { Error = TEXT("Require 1..16 explicit field/index/key steps"); return false; }
         UStruct* Owner = Asset->GetClass();
         void* Container = Asset;
-        for (int32 PartIndex = 0; PartIndex < Parts.Num(); ++PartIndex)
+        FProperty* Property = nullptr;
+        void* Address = nullptr;
+        for (int32 StepIndex = 0; StepIndex < Steps.Num(); ++StepIndex)
         {
-            FString Name = Parts[PartIndex];
-            int32 ArrayIndex = INDEX_NONE;
-            int32 Bracket;
-            if (Name.FindChar(TEXT('['), Bracket))
+            if (FailedStep) *FailedStep = StepIndex;
+            const auto& Step = Steps[StepIndex];
+            if (!Step.IsValid()) { Error = TEXT("Null path step"); return false; }
+            if (Step->Type == EJson::String)
             {
-                const FString IndexText = Name.Mid(Bracket + 1, Name.Len() - Bracket - 2);
-                if (!Name.EndsWith(TEXT("]")) || IndexText.IsEmpty() || IndexText.Len() > 9
-                    || !IndexText.IsNumeric() || IndexText.Contains(TEXT(".")) || IndexText.Contains(TEXT("-"))
-                    || IndexText.Contains(TEXT("+")) || (IndexText.Len() > 1 && IndexText[0] == TEXT('0')))
-                { Error = TEXT("Array path must use a zero-based integer index"); return false; }
-                ArrayIndex = FCString::Atoi(*IndexText);
-                Name = Name.Left(Bracket);
+                const FString Name = Step->AsString();
+                if (!Owner) { Error = TEXT("Expected an explicit array {index:...} or Map {key:...} selector, not a field name"); return false; }
+                if (Name.IsEmpty() || Name.Len() >= NAME_SIZE) { Error = TEXT("Invalid exact field name"); return false; }
+                Property = FindFProperty<FProperty>(Owner, *Name);
+                if (!Property || Property->GetName() != Name || !Editable(Property) || Property->ArrayDim != 1)
+                { Error = TEXT("Unknown, noneditable or instanced property"); return false; }
+                if (Property->HasMetaData(TEXT("EditCondition"))) Result.Conditions.Add({Property, Owner, Container});
+                if (StepIndex == 0)
+                {
+                    if (!BlueprintTarget && !AllowedTargetProperty(Asset, Property)) { Error = TEXT("Property is not in the asset-type allowlist"); return false; }
+                    if (!Asset->CanEditChange(Property)) { Error = TEXT("Asset disallows editing this property"); return false; }
+                    Result.Root = Property;
+                }
+                Address = StepIndex == 0 && RootStorage ? RootStorage : Property->ContainerPtrToValuePtr<void>(Container);
+                Result.Chain.Add(Property);
+                Result.CanonicalPath.Add(MakeShared<FJsonValueString>(Name));
             }
-            FProperty* Property = FindFProperty<FProperty>(Owner, *Name);
-            if (!Property || Property->GetName() != Name || !Editable(Property) || Property->ArrayDim != 1)
-            { Error = TEXT("Unknown, noneditable or instanced property"); return false; }
-            if (Property->HasMetaData(TEXT("EditCondition"))) Result.Conditions.Add({Property, Owner, Container});
-            if (PartIndex == 0)
+            else if (Step->Type == EJson::Object && Step->AsObject()->Values.Num() == 1 && Property)
             {
-                if (!AllowedTargetProperty(Asset, Property)) { Error = TEXT("Property is not in the asset-type allowlist"); return false; }
-                if (!Asset->CanEditChange(Property)) { Error = TEXT("Asset disallows editing this property"); return false; }
-                Result.Root = Property;
+                const auto Selector = Step->AsObject();
+                if (Selector->HasField(TEXT("index")))
+                {
+                    auto* Array = CastField<FArrayProperty>(Property); double Index;
+                    if (!Array || !Selector->TryGetNumberField(TEXT("index"), Index) || !FMath::IsFinite(Index) || Index < 0 || Index > MAX_int32 || Index != FMath::FloorToDouble(Index))
+                    { Error = TEXT("Array selector requires {index:nonnegative_integer}; Map keys use {key:typed_value}"); return false; }
+                    FScriptArrayHelper Helper(Array, Address);
+                    if (Helper.Num() > MaxElements || !Helper.IsValidIndex(static_cast<int32>(Index))) { Error = TEXT("Array index out of range or array exceeds 1024 elements"); return false; }
+                    Address = Helper.GetRawPtr(static_cast<int32>(Index)); Property = Array->Inner;
+                    auto Canonical = MakeShared<FJsonObject>(); Canonical->SetNumberField(TEXT("index"), Index);
+                    Result.CanonicalPath.Add(MakeShared<FJsonValueObject>(Canonical));
+                }
+                else if (Selector->HasField(TEXT("key")))
+                {
+                    auto* Map = CastField<FMapProperty>(Property);
+                    if (!Map || !SupportedMapKey(Map->KeyProp)) { Error = TEXT("Map selector requires an integer/enum/name/string hashable key; no array-index fallback"); return false; }
+                    FValueStorage Key(Map->KeyProp, nullptr); int32 Budget = MaxValues;
+                    if (!Decode(Map->KeyProp, Key.Data, Selector->Values[TEXT("key")], Error, Budget)) { Error = TEXT("Map key type: ") + Error; return false; }
+                    FScriptMapHelper Helper(Map, Address);
+                    if (Helper.Num() > MaxElements) { Error = TEXT("Map exceeds 1024 entries"); return false; }
+                    const int32 Index = Helper.FindMapIndexWithKey(Key.Data);
+                    if (Index == INDEX_NONE) { Error = TEXT("Map key does not exist; implicit insertion is forbidden"); return false; }
+                    auto Canonical = MakeShared<FJsonObject>(); Canonical->SetField(TEXT("key"), Encode(Map->KeyProp, Helper.GetKeyPtr(Index), Error, Budget));
+                    if (!Error.IsEmpty()) return false;
+                    Result.CanonicalPath.Add(MakeShared<FJsonValueObject>(Canonical));
+                    Address = Helper.GetValuePtr(Index); Property = Map->ValueProp;
+                }
+                else { Error = TEXT("Selector requires exactly index or key"); return false; }
             }
-            void* Address = PartIndex == 0 && RootStorage ? RootStorage : Property->ContainerPtrToValuePtr<void>(Container);
-            if (ArrayIndex != INDEX_NONE)
+            else { Error = TEXT("A path starts with an exact field string; selectors contain exactly index or key"); return false; }
+            if (StepIndex == Steps.Num() - 1)
             {
-                FArrayProperty* Array = CastField<FArrayProperty>(Property);
-                if (!Array) { Error = TEXT("Index on a non-array property"); return false; }
-                FScriptArrayHelper Helper(Array, Address);
-                if (!Helper.IsValidIndex(ArrayIndex)) { Error = TEXT("Array index out of range"); return false; }
-                Property = Array->Inner;
-                Address = Helper.GetRawPtr(ArrayIndex);
-            }
-            if (PartIndex == Parts.Num() - 1)
-            {
-                if (!Supported(Property)) { Error = TEXT("Unsupported type or nested ownership; use a specialized editor"); return false; }
+                auto* Array = CastField<FArrayProperty>(Property);
+                const bool ConstructibleArray = AllowStructArray && Array && CastField<FStructProperty>(Array->Inner)
+                    && !Array->HasAnyPropertyFlags(CPF_EditFixedSize) && Supported(Array->Inner, 0, false);
+                if (!Supported(Property) && !ConstructibleArray && !(InspectContainer && (Array || CastField<FMapProperty>(Property) || CastField<FStructProperty>(Property))))
+                { Error = TEXT("Unsupported type or nested ownership; use a specialized editor"); return false; }
                 Result.Leaf = Property;
                 Result.Address = Address;
                 return true;
             }
-            FStructProperty* Struct = CastField<FStructProperty>(Property);
-            if (!Struct || Struct->Struct == FGameplayTag::StaticStruct() || Struct->Struct == FGameplayTagContainer::StaticStruct())
+            auto* Struct = CastField<FStructProperty>(Property);
+            if (CastField<FObjectPropertyBase>(Property))
             { Error = TEXT("Only ordinary structs can be traversed; object references are boundaries"); return false; }
-            Owner = Struct->Struct;
+            if (Struct && (Struct->Struct == FGameplayTag::StaticStruct() || Struct->Struct == FGameplayTagContainer::StaticStruct()))
+            { Error = TEXT("GameplayTag internals are not traversable"); return false; }
+            if (!Struct && !CastField<FArrayProperty>(Property) && !CastField<FMapProperty>(Property))
+            { Error = TEXT("Cannot traverse a scalar property"); return false; }
+            Owner = Struct ? Struct->Struct : nullptr;
             Container = Address;
         }
         return false;
+    }
+
+    bool Resolve(UObject* Asset, const FString& Path, FResolved& Result, FString& Error, void* RootStorage = nullptr,
+        bool AllowStructArray = false)
+    {
+        if (Path.IsEmpty() || Path.Len() > 512) { Error = TEXT("Invalid property path"); return false; }
+        TArray<FString> Parts; Path.ParseIntoArray(Parts, TEXT("."), false);
+        if (Parts.Num() > MaxDepth) { Error = TEXT("Property path too deep"); return false; }
+        TArray<TSharedPtr<FJsonValue>> Steps;
+        for (const FString& Part : Parts)
+        {
+            FString Name = Part; int32 Bracket;
+            if (Name.FindChar(TEXT('['), Bracket))
+            {
+                const FString Index = Name.Mid(Bracket + 1, Name.Len() - Bracket - 2);
+                if (!Name.EndsWith(TEXT("]")) || Index.IsEmpty() || Index.Len() > 9 || !Index.IsNumeric()
+                    || Index.Contains(TEXT(".")) || Index.Contains(TEXT("-")) || Index.Contains(TEXT("+")) || (Index.Len() > 1 && Index[0] == TEXT('0')))
+                { Error = TEXT("Array path must use a zero-based integer index"); return false; }
+                Steps.Add(MakeShared<FJsonValueString>(Name.Left(Bracket)));
+                auto Selector = MakeShared<FJsonObject>(); Selector->SetNumberField(TEXT("index"), FCString::Atoi(*Index));
+                Steps.Add(MakeShared<FJsonValueObject>(Selector));
+            }
+            else Steps.Add(MakeShared<FJsonValueString>(Name));
+        }
+        return ResolveSteps(Asset, Steps, Result, Error, RootStorage, AllowStructArray);
     }
 
     TSharedPtr<FJsonObject> Failure(const FString& Error, const FString& Stage = TEXT("validation"), bool Modified = false)
@@ -568,14 +636,15 @@ namespace
         if (!Asset || !(Asset->IsA<UDataAsset>() || Asset->GetClass() == UPhysicalMaterial::StaticClass())
             || !Asset->IsAsset() || Asset->HasAnyFlags(RF_ClassDefaultObject | RF_ArchetypeObject)
             || Asset->GetOutermost()->GetName() != Path)
-        { Error = TEXT("Target must be an existing DataAsset or PhysicalMaterial instance, not a class, redirector or other asset type"); return nullptr; }
+        { Error = TEXT("Target must be an existing DataAsset or PhysicalMaterial instance, not a class, redirector or other asset type. For Blueprint CDO fields use read_blueprint_property_paths; typed nested Map/Array leaves use the matching property_paths reader/patch contract."); return nullptr; }
         return Asset;
     }
 
-    TSharedPtr<FJsonObject> Schema(FProperty* Property)
+    TSharedPtr<FJsonObject> Schema(FProperty* Property, int32 Depth = 0)
     {
         TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
         Result->SetStringField(TEXT("cpp_type"), Property->GetCPPType());
+        if (Depth > MaxDepth) { Result->SetStringField(TEXT("restriction"), TEXT("Schema depth exceeds 8")); return Result; }
         Result->SetBoolField(TEXT("edit_defaults_only"), Property->HasAnyPropertyFlags(CPF_DisableEditOnInstance));
         Result->SetBoolField(TEXT("nullable"), (CastField<FObjectProperty>(Property) || CastField<FSoftObjectProperty>(Property))
             && !Property->HasAnyPropertyFlags(CPF_NoClear));
@@ -604,12 +673,12 @@ namespace
         else if (FObjectProperty* HardObject = CastField<FObjectProperty>(Property)) Result->SetStringField(TEXT("object_constraint"), HardObject->PropertyClass->GetPathName());
         for (const TCHAR* Key : {TEXT("ClampMin"), TEXT("ClampMax"), TEXT("EditCondition"), TEXT("AllowedClasses"), TEXT("DisallowedClasses"), TEXT("MustImplement"), TEXT("ExactClass")})
             if (Property->HasMetaData(Key)) Result->SetStringField(Key, Property->GetMetaData(Key));
-        if (FArrayProperty* Array = CastField<FArrayProperty>(Property)) Result->SetObjectField(TEXT("items"), Schema(Array->Inner));
+        if (FArrayProperty* Array = CastField<FArrayProperty>(Property)) Result->SetObjectField(TEXT("items"), Schema(Array->Inner, Depth + 1));
         if (FMapProperty* Map = CastField<FMapProperty>(Property))
         {
             Result->SetStringField(TEXT("format"), TEXT("map_entries"));
-            Result->SetObjectField(TEXT("key"), Schema(Map->KeyProp));
-            Result->SetObjectField(TEXT("value"), Schema(Map->ValueProp));
+            Result->SetObjectField(TEXT("key"), Schema(Map->KeyProp, Depth + 1));
+            Result->SetObjectField(TEXT("value"), Schema(Map->ValueProp, Depth + 1));
         }
         if (FStructProperty* Struct = CastField<FStructProperty>(Property))
         {
@@ -618,7 +687,7 @@ namespace
             else
             {
                 TSharedPtr<FJsonObject> Fields = MakeShared<FJsonObject>();
-                for (TFieldIterator<FProperty> Field(Struct->Struct); Field; ++Field) Fields->SetObjectField(Field->GetName(), Schema(*Field));
+                for (TFieldIterator<FProperty> Field(Struct->Struct); Field; ++Field) Fields->SetObjectField(Field->GetName(), Schema(*Field, Depth + 1));
                 Result->SetObjectField(TEXT("fields"), Fields);
             }
         }
@@ -696,9 +765,406 @@ namespace
         FString Value; Property->ExportTextItem_Direct(Value, Address, nullptr, Asset, PPF_None); return Value;
     }
 
+    void AppendEditableFields(UStruct* Struct, const FString& Prefix, TArray<TSharedPtr<FJsonValue>>& Fields, int32 Depth = 0)
+    {
+        if (Depth > MaxDepth || Fields.Num() >= 64) return;
+        for (TFieldIterator<FProperty> Field(Struct); Field && Fields.Num() < 64; ++Field)
+        {
+            if (!Editable(*Field)) continue;
+            const FString Path = Prefix + Field->GetName();
+            if (Supported(*Field))
+            {
+                auto Entry = MakeShared<FJsonObject>(); Entry->SetStringField(TEXT("path"), Path);
+                Entry->SetObjectField(TEXT("schema"), Schema(*Field)); Fields.Add(MakeShared<FJsonValueObject>(Entry));
+            }
+            else if (const auto* Nested = CastField<FStructProperty>(*Field)) AppendEditableFields(Nested->Struct, Path + TEXT("."), Fields, Depth + 1);
+        }
+    }
+
+    TSharedPtr<FJsonObject> ArrayAppendSnapshot(UObject* Asset, const FString& Path, FString& Error)
+    {
+        FResolved Resolved;
+        if (!Asset->IsA<UDataAsset>() || !Resolve(Asset, Path, Resolved, Error, nullptr, true)) return nullptr;
+        auto* Array = CastField<FArrayProperty>(Resolved.Leaf);
+        auto* Element = Array ? CastField<FStructProperty>(Array->Inner) : nullptr;
+        if (!Element || Array->HasAnyPropertyFlags(CPF_EditFixedSize) || !Supported(Element, 0, false)
+            || Element->Struct == FGameplayTag::StaticStruct() || Element->Struct == FGameplayTagContainer::StaticStruct())
+        { Error = TEXT("Append requires an editable non-fixed ordinary struct array with supported non-instanced stored fields"); return nullptr; }
+        FScriptArrayHelper Current(Array, Resolved.Address);
+        if (Current.Num() > MaxElements) { Error = TEXT("Array exceeds initialization limit"); return nullptr; }
+        int32 Budget = MaxValues; auto Values = Encode(Array, Resolved.Address, Error, Budget);
+        FValueStorage Default(Element, nullptr); auto Defaults = Encode(Element, Default.Data, Error, Budget);
+        if (!Values || !Defaults) return nullptr;
+        auto Result = MakeShared<FJsonObject>();
+        Result->SetNumberField(TEXT("contract"), 1); Result->SetStringField(TEXT("operation"), TEXT("append_data_asset_struct_array"));
+        Result->SetStringField(TEXT("asset_path"), Asset->GetPackage()->GetName()); Result->SetStringField(TEXT("class_path"), Asset->GetClass()->GetPathName());
+        Result->SetStringField(TEXT("array_path"), Path); Result->SetStringField(TEXT("element_type"), Element->Struct->GetPathName());
+        Result->SetNumberField(TEXT("count"), Current.Num()); Result->SetNumberField(TEXT("max_count"), MaxElements);
+        Result->SetNumberField(TEXT("max_new_items"), FMath::Min(64, MaxElements - Current.Num()));
+        Result->SetField(TEXT("current_items"), Values); Result->SetField(TEXT("defaults"), Defaults);
+        TArray<TSharedPtr<FJsonValue>> Fields; AppendEditableFields(Element->Struct, TEXT(""), Fields); Result->SetArrayField(TEXT("editable_fields"), Fields);
+        FString ConditionError; bool Allowed = true;
+        for (const auto& Condition : Resolved.Conditions) if (!ConditionMet(Condition, nullptr, ConditionError)) { Allowed = false; break; }
+        Result->SetBoolField(TEXT("can_append"), Allowed && Current.Num() < MaxElements);
+        if (!ConditionError.IsEmpty()) Result->SetStringField(TEXT("restriction"), ConditionError);
+        auto Baseline = MakeShared<FJsonObject>();
+        Baseline->SetStringField(TEXT("asset_path"), Asset->GetPathName()); Baseline->SetStringField(TEXT("class_path"), Asset->GetClass()->GetPathName());
+        Baseline->SetStringField(TEXT("array_path"), Path); Baseline->SetStringField(TEXT("element_type"), Element->Struct->GetPathName());
+        Baseline->SetStringField(TEXT("root_value"), TextRootValue(Resolved.Root, Resolved.Root->ContainerPtrToValuePtr<void>(Asset), Asset));
+        Baseline->SetStringField(TEXT("element_defaults"), TextRootValue(Element, Default.Data, Asset));
+        Baseline->SetArrayField(TEXT("editable_fields"), Fields);
+        const FString File = FPackageName::LongPackageNameToFilename(Asset->GetPackage()->GetName(), FPackageName::GetAssetPackageExtension());
+        Baseline->SetStringField(TEXT("saved_package_hash"), FPaths::FileExists(File) ? LexToString(FMD5Hash::HashFile(*File)) : TEXT("unsaved_package"));
+        const FString Text = TextJson(Baseline);
+        if (Text.Len() > 262144) { Error = TEXT("Array baseline exceeds 256 KiB; initialization refused"); return nullptr; }
+        const FTCHARToUTF8 Bytes(*Text); FSHAHash Hash; FSHA1::HashBuffer(Bytes.Get(), Bytes.Length(), Hash.Hash);
+        Result->SetStringField(TEXT("baseline"), Hash.ToString()); return Result;
+    }
+
 #if WITH_DEV_AUTOMATION_TESTS
     bool FailTextSaveForTest = false;
+    bool FailArrayAppendSaveForTest = false;
+    bool FailPropertyPathCompileForTest = false;
+    bool FailPropertyPathSaveForTest = false;
 #endif
+}
+
+namespace
+{
+    struct FPathTarget
+    {
+        UObject* Object = nullptr;
+        UObject* Asset = nullptr;
+        UBlueprint* Blueprint = nullptr;
+    };
+
+    bool LoadPathTarget(const TSharedPtr<FJsonObject>& Params, bool BlueprintTarget, FPathTarget& Target, FString& Error)
+    {
+        if (!Params) { Error = TEXT("Missing arguments"); return false; }
+        if (!BlueprintTarget) { Target.Asset = Target.Object = LoadTarget(Params, Error); return Target.Object != nullptr; }
+        FString Path;
+        if (!Params->TryGetStringField(TEXT("blueprint_path"), Path) || !TextPackagePath(Path)) { Error = TEXT("Require an exact /Game Blueprint package path"); return false; }
+        auto* Blueprint = Cast<UBlueprint>(UEditorAssetLibrary::LoadAsset(Path));
+        if (!Blueprint || Blueprint->GetClass() != UBlueprint::StaticClass() || Blueprint->GetPackage()->GetName() != Path
+            || Blueprint->BlueprintType != BPTYPE_Normal || !Blueprint->GeneratedClass || !Blueprint->ParentClass
+            || Blueprint->bBeingCompiled || Blueprint->Status == BS_Error || Blueprint->GeneratedClass->ClassGeneratedBy != Blueprint)
+        { Error = TEXT("Require a valid ordinary Blueprint with a current generated class/CDO; use specialized editors for animation/widget/level/function-library Blueprints"); return false; }
+        Target.Asset = Target.Blueprint = Blueprint; Target.Object = Blueprint->GeneratedClass->GetDefaultObject();
+        return Target.Object != nullptr;
+    }
+
+    class FPropertyPathArchive final : public FObjectAndNameAsStringProxyArchive
+    {
+    public:
+        explicit FPropertyPathArchive(FArchive& Inner) : FObjectAndNameAsStringProxyArchive(Inner, false) { ArNoDelta = true; }
+        virtual bool ShouldSkipProperty(const FProperty* Property) const override
+        { return Property->HasAnyPropertyFlags(CPF_Transient | CPF_Deprecated) || FObjectAndNameAsStringProxyArchive::ShouldSkipProperty(Property); }
+        virtual void Serialize(void* Data, int64 Length) override
+        {
+            if (Length < 0 || Tell() > 1048576 - Length) { SetError(); return; }
+            FObjectAndNameAsStringProxyArchive::Serialize(Data, Length);
+        }
+    };
+
+    FString PathValueHash(FProperty* Property, const void* Data, FString& Error)
+    {
+        TArray<uint8> Bytes; FMemoryWriter Memory(Bytes); FPropertyPathArchive Writer(Memory);
+        Property->SerializeItem(FStructuredArchiveFromArchive(Writer).GetSlot(), const_cast<void*>(Data), nullptr);
+        if (Writer.IsError()) { Error = TEXT("Stored property protection exceeds 1MiB or cannot be serialized"); return {}; }
+        FSHAHash Hash; FSHA1::HashBuffer(Bytes.GetData(), Bytes.Num(), Hash.Hash); return Hash.ToString();
+    }
+
+    TSharedPtr<FJsonObject> PathObjectWitness(UObject* Object, const FStagedValues* Staged, FString& Error)
+    {
+        auto Result = MakeShared<FJsonObject>(); int32 Count = 0;
+        for (TFieldIterator<FProperty> Field(Object->GetClass()); Field; ++Field)
+        {
+            if (Field->HasAnyPropertyFlags(CPF_Transient | CPF_Deprecated)) continue;
+            if (++Count > 512) { Error = TEXT("Stored object exceeds 512 protection roots"); return nullptr; }
+            const auto* Pending = Staged ? Staged->Find(*Field) : nullptr;
+            const void* Data = Pending ? (*Pending)->Data : Field->ContainerPtrToValuePtr<void>(Object);
+            Result->SetStringField(Field->GetName(), PathValueHash(*Field, Data, Error));
+            if (!Error.IsEmpty()) return nullptr;
+        }
+        return Result;
+    }
+
+    bool BlueprintHasDescendants(const FPathTarget& Target)
+    {
+        if (!Target.Blueprint) return false;
+        TSet<FTopLevelAssetPath> Derived;
+        FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get().GetDerivedClassNames(
+            {Target.Blueprint->GeneratedClass->GetClassPathName()}, {}, Derived);
+        Derived.Remove(Target.Blueprint->GeneratedClass->GetClassPathName());
+        return !Derived.IsEmpty();
+    }
+
+    bool PathLeafWritable(FProperty* Property)
+    {
+        if (CastField<FArrayProperty>(Property) || CastField<FMapProperty>(Property) || CastField<FSetProperty>(Property) || CastField<FTextProperty>(Property)) return false;
+        if (auto* Struct = CastField<FStructProperty>(Property))
+            if (Struct->Struct != TBaseStructure<FVector>::Get() && Struct->Struct != TBaseStructure<FRotator>::Get()
+                && Struct->Struct != TBaseStructure<FLinearColor>::Get() && Struct->Struct != TBaseStructure<FColor>::Get()
+                && Struct->Struct != FGameplayTag::StaticStruct()) return false;
+        return Supported(Property);
+    }
+
+    bool PathSelections(const TSharedPtr<FJsonObject>& Params, TArray<TArray<TSharedPtr<FJsonValue>>>& Paths, FString& Error)
+    {
+        const TArray<TSharedPtr<FJsonValue>>* Rows = nullptr;
+        if (!Params || !Params->TryGetArrayField(TEXT("paths"), Rows) || Rows->Num() > 64) { Error = TEXT("paths requires 0..64 explicit step arrays; [] discovers editable roots"); return false; }
+        for (const auto& Row : *Rows)
+        {
+            const TArray<TSharedPtr<FJsonValue>>* Steps = nullptr;
+            if (!Row || !Row->TryGetArray(Steps) || Steps->IsEmpty() || Steps->Num() > 16) { Error = TEXT("Each path requires 1..16 field/index/key steps"); return false; }
+            Paths.Add(*Steps);
+        }
+        return true;
+    }
+
+    FString PathToken(const TArray<TSharedPtr<FJsonValue>>& Steps)
+    { auto Wrapper = MakeShared<FJsonObject>(); Wrapper->SetArrayField(TEXT("path"), Steps); return TextJson(Wrapper); }
+
+    TSharedPtr<FJsonObject> PropertyPathScope(const FPathTarget& Target, const TArray<TArray<TSharedPtr<FJsonValue>>>& Requested, FString& Error)
+    {
+        auto Result = MakeShared<FJsonObject>(); Result->SetNumberField(TEXT("property_paths_contract"), 1);
+        Result->SetStringField(Target.Blueprint ? TEXT("blueprint_path") : TEXT("asset_path"), Target.Asset->GetPackage()->GetName());
+        Result->SetStringField(TEXT("target_kind"), Target.Blueprint ? TEXT("blueprint_cdo") : TEXT("asset_instance"));
+        Result->SetStringField(TEXT("class_path"), Target.Object->GetClass()->GetPathName()); Result->SetStringField(TEXT("object_path"), Target.Object->GetPathName());
+        Result->SetStringField(TEXT("outer_path"), Target.Object->GetOuter()->GetPathName());
+        if (Target.Blueprint) { Result->SetStringField(TEXT("parent_class"), Target.Blueprint->ParentClass->GetPathName()); Result->SetStringField(TEXT("blueprint_guid"), Target.Blueprint->GetBlueprintGuid().ToString()); }
+        const bool HasDescendants = BlueprintHasDescendants(Target);
+        Result->SetBoolField(TEXT("has_blueprint_descendants"), HasDescendants);
+        auto Witness = PathObjectWitness(Target.Object, nullptr, Error); if (!Witness) return nullptr;
+        Result->SetObjectField(TEXT("stored_roots"), Witness);
+        auto Related = MakeShared<FJsonObject>();
+        if (Target.Blueprint)
+        {
+            int32 Parents = 0;
+            for (UClass* Class = Target.Blueprint->ParentClass; Class; Class = Class->GetSuperClass())
+            {
+                if (++Parents > 32) { Error = TEXT("Parent hierarchy exceeds 32 classes"); return nullptr; }
+                UObject* Defaults = Class->GetDefaultObject(false);
+                if (!Defaults || (Cast<UBlueprint>(Class->ClassGeneratedBy) && Class->ClassGeneratedBy->GetPackage()->IsDirty()))
+                { Error = TEXT("Parent CDO unavailable or parent Blueprint has unsaved changes"); return nullptr; }
+                auto Parent = PathObjectWitness(Defaults, nullptr, Error); if (!Parent) return nullptr;
+                Related->SetObjectField(Class->GetPathName(), Parent);
+            }
+        }
+        Result->SetObjectField(TEXT("related_defaults"), Related);
+        TArray<UObject*> Children; GetObjectsWithOuter(Target.Object, Children, true); auto Owned = MakeShared<FJsonObject>();
+        if (Children.Num() > 256) { Error = TEXT("Owned object protection exceeds 256 objects"); return nullptr; }
+        for (auto* Child : Children)
+        {
+            if (Child->HasAnyFlags(RF_Transient)) continue;
+            auto State = PathObjectWitness(Child, nullptr, Error); if (!State) return nullptr;
+            Owned->SetObjectField(Child->GetPathName(), State);
+        }
+        Result->SetObjectField(TEXT("owned_objects"), Owned);
+        const FString File = FPackageName::LongPackageNameToFilename(Target.Asset->GetPackage()->GetName(), FPackageName::GetAssetPackageExtension());
+        Result->SetStringField(TEXT("saved_file_hash"), FPaths::FileExists(File) ? LexToString(FMD5Hash::HashFile(*File)) : TEXT("unsaved_package"));
+        auto Paths = Requested;
+        if (Paths.IsEmpty())
+            for (TFieldIterator<FProperty> Field(Target.Object->GetClass()); Field && Paths.Num() < 64; ++Field)
+                if (Editable(*Field)) Paths.Add({MakeShared<FJsonValueString>(Field->GetName())});
+        TArray<TSharedPtr<FJsonValue>> Fields; bool Complete = true; TSet<FString> Seen;
+        for (const auto& Steps : Paths)
+        {
+            auto Row = MakeShared<FJsonObject>(); Row->SetArrayField(TEXT("path"), Steps); FResolved Resolved; int32 FailedStep = 0; FString Reason;
+            if (!ResolveSteps(Target.Object, Steps, Resolved, Reason, nullptr, false, Target.Blueprint != nullptr, &FailedStep, true))
+            {
+                Row->SetBoolField(TEXT("writable"), false); Row->SetStringField(TEXT("reason"), Reason); Row->SetNumberField(TEXT("failed_step"), FailedStep);
+                Row->SetStringField(TEXT("code"), TEXT("path_not_supported")); Complete = false;
+            }
+            else
+            {
+                const FString Token = PathToken(Resolved.CanonicalPath);
+                if (Seen.Contains(Token)) { Error = TEXT("Duplicate paths after native key/name conversion"); return nullptr; }
+                Seen.Add(Token); Row->SetArrayField(TEXT("path"), Resolved.CanonicalPath);
+                Row->SetObjectField(TEXT("schema"), Schema(Resolved.Leaf)); int32 Budget = MaxValues;
+                Row->SetBoolField(TEXT("traversable"), CastField<FStructProperty>(Resolved.Leaf) || CastField<FArrayProperty>(Resolved.Leaf) || CastField<FMapProperty>(Resolved.Leaf));
+                const bool Writable = !HasDescendants && PathLeafWritable(Resolved.Leaf) && ConditionsMet(Resolved, nullptr, nullptr, Reason, Budget);
+                Row->SetBoolField(TEXT("writable"), Writable);
+                if (HasDescendants) Reason = TEXT("Target has derived Blueprint classes; default propagation requires a separate authorized hierarchy edit");
+                if (!Writable) Row->SetStringField(TEXT("reason"), Reason.IsEmpty() ? TEXT("Select an editable scalar/native-vector leaf; container replacement, arbitrary structs and FText history require specialized operations") : Reason);
+                if (Supported(Resolved.Leaf, 0, false))
+                {
+                    Budget = MaxValues; auto Value = Encode(Resolved.Leaf, Resolved.Address, Reason, Budget);
+                    if (Value) Row->SetField(TEXT("value"), Value); else { Row->SetStringField(TEXT("read_restriction"), Reason); Complete = false; }
+                }
+                if (auto* Map = CastField<FMapProperty>(Resolved.Leaf))
+                {
+                    FScriptMapHelper Helper(Map, Resolved.Address); TArray<TSharedPtr<FJsonValue>> Keys;
+                    if (Helper.Num() > MaxElements) { Complete = false; Row->SetStringField(TEXT("read_restriction"), TEXT("Map exceeds 1024 entries")); }
+                    else if (SupportedMapKey(Map->KeyProp))
+                        for (int32 Index = 0; Index < Helper.GetMaxIndex(); ++Index)
+                            if (Helper.IsValidIndex(Index)) { Budget = MaxValues; auto Key = Encode(Map->KeyProp, Helper.GetKeyPtr(Index), Reason, Budget); if (Key) Keys.Add(Key); else Complete = false; }
+                    Row->SetArrayField(TEXT("existing_keys"), Keys);
+                }
+                if (auto* Array = CastField<FArrayProperty>(Resolved.Leaf)) Row->SetNumberField(TEXT("count"), FScriptArrayHelper(Array, Resolved.Address).Num());
+            }
+            Fields.Add(MakeShared<FJsonValueObject>(Row));
+        }
+        Result->SetArrayField(TEXT("properties"), Fields); Result->SetBoolField(TEXT("complete"), Complete);
+        const FString Text = TextJson(Result);
+        if (Text.Len() > 1048576) { Error = TEXT("Property path scope exceeds 1MiB"); return nullptr; }
+        if (Complete) { const FTCHARToUTF8 Bytes(*Text); FSHAHash Hash; FSHA1::HashBuffer(Bytes.Get(), Bytes.Length(), Hash.Hash); Result->SetStringField(TEXT("baseline"), Hash.ToString()); }
+        else Result->SetField(TEXT("baseline"), MakeShared<FJsonValueNull>());
+        Result->SetBoolField(TEXT("package_dirty"), Target.Asset->GetPackage()->IsDirty());
+        Result->SetStringField(TEXT("semantics"), TEXT("Explicit reflected field strings, existing {index} arrays and typed {key} Maps. No insertion/deletion/object traversal/ImportText. Witnesses are read-only; legacy contracts unchanged."));
+        return Result;
+    }
+}
+
+TSharedPtr<FJsonObject> ReadPaths(const TSharedPtr<FJsonObject>& Params, bool BlueprintTarget)
+{
+    FString Error; FPathTarget Target; TArray<TArray<TSharedPtr<FJsonValue>>> Paths;
+    if (!Params) return Failure(TEXT("Missing arguments"));
+    for (const auto& Pair : Params->Values)
+        if (Pair.Key != (BlueprintTarget ? TEXT("blueprint_path") : TEXT("asset_path")) && Pair.Key != TEXT("paths")) return Failure(TEXT("Unknown reader argument: ") + Pair.Key);
+    if (!PathSelections(Params, Paths, Error) || !LoadPathTarget(Params, BlueprintTarget, Target, Error)) return Failure(Error);
+    auto Result = PropertyPathScope(Target, Paths, Error); if (!Result) return Failure(Error);
+    Result->SetBoolField(TEXT("success"), true); Result->SetBoolField(TEXT("modified"), false); Result->SetBoolField(TEXT("saved"), false); return Result;
+}
+
+TSharedPtr<FJsonObject> PatchPaths(const TSharedPtr<FJsonObject>& Params, bool BlueprintTarget)
+{
+    auto Reject = [](const FString& Error, const FString& Stage = TEXT("preflight")) { return Failure(Error, Stage); };
+    if (!IsInGameThread() || !GEditor || GEditor->PlayWorld || GEditor->bIsSimulatingInEditor || GIsSavingPackage || IsGarbageCollecting() || GIsSlowTask
+        || FAssetCompilingManager::Get().GetNumRemainingAssets() != 0 || (FSlateApplication::IsInitialized() && FSlateApplication::Get().GetActiveModalWindow().IsValid()))
+        return Reject(TEXT("Require an idle Editor outside PIE/simulation/save/GC/compilation/modal/slow tasks"));
+    if (!Params || TextJson(Params).Len() > 65536) return Reject(TEXT("Missing/oversized request; limit 64Ki characters"));
+    const TSet<FString> Allowed{BlueprintTarget ? TEXT("blueprint_path") : TEXT("asset_path"), TEXT("expected_baseline"), TEXT("changes"), TEXT("dry_run"), TEXT("save")};
+    for (const auto& Pair : Params->Values) if (!Allowed.Contains(Pair.Key)) return Reject(TEXT("Unknown patch argument: ") + Pair.Key);
+    bool DryRun = true, Save = false;
+    if ((Params->HasField(TEXT("dry_run")) && !Params->TryGetBoolField(TEXT("dry_run"), DryRun))
+        || (Params->HasField(TEXT("save")) && !Params->TryGetBoolField(TEXT("save"), Save))) return Reject(TEXT("dry_run/save must be booleans"));
+    FString Error, Baseline; FPathTarget Target;
+    if (!LoadPathTarget(Params, BlueprintTarget, Target, Error)) return Reject(Error);
+    if (Target.Asset->GetPackage()->IsDirty()) return Reject(TEXT("Target has unsaved author edits; never overwrite or save user drafts implicitly"));
+    if (BlueprintHasDescendants(Target)) return Reject(TEXT("Target has derived Blueprint classes; indirect default propagation is not authorized"));
+    const TArray<TSharedPtr<FJsonValue>>* Changes = nullptr;
+    if (!Params->TryGetArrayField(TEXT("changes"), Changes) || Changes->IsEmpty() || Changes->Num() > 64) return Reject(TEXT("Require 1..64 leaf patches"));
+    TArray<TArray<TSharedPtr<FJsonValue>>> Paths; TArray<FResolved> Original;
+    for (const auto& Value : *Changes)
+    {
+        const TSharedPtr<FJsonObject>* Change = nullptr; const TArray<TSharedPtr<FJsonValue>>* Steps = nullptr;
+        if (!Value || !Value->TryGetObject(Change) || (*Change)->Values.Num() != 2 || !(*Change)->TryGetArrayField(TEXT("path"), Steps) || !(*Change)->HasField(TEXT("value")))
+            return Reject(TEXT("Each patch requires exactly path:[steps] and value"));
+        FResolved Resolved;
+        if (!ResolveSteps(Target.Object, *Steps, Resolved, Error, nullptr, false, BlueprintTarget) || !PathLeafWritable(Resolved.Leaf))
+            return Reject(Error.IsEmpty() ? TEXT("Select a supported editable leaf; container/ordinary-struct/FText replacement is not offered") : Error);
+        for (const auto& Previous : Original)
+        {
+            bool Prefix = true;
+            for (int32 Index = 0; Index < FMath::Min(Previous.CanonicalPath.Num(), Resolved.CanonicalPath.Num()); ++Index)
+                Prefix &= PathToken({Previous.CanonicalPath[Index]}) == PathToken({Resolved.CanonicalPath[Index]});
+            if (Prefix || (Previous.Root == Resolved.Root && Previous.Address == Resolved.Address)) return Reject(TEXT("Duplicate/overlapping canonical paths are forbidden"));
+        }
+        Paths.Add(Resolved.CanonicalPath); Original.Add(Resolved);
+    }
+    auto Before = PropertyPathScope(Target, Paths, Error);
+    if (!Before || !Before->GetBoolField(TEXT("complete"))) return Reject(Error.IsEmpty() ? TEXT("Incomplete property protection scope") : Error);
+    if (!Params->TryGetStringField(TEXT("expected_baseline"), Baseline) || Baseline.Len() != 40 || Baseline != Before->GetStringField(TEXT("baseline")))
+        return Reject(TEXT("Missing/stale exact-selection baseline; read and review these same paths again"), TEXT("conflict"));
+    FStagedValues Staged; int32 Budget = MaxValues;
+    for (int32 Index = 0; Index < Original.Num(); ++Index)
+    {
+        const auto& Resolved = Original[Index];
+        if (!Staged.Contains(Resolved.Root)) Staged.Add(Resolved.Root, MakeShared<FValueStorage>(Resolved.Root, Resolved.Root->ContainerPtrToValuePtr<void>(Target.Object)));
+        FResolved Pending;
+        if (!ResolveSteps(Target.Object, Paths[Index], Pending, Error, Staged[Resolved.Root]->Data, false, BlueprintTarget)
+            || !Decode(Pending.Leaf, Pending.Address, (*Changes)[Index]->AsObject()->Values[TEXT("value")], Error, Budget)) return Reject(Error);
+        if (auto* Object = CastField<FObjectPropertyBase>(Pending.Leaf))
+        {
+            if (UObject* Reference = Object->GetObjectPropertyValue(Pending.Address))
+                if (Reference->GetPackage()->IsDirty()) return Reject(TEXT("Requested reference has unsaved changes; do not save it implicitly"));
+        }
+    }
+    Budget = MaxValues;
+    for (int32 Index = 0; Index < Paths.Num(); ++Index)
+    {
+        FResolved Pending;
+        if (!ResolveSteps(Target.Object, Paths[Index], Pending, Error, Staged[Original[Index].Root]->Data, false, BlueprintTarget)
+            || !ConditionsMet(Pending, Original[Index].Address, &Staged, Error, Budget)) return Reject(Error, TEXT("edit_condition"));
+    }
+    auto ExpectedRoots = PathObjectWitness(Target.Object, &Staged, Error); if (!ExpectedRoots) return Reject(Error);
+    auto Result = MakeShared<FJsonObject>(); Result->SetNumberField(TEXT("property_paths_contract"), 1); Result->SetBoolField(TEXT("success"), true);
+    Result->SetBoolField(TEXT("dry_run"), DryRun); Result->SetBoolField(TEXT("modified"), false); Result->SetBoolField(TEXT("compiled"), false); Result->SetBoolField(TEXT("saved"), false);
+    Result->SetBoolField(TEXT("package_dirty"), false); Result->SetObjectField(TEXT("before"), Before); Result->SetObjectField(TEXT("after"), Before);
+    TArray<TSharedPtr<FJsonValue>> Proposed;
+    for (int32 Index = 0; Index < Paths.Num(); ++Index)
+    {
+        FResolved Pending; ResolveSteps(Target.Object, Paths[Index], Pending, Error, Staged[Original[Index].Root]->Data, false, BlueprintTarget);
+        auto Row = MakeShared<FJsonObject>(); Row->SetArrayField(TEXT("path"), Paths[Index]); Budget = MaxValues;
+        Row->SetField(TEXT("value"), Encode(Pending.Leaf, Pending.Address, Error, Budget)); Proposed.Add(MakeShared<FJsonValueObject>(Row));
+        if (!Error.IsEmpty()) return Reject(Error);
+    }
+    Result->SetArrayField(TEXT("proposed"), Proposed);
+    const bool Changed = TextJson(ExpectedRoots) != TextJson(Before->GetObjectField(TEXT("stored_roots")));
+    Result->SetBoolField(TEXT("would_modify"), Changed);
+    if (DryRun || !Changed) return Result;
+    auto Current = PropertyPathScope(Target, Paths, Error);
+    if (!Current || Current->GetStringField(TEXT("baseline")) != Baseline || Target.Asset->GetPackage()->IsDirty() || FAssetCompilingManager::Get().GetNumRemainingAssets() != 0)
+        return Reject(TEXT("Target/reference/compilation changed during preflight; read again"), TEXT("conflict"));
+    {
+        const FScopedTransaction Transaction(NSLOCTEXT("UnrealMCP", "TypedPropertyPaths", "Patch reflected property leaves"));
+        Target.Asset->SetFlags(RF_Transactional); Target.Object->SetFlags(RF_Transactional); Target.Asset->Modify();
+        if (Target.Object != Target.Asset) Target.Object->Modify();
+        for (const auto& Pair : Staged) Target.Object->PreEditChange(Pair.Key);
+        for (const auto& Pair : Staged) Pair.Key->CopyCompleteValue(Pair.Key->ContainerPtrToValuePtr<void>(Target.Object), Pair.Value->Data);
+        for (const auto& Resolved : Original)
+        {
+            FEditPropertyChain Chain; for (auto* Property : Resolved.Chain) Chain.AddTail(Property);
+            Chain.SetActiveMemberPropertyNode(Resolved.Root); Chain.SetActivePropertyNode(Resolved.Leaf);
+            FPropertyChangedEvent Event(Resolved.Leaf, EPropertyChangeType::ValueSet); Event.SetActiveMemberProperty(Resolved.Root);
+            FPropertyChangedChainEvent ChainEvent(Chain, Event); Target.Object->PostEditChangeChainProperty(ChainEvent);
+        }
+        Target.Asset->MarkPackageDirty();
+        if (Target.Blueprint) FBlueprintEditorUtils::MarkBlueprintAsModified(Target.Blueprint);
+    }
+    Staged.Empty(); Original.Empty(); Result->SetBoolField(TEXT("modified"), true);
+    auto ReadAfter = [&]()
+    {
+        Error.Empty(); FPathTarget Actual;
+        if (!LoadPathTarget(Params, BlueprintTarget, Actual, Error)) { Result->SetBoolField(TEXT("package_dirty"), Target.Asset->GetPackage()->IsDirty()); return TSharedPtr<FJsonObject>(); }
+        Target = Actual; auto After = PropertyPathScope(Target, Paths, Error);
+        if (After) Result->SetObjectField(TEXT("after"), After);
+        Result->SetBoolField(TEXT("package_dirty"), Target.Asset->GetPackage()->IsDirty()); return After;
+    };
+    auto FailAfter = [&](const TCHAR* Stage, const FString& Message)
+    { Result->SetBoolField(TEXT("success"), false); Result->SetStringField(TEXT("stage"), Stage); Result->SetStringField(TEXT("error"), Message + TEXT("; actual changes may remain, no rollback/retry")); ReadAfter(); return Result; };
+    if (Target.Blueprint)
+    {
+#if WITH_DEV_AUTOMATION_TESTS
+        if (FailPropertyPathCompileForTest) return FailAfter(TEXT("compile"), TEXT("Injected target compile failure"));
+#endif
+        FKismetEditorUtilities::CompileBlueprint(Target.Blueprint, EBlueprintCompileOptions::SkipGarbageCollection);
+        Result->SetBoolField(TEXT("compiled"), true);
+        if (Target.Blueprint->Status == BS_Error) return FailAfter(TEXT("compile"), TEXT("Target Blueprint compilation failed"));
+    }
+    auto Verify = [&]()
+    {
+        auto After = ReadAfter(); if (!After || !After->GetBoolField(TEXT("complete"))) return false;
+        bool Preserved = TextJson(After->GetObjectField(TEXT("stored_roots"))) == TextJson(ExpectedRoots);
+        for (const auto* Name : {TEXT("related_defaults"), TEXT("owned_objects")}) Preserved &= TextJson(After->GetObjectField(Name)) == TextJson(Before->GetObjectField(Name));
+        for (const auto* Name : {TEXT("class_path"), TEXT("object_path"), TEXT("outer_path")}) Preserved &= After->GetStringField(Name) == Before->GetStringField(Name);
+        if (BlueprintTarget) Preserved &= After->GetStringField(TEXT("parent_class")) == Before->GetStringField(TEXT("parent_class")) && After->GetStringField(TEXT("blueprint_guid")) == Before->GetStringField(TEXT("blueprint_guid"));
+        Result->SetBoolField(TEXT("existing_data_preserved"), Preserved); return Preserved;
+    };
+    if (!Verify()) return FailAfter(TEXT("readback"), TEXT("Typed values, identity or protected data differ after edit/compile: ") + Error);
+    if (Save)
+    {
+        bool Saved = false;
+#if WITH_DEV_AUTOMATION_TESTS
+        if (!FailPropertyPathSaveForTest)
+#endif
+            Saved = UEditorAssetLibrary::SaveLoadedAsset(Target.Asset, false) && !Target.Asset->GetPackage()->IsDirty();
+        Result->SetBoolField(TEXT("saved"), Saved);
+        if (!Saved) return FailAfter(TEXT("save"), TEXT("Target-only save failed"));
+        if (!Verify()) return FailAfter(TEXT("readback"), TEXT("Protected data differ after save: ") + Error);
+    }
+    return Result;
 }
 
 TSharedPtr<FJsonObject> ReadText(const TSharedPtr<FJsonObject>& Params)
@@ -715,6 +1181,8 @@ TSharedPtr<FJsonObject> ReadText(const TSharedPtr<FJsonObject>& Params)
 
 #if WITH_DEV_AUTOMATION_TESTS
 void SetTextSaveFailureForTests(bool Fail) { FailTextSaveForTest = Fail; }
+void SetArrayAppendSaveFailureForTests(bool Fail) { FailArrayAppendSaveForTest = Fail; }
+void SetPropertyPathFailuresForTests(bool Compile, bool Save) { FailPropertyPathCompileForTest = Compile; FailPropertyPathSaveForTest = Save; }
 #endif
 
 TSharedPtr<FJsonObject> BindText(const TSharedPtr<FJsonObject>& Params)
@@ -955,6 +1423,8 @@ TSharedPtr<FJsonObject> Read(const TSharedPtr<FJsonObject>& Params)
         }
         Field->SetBoolField(TEXT("writable"), Writable);
         if (!Error.IsEmpty()) Field->SetStringField(TEXT("reason"), Error);
+        FString AppendError;
+        if (auto Append = ArrayAppendSnapshot(Asset, Path, AppendError)) Field->SetObjectField(TEXT("array_append"), Append);
         Fields.Add(MakeShared<FJsonValueObject>(Field));
     }
     TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -965,6 +1435,134 @@ TSharedPtr<FJsonObject> Read(const TSharedPtr<FJsonObject>& Params)
     Result->SetArrayField(TEXT("properties"), Fields);
     Result->SetStringField(TEXT("contract"), TEXT("v2: exact paths; whole struct/array/map replacement; maps use [{key,value}]; existing refs; safe JSON integers; no object traversal, set or instanced data"));
     return Result;
+}
+
+TSharedPtr<FJsonObject> AppendStructArray(const TSharedPtr<FJsonObject>& Params)
+{
+    auto Reject = [](const FString& Error) { return Failure(Error, TEXT("preflight")); };
+    if (!Params) return Reject(TEXT("Missing arguments"));
+    for (const auto& Pair : Params->Values)
+        if (Pair.Key != TEXT("asset_path") && Pair.Key != TEXT("array_path") && Pair.Key != TEXT("expected_baseline")
+            && Pair.Key != TEXT("items") && Pair.Key != TEXT("dry_run") && Pair.Key != TEXT("save")) return Reject(TEXT("Unknown array append argument"));
+    if (!IsInGameThread() || !GEditor || GEditor->PlayWorld || GEditor->bIsSimulatingInEditor || GIsSavingPackage
+        || IsGarbageCollecting() || GIsSlowTask || FAssetCompilingManager::Get().GetNumRemainingAssets() != 0)
+        return Reject(TEXT("Requires idle Editor GameThread outside PIE, simulation, saving, GC and asset compilation"));
+    FString AssetPath, Path, Expected, Error;
+    if (!Params->TryGetStringField(TEXT("asset_path"), AssetPath) || !TextPackagePath(AssetPath)
+        || !Params->TryGetStringField(TEXT("array_path"), Path) || Path.IsEmpty() || Path.Len() > 512
+        || !Params->TryGetStringField(TEXT("expected_baseline"), Expected) || Expected.Len() != 40)
+        return Reject(TEXT("Require bounded /Game package path, exact array_path and reader array_append.baseline"));
+    bool DryRun = true, Save = false;
+    if ((Params->HasField(TEXT("dry_run")) && !Params->TryGetBoolField(TEXT("dry_run"), DryRun))
+        || (Params->HasField(TEXT("save")) && !Params->TryGetBoolField(TEXT("save"), Save))) return Reject(TEXT("dry_run/save must be boolean"));
+    const TArray<TSharedPtr<FJsonValue>>* Items = nullptr;
+    if (!Params->TryGetArrayField(TEXT("items"), Items) || Items->IsEmpty() || Items->Num() > 64)
+        return Reject(TEXT("items requires 1..64 objects of relative editable field paths, e.g. [{Cost:75},{Cost:100}]"));
+    auto* Asset = LoadTarget(Params, Error);
+    if (!Asset || !Asset->IsA<UDataAsset>()) return Reject(Error.IsEmpty() ? TEXT("Append requires a DataAsset instance") : Error);
+    if (Asset->GetPackage()->IsDirty()) return Reject(TEXT("Preexisting dirty asset refused, even with save=false; save or discard the approved draft explicitly"));
+    auto Before = ArrayAppendSnapshot(Asset, Path, Error);
+    if (!Before) return Reject(Error);
+    if (Before->GetStringField(TEXT("baseline")) != Expected) return Failure(TEXT("Stale or mismatched array append baseline; read again before appending"), TEXT("conflict"));
+    if (!Before->GetBoolField(TEXT("can_append")) || Items->Num() > Before->GetIntegerField(TEXT("max_new_items")))
+        return Reject(TEXT("Array cannot currently append or requested item count exceeds the remaining capacity/batch limit"));
+    FResolved Original;
+    if (!Resolve(Asset, Path, Original, Error, nullptr, true)) return Reject(Error);
+    FValueStorage Staged(Original.Root, Original.Root->ContainerPtrToValuePtr<void>(Asset));
+    FResolved Pending;
+    if (!Resolve(Asset, Path, Pending, Error, Staged.Data, true)) return Reject(Error);
+    auto* Array = CastFieldChecked<FArrayProperty>(Pending.Leaf);
+    FScriptArrayHelper Storage(Array, Pending.Address);
+    const int32 OldCount = Storage.Num(); Storage.Resize(OldCount + Items->Num());
+    TArray<FString> ChangedPaths;
+    int32 Budget = MaxValues;
+    for (int32 Index = 0; Index < Items->Num(); ++Index)
+    {
+        const auto& Item = (*Items)[Index];
+        if (!Item || Item->Type != EJson::Object || Item->AsObject()->Values.Num() > 64) return Reject(TEXT("Each new item requires at most 64 relative field/value pairs"));
+        TArray<FString> Fields; Item->AsObject()->Values.GetKeys(Fields); Fields.Sort();
+        TArray<FString> Previous;
+        for (const auto& Field : Fields)
+        {
+            if (Field.IsEmpty() || Field.Len() > 256) return Reject(TEXT("Invalid relative new-item field path"));
+            for (const auto& Other : Previous)
+                if (Field == Other || Field.StartsWith(Other + TEXT(".")) || Field.StartsWith(Other + TEXT("["))
+                    || Other.StartsWith(Field + TEXT(".")) || Other.StartsWith(Field + TEXT("["))) return Reject(TEXT("Overlapping new-item field paths"));
+            const FString LeafPath = FString::Printf(TEXT("%s[%d].%s"), *Path, OldCount + Index, *Field);
+            FResolved Leaf;
+            if (!Resolve(Asset, LeafPath, Leaf, Error, Staged.Data) || !Decode(Leaf.Leaf, Leaf.Address, Item->AsObject()->Values[Field], Error, Budget))
+                return Reject(LeafPath + TEXT(": ") + Error);
+            Previous.Add(Field); ChangedPaths.Add(LeafPath);
+        }
+    }
+    for (const auto& Condition : Pending.Conditions) if (!ConditionMet(Condition, nullptr, Error)) return Reject(Error);
+    int32 ConditionBudget = MaxValues;
+    for (const auto& LeafPath : ChangedPaths)
+    {
+        FResolved Leaf;
+        if (!Resolve(Asset, LeafPath, Leaf, Error, Staged.Data) || !ConditionsMet(Leaf, nullptr, nullptr, Error, ConditionBudget))
+            return Failure(LeafPath + TEXT(": ") + Error, TEXT("edit_condition"));
+    }
+    Budget = MaxValues;
+    const auto Proposal = Encode(Array, Pending.Address, Error, Budget);
+    if (!Proposal) return Reject(Error);
+    TMap<FProperty*, FString> Witness;
+    int32 WitnessSize = 0;
+    for (TFieldIterator<FProperty> Field(Asset->GetClass()); Field; ++Field)
+    {
+        if (Field->HasAnyPropertyFlags(CPF_Transient | CPF_Deprecated)) continue;
+        const FString Value = TextRootValue(*Field, *Field == Original.Root ? Staged.Data : Field->ContainerPtrToValuePtr<void>(Asset), Asset);
+        WitnessSize += Value.Len();
+        if (WitnessSize > 1048576) return Reject(TEXT("Asset readback witness exceeds 1 MiB; append refused"));
+        Witness.Add(*Field, Value);
+    }
+    auto Result = MakeShared<FJsonObject>();
+    Result->SetNumberField(TEXT("array_append_contract"), 1); Result->SetBoolField(TEXT("success"), true);
+    Result->SetStringField(TEXT("asset_path"), AssetPath); Result->SetStringField(TEXT("array_path"), Path);
+    Result->SetBoolField(TEXT("dry_run"), DryRun); Result->SetBoolField(TEXT("would_modify"), true);
+    Result->SetBoolField(TEXT("modified"), false); Result->SetBoolField(TEXT("saved"), false);
+    Result->SetBoolField(TEXT("package_dirty"), false); Result->SetNumberField(TEXT("old_count"), OldCount);
+    Result->SetNumberField(TEXT("new_count"), Storage.Num()); Result->SetObjectField(TEXT("before"), Before);
+    Result->SetObjectField(TEXT("after"), Before); Result->SetField(TEXT("proposed_items"), Proposal);
+    Result->SetStringField(TEXT("stage"), DryRun ? TEXT("preview") : TEXT("apply"));
+    if (DryRun) return Result;
+    {
+        FScopedTransaction Transaction(NSLOCTEXT("UnrealMCP", "AppendDataAssetStructArray", "Append DataAsset struct array items"));
+        Asset->Modify(); Asset->PreEditChange(Original.Root);
+        Original.Root->CopyCompleteValue(Original.Root->ContainerPtrToValuePtr<void>(Asset), Staged.Data);
+        Asset->MarkPackageDirty();
+        FPropertyChangedEvent Event(Original.Root, EPropertyChangeType::ArrayAdd); Asset->PostEditChangeProperty(Event);
+    }
+    Result->SetBoolField(TEXT("modified"), true);
+    auto FailAfter = [&](const FString& Stage, const FString& Message)
+    {
+        Result->SetBoolField(TEXT("success"), false); Result->SetStringField(TEXT("stage"), Stage);
+        Result->SetStringField(TEXT("error"), Message); Result->SetBoolField(TEXT("package_dirty"), Asset->GetPackage()->IsDirty()); return Result;
+    };
+    auto Verify = [&]()
+    {
+        auto After = ArrayAppendSnapshot(Asset, Path, Error);
+        if (!After) { Result->SetField(TEXT("after"), MakeShared<FJsonValueNull>()); return false; }
+        Result->SetObjectField(TEXT("after"), After);
+        for (const auto& Entry : Witness)
+            if (TextRootValue(Entry.Key, Entry.Key->ContainerPtrToValuePtr<void>(Asset), Asset) != Entry.Value) return false;
+        return After->GetIntegerField(TEXT("count")) == OldCount + Items->Num();
+    };
+    if (!Verify()) return FailAfter(TEXT("readback"), TEXT("Post-edit values/ownership/defaults changed; inspect applied draft before retrying; not saved"));
+    if (Save)
+    {
+        bool AllowSave = true;
+#if WITH_DEV_AUTOMATION_TESTS
+        AllowSave = !FailArrayAppendSaveForTest;
+#endif
+        const bool Saved = AllowSave && UEditorAssetLibrary::SaveLoadedAsset(Asset, false)
+            && !Asset->GetPackage()->IsDirty() && FPackageName::DoesPackageExist(AssetPath);
+        Result->SetBoolField(TEXT("saved"), Saved);
+        if (!Saved) return FailAfter(TEXT("save"), TEXT("Save failed; initialized array remains modified in memory; no rollback or automatic retry"));
+        if (!Verify()) return FailAfter(TEXT("readback"), TEXT("Saved but post-save readback changed; inspect actual after and disk"));
+    }
+    Result->SetBoolField(TEXT("package_dirty"), Asset->GetPackage()->IsDirty());
+    Result->SetStringField(TEXT("stage"), Save ? TEXT("saved") : TEXT("applied")); return Result;
 }
 
 TSharedPtr<FJsonObject> Write(const TSharedPtr<FJsonObject>& Params)

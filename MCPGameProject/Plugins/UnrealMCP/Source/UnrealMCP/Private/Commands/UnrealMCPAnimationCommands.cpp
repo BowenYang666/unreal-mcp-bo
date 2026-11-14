@@ -19,6 +19,13 @@
 #include "Misc/SecureHash.h"
 #include "Policies/CondensedJsonPrintPolicy.h"
 #include "Serialization/JsonSerializer.h"
+#include "Serialization/ObjectAndNameAsStringProxyArchive.h"
+#include "Serialization/MemoryWriter.h"
+#include "Misc/FileHelper.h"
+#include "NiagaraSystem.h"
+#include "NiagaraTypes.h"
+#include "NiagaraComponent.h"
+#include "Tests/MCPAssetPropertyTestTypes.h"
 #include <limits>
 
 namespace UnrealMCPAnimation
@@ -63,6 +70,7 @@ namespace UnrealMCPAnimation
         struct FReader
         {
             const UObject* Root = nullptr;
+            const UObject* TypedNotify = nullptr;
             int32 Values = 0;
             int32 Failures = 0;
             int32 StringCharacters = 0;
@@ -114,7 +122,7 @@ namespace UnrealMCPAnimation
                 Expanded.Add(Target);
                 const int32 Before = Failures;
                 const FString Package = Target->GetClass()->GetPackage()->GetName();
-                if (Package != TEXT("/Script/Engine") && Package != TEXT("/Script/NiagaraAnimNotifies")
+                if (Target != TypedNotify && Package != TEXT("/Script/Engine") && Package != TEXT("/Script/NiagaraAnimNotifies")
                     && Target->GetClass()->GetMetaData(TEXT("MCPAnimationNotifyAuthoringSafe")) != TEXT("true"))
                     Missing(Path, TEXT("Custom notify may contain unreflected native data; fields are partial"));
                 Result->SetObjectField(TEXT("fields"), Fields(Target->GetClass(), Target, Path, Depth + 1));
@@ -199,9 +207,9 @@ namespace UnrealMCPAnimation
             }
         };
 
-        TSharedRef<FJsonObject> Snapshot(const UAnimSequenceBase* Asset)
+        TSharedRef<FJsonObject> Snapshot(const UAnimSequenceBase* Asset, const UObject* TypedNotify = nullptr)
         {
-            FReader Reader; Reader.Root = Asset; auto Result = MakeShared<FJsonObject>();
+            FReader Reader; Reader.Root = Asset; Reader.TypedNotify = TypedNotify; auto Result = MakeShared<FJsonObject>();
             Result->SetNumberField(TEXT("animation_contract"), 1); Result->SetStringField(TEXT("asset_path"), Asset->GetPackage()->GetName());
             Result->SetStringField(TEXT("object_path"), Asset->GetPathName()); Result->SetStringField(TEXT("class_path"), Asset->GetClass()->GetPathName());
             Result->SetField(TEXT("skeleton"), Reader.Reference(Asset->GetSkeleton()));
@@ -306,6 +314,281 @@ namespace UnrealMCPAnimation
             Result->SetBoolField(TEXT("saved"), Saved); Result->SetObjectField(TEXT("after"), Snapshot(Asset));
             Result->SetBoolField(TEXT("package_dirty"), Asset->GetPackage()->IsDirty());
         }
+    }
+
+    namespace
+    {
+        struct FNotifyLeaf
+        {
+            FString Path;
+            FProperty* Root = nullptr;
+            FProperty* Property = nullptr;
+            void* Address(UObject* Notify, void* Storage = nullptr) const
+            {
+                void* RootValue = Storage ? Storage : Root->ContainerPtrToValuePtr<void>(Notify);
+                return Root == Property ? RootValue : Property->ContainerPtrToValuePtr<void>(RootValue);
+            }
+        };
+
+        struct FNotifyStorage
+        {
+            FProperty* Property;
+            void* Data;
+            explicit FNotifyStorage(FProperty* InProperty, UObject* Notify) : Property(InProperty)
+            {
+                Data = FMemory::Malloc(Property->GetSize(), Property->GetMinAlignment());
+                Property->InitializeValue(Data);
+                Property->CopyCompleteValue(Data, Property->ContainerPtrToValuePtr<void>(Notify));
+            }
+            ~FNotifyStorage() { Property->DestroyValue(Data); FMemory::Free(Data); }
+        };
+
+        class FNotifyWitness final : public FObjectAndNameAsStringProxyArchive
+        {
+            const TSet<const FProperty*>& Excluded;
+        public:
+            FNotifyWitness(FArchive& Inner, const TSet<const FProperty*>& InExcluded)
+                : FObjectAndNameAsStringProxyArchive(Inner, false), Excluded(InExcluded)
+            { ArNoDelta = true; }
+            virtual bool ShouldSkipProperty(const FProperty* Property) const override
+            { return Excluded.Contains(Property) || Property->HasAnyPropertyFlags(CPF_Transient | CPF_Deprecated) || FObjectAndNameAsStringProxyArchive::ShouldSkipProperty(Property); }
+            virtual void Serialize(void* Data, int64 Length) override
+            {
+                if (Length < 0 || Tell() > 1048576 - Length) { SetError(); return; }
+                FObjectAndNameAsStringProxyArchive::Serialize(Data, Length);
+            }
+        };
+
+        FString NotifyWitness(UObject* Object, const TSet<const FProperty*>& Excluded, FString& Error)
+        {
+            TArray<uint8> Bytes; FMemoryWriter Memory(Bytes); FNotifyWitness Writer(Memory, Excluded);
+            Object->Serialize(Writer);
+            if (Writer.IsError() || Bytes.Num() > 1048576) { Error = TEXT("Serialized protection witness exceeds bounds or cannot be read"); return {}; }
+            FSHAHash Hash; FSHA1::HashBuffer(Bytes.GetData(), Bytes.Num(), Hash.Hash); return Hash.ToString();
+        }
+
+        bool NotifyLeaves(UAnimNotify* Notify, TArray<FNotifyLeaf>& Leaves, FString& Error)
+        {
+            UClass* Class = Notify->GetClass();
+            if (Class->GetSuperClass() != UAnimNotify::StaticClass() || !Class->HasAnyClassFlags(CLASS_Native)
+                || Class->HasAnyClassFlags(CLASS_Abstract | CLASS_Deprecated | CLASS_NewerVersionExists | CLASS_CompiledFromBlueprint)
+                || (Class->GetPathName() != TEXT("/Script/NodeFall.NFAnimNotify_PlayNiagaraAppearance")
+                    && Class->GetMetaData(TEXT("MCPNiagaraAppearanceNotifyAuthoringSafe")) != TEXT("true")))
+            { Error = TEXT("Require the finite native Niagara-appearance adapter or explicit MCPNiagaraAppearanceNotifyAuthoringSafe=true opt-in; no arbitrary class loading"); return false; }
+            auto Add = [&](const TCHAR* Name, const TCHAR* Kind, const TCHAR* Member = nullptr)
+            {
+                FProperty* Root = Class->FindPropertyByName(FName(Name));
+                auto* Structure = CastField<FStructProperty>(Root);
+                FProperty* Property = Member && Structure ? Structure->Struct->FindPropertyByName(FName(Member)) : Member ? nullptr : Root;
+                if (!Root || !Property || Root->ArrayDim != 1 || Property->ArrayDim != 1
+                    || !Root->HasAnyPropertyFlags(CPF_Edit) || !Property->HasAnyPropertyFlags(CPF_Edit)
+                    || Root->HasAnyPropertyFlags(CPF_EditConst | CPF_Transient | CPF_Deprecated | CPF_InstancedReference | CPF_ContainsInstancedReference)
+                    || Property->HasAnyPropertyFlags(CPF_EditConst | CPF_Transient | CPF_Deprecated | CPF_InstancedReference | CPF_ContainsInstancedReference)
+                    || Root->HasMetaData(TEXT("EditCondition")) || Property->HasMetaData(TEXT("EditCondition"))
+                    || !Notify->CanEditChange(Root)) return false;
+                auto* Struct = CastField<FStructProperty>(Property);
+                auto* Object = CastField<FObjectProperty>(Property);
+                const FString Type(Kind);
+                const bool Valid = (Type == TEXT("name") && CastField<FNameProperty>(Property))
+                    || (Type == TEXT("float") && CastField<FFloatProperty>(Property)) || (Type == TEXT("bool") && CastField<FBoolProperty>(Property))
+                    || (Type == TEXT("vector") && Struct && Struct->Struct == TBaseStructure<FVector>::Get())
+                    || (Type == TEXT("rotator") && Struct && Struct->Struct == TBaseStructure<FRotator>::Get())
+                    || (Type == TEXT("system") && Object && Object->PropertyClass == UNiagaraSystem::StaticClass());
+                if (!Valid) return false;
+                Leaves.Add({Member ? FString(Name) + TEXT(".") + Member : FString(Name), Root, Property}); return true;
+            };
+            if (!Add(TEXT("Template"), TEXT("system")) || !Add(TEXT("SocketName"), TEXT("name"))
+                || !Add(TEXT("bAttached"), TEXT("bool")) || !Add(TEXT("bAbsoluteScale"), TEXT("bool"))
+                || !Add(TEXT("LocationOffset"), TEXT("vector")) || !Add(TEXT("RotationOffset"), TEXT("rotator")) || !Add(TEXT("Scale"), TEXT("vector"))
+                || !Add(TEXT("Appearance"), TEXT("name"), TEXT("SizeParameter")) || !Add(TEXT("Appearance"), TEXT("float"), TEXT("SizeMultiplier")))
+            { Error = TEXT("Native Niagara-appearance field shape/editability differs from the finite adapter"); return false; }
+            return true;
+        }
+
+        UAnimMontage* NotifyTarget(const TSharedPtr<FJsonObject>& Params, UAnimNotify*& Notify, FGuid& Guid, TArray<FNotifyLeaf>& Leaves, FString& Error)
+        {
+            auto* Montage = Cast<UAnimMontage>(Load(Params, Error)); FString Text;
+            if (!Montage || !Params->TryGetStringField(TEXT("event_guid"), Text) || !FGuid::ParseExact(Text, EGuidFormats::DigitsWithHyphens, Guid) || !Guid.IsValid())
+            { Error = TEXT("Require an existing exact Montage and nonzero hyphenated event GUID"); return nullptr; }
+            TSet<FGuid> Seen; Notify = nullptr;
+            for (const auto& Event : Montage->Notifies)
+            {
+                if (!Event.Guid.IsValid() || Seen.Contains(Event.Guid)) { Error = TEXT("Missing/duplicate event GUID prevents safe identity protection"); return nullptr; }
+                Seen.Add(Event.Guid);
+                if (Event.Guid == Guid)
+                {
+                    if (Event.NotifyStateClass || !Event.Notify || Event.Notify->GetOuter() != Montage)
+                    { Error = TEXT("Require one instant Notify owned directly by the selected Montage"); return nullptr; }
+                    Notify = Event.Notify;
+                }
+            }
+            if (!Notify || !NotifyLeaves(Notify, Leaves, Error)) { if (Error.IsEmpty()) Error = TEXT("Event GUID not found"); return nullptr; }
+            int32 References = 0;
+            for (const auto& Event : Montage->Notifies) if (Event.Notify == Notify) ++References;
+            if (References != 1) { Error = TEXT("Notify object is shared by multiple events"); return nullptr; }
+            return Montage;
+        }
+
+        TSharedPtr<FJsonObject> NotifyScope(UAnimMontage* Montage, UAnimNotify* Notify, const FGuid& Guid, const TArray<FNotifyLeaf>& Leaves, FString& Error)
+        {
+            auto Scope = Snapshot(Montage, Notify);
+            if (!Scope->GetBoolField(TEXT("complete"))) { Error = TEXT("Other unsupported authoring data prevents a protected Notify patch"); return nullptr; }
+            auto Result = MakeShared<FJsonObject>(); Result->SetNumberField(TEXT("notify_properties_contract"), 1);
+            Result->SetStringField(TEXT("asset_path"), Montage->GetPackage()->GetName()); Result->SetStringField(TEXT("event_guid"), Guid.ToString(EGuidFormats::DigitsWithHyphens));
+            Result->SetStringField(TEXT("notify_class"), Notify->GetClass()->GetPathName()); Result->SetStringField(TEXT("outer_path"), Notify->GetOuter()->GetPathName());
+            Result->SetStringField(TEXT("object_path"), Notify->GetPathName()); Result->SetObjectField(TEXT("animation"), Scope);
+            TArray<TSharedPtr<FJsonValue>> Fields;
+            for (const auto& Leaf : Leaves)
+            {
+                auto Field = MakeShared<FJsonObject>(); Field->SetStringField(TEXT("path"), Leaf.Path);
+                Field->SetStringField(TEXT("cpp_type"), Leaf.Property->GetCPPType()); Field->SetBoolField(TEXT("writable"), true);
+                Field->SetField(TEXT("value"), UnrealMCPAssetProperties::EncodeValue(Leaf.Property, Leaf.Address(Notify), Error));
+                if (!Error.IsEmpty()) return nullptr;
+                if (Leaf.Property->HasMetaData(TEXT("ClampMin"))) Field->SetStringField(TEXT("clamp_min"), Leaf.Property->GetMetaData(TEXT("ClampMin")));
+                if (Leaf.Path == TEXT("Template")) Field->SetStringField(TEXT("reference_class"), UNiagaraSystem::StaticClass()->GetPathName());
+                Fields.Add(MakeShared<FJsonValueObject>(Field));
+            }
+            Result->SetArrayField(TEXT("editable_fields"), Fields);
+            auto Witnesses = MakeShared<FJsonObject>();
+            Witnesses->SetStringField(Montage->GetPathName(), NotifyWitness(Montage, {}, Error));
+            for (const auto& Event : Montage->Notifies)
+                for (UObject* Object : {static_cast<UObject*>(Event.Notify.Get()), static_cast<UObject*>(Event.NotifyStateClass.Get())})
+                    if (Object) Witnesses->SetStringField(Object->GetPathName(), NotifyWitness(Object, {}, Error));
+            if (!Error.IsEmpty()) return nullptr;
+            Result->SetObjectField(TEXT("stored_witnesses"), Witnesses);
+            const FString File = FPackageName::LongPackageNameToFilename(Montage->GetPackage()->GetName(), FPackageName::GetAssetPackageExtension());
+            Result->SetStringField(TEXT("saved_file_hash"), LexToString(FMD5Hash::HashFile(*File)));
+            Result->SetBoolField(TEXT("complete"), true); Seal(Result); Result->SetBoolField(TEXT("package_dirty"), Montage->GetPackage()->IsDirty());
+            Result->SetStringField(TEXT("semantics"), TEXT("Finite Niagara-appearance patch contract; reflected authoring plus bounded serialized witnesses. Legacy animation completeness is unchanged. No runtime playback proof."));
+            return Result;
+        }
+    }
+
+    TSharedPtr<FJsonObject> ReadNotifyProperties(const TSharedPtr<FJsonObject>& Params)
+    {
+        FString Error; UAnimNotify* Notify = nullptr; FGuid Guid; TArray<FNotifyLeaf> Leaves;
+        if (Params) for (const auto& Pair : Params->Values)
+            if (Pair.Key != TEXT("asset_path") && Pair.Key != TEXT("event_guid")) return Failure(TEXT("Unknown argument: ") + Pair.Key);
+        auto* Montage = NotifyTarget(Params, Notify, Guid, Leaves, Error); if (!Montage) return Failure(Error);
+        auto Result = NotifyScope(Montage, Notify, Guid, Leaves, Error); if (!Result) return Failure(Error);
+        Result->SetBoolField(TEXT("success"), true); Result->SetBoolField(TEXT("modified"), false); Result->SetBoolField(TEXT("saved"), false); return Result;
+    }
+
+    TSharedPtr<FJsonObject> PatchNotifyProperties(const TSharedPtr<FJsonObject>& Params)
+    {
+        FString Error;
+        if (!IsInGameThread() || !GEditor || GEditor->PlayWorld || GEditor->bIsSimulatingInEditor || GIsSavingPackage || IsGarbageCollecting() || GIsSlowTask
+            || FAssetCompilingManager::Get().GetNumRemainingAssets() != 0 || (FSlateApplication::IsInitialized() && FSlateApplication::Get().GetActiveModalWindow().IsValid()))
+            return Failure(FString::Printf(TEXT("Require idle Editor: game_thread=%d editor=%d PIE=%d simulation=%d save=%d GC=%d slow_task=%d compiling=%d modal=%d"),
+                IsInGameThread(), GEditor != nullptr, GEditor && GEditor->PlayWorld != nullptr, GEditor && GEditor->bIsSimulatingInEditor,
+                !!GIsSavingPackage, IsGarbageCollecting(), !!GIsSlowTask, FAssetCompilingManager::Get().GetNumRemainingAssets(),
+                FSlateApplication::IsInitialized() && FSlateApplication::Get().GetActiveModalWindow().IsValid()));
+        const TSet<FString> Allowed{TEXT("asset_path"), TEXT("event_guid"), TEXT("expected_class"), TEXT("expected_outer"), TEXT("expected_baseline"), TEXT("changes"), TEXT("dry_run"), TEXT("save")};
+        if (!Params || Json(Params).Len() > 65536) return Failure(TEXT("Missing/oversized request; limit 64Ki characters"));
+        for (const auto& Pair : Params->Values) if (!Allowed.Contains(Pair.Key)) return Failure(TEXT("Unknown argument: ") + Pair.Key);
+        UAnimNotify* Notify = nullptr; FGuid Guid; TArray<FNotifyLeaf> Leaves;
+        auto* Montage = NotifyTarget(Params, Notify, Guid, Leaves, Error); if (!Montage) return Failure(Error);
+        if (Montage->GetPackage()->IsDirty() || (Montage->GetSkeleton() && Montage->GetSkeleton()->GetPackage()->IsDirty())) return Failure(TEXT("Preexisting dirty Montage/Skeleton refused"));
+        auto Before = NotifyScope(Montage, Notify, Guid, Leaves, Error); if (!Before) return Failure(Error);
+        FString Class, Outer, Baseline;
+        if (!Params->TryGetStringField(TEXT("expected_class"), Class) || Class != Notify->GetClass()->GetPathName()
+            || !Params->TryGetStringField(TEXT("expected_outer"), Outer) || Outer != Montage->GetPathName()
+            || !Params->TryGetStringField(TEXT("expected_baseline"), Baseline) || Baseline != Before->GetStringField(TEXT("baseline")))
+            return Failure(TEXT("Class/Outer mismatch or missing/stale baseline; read the dedicated contract again"));
+        bool DryRun, SaveAsset; if (!Flags(Params, DryRun, SaveAsset, Error)) return Failure(Error);
+        const TArray<TSharedPtr<FJsonValue>>* Changes = nullptr;
+        if (!Params->TryGetArrayField(TEXT("changes"), Changes) || Changes->Num() < 1 || Changes->Num() > 32) return Failure(TEXT("Require 1..32 unique supported leaf changes"));
+        TMap<FProperty*, TUniquePtr<FNotifyStorage>> Staged; TSet<FString> Paths;
+        for (const auto& Value : *Changes)
+        {
+            const TSharedPtr<FJsonObject>* Change = nullptr; FString Path;
+            if (!Value->TryGetObject(Change) || (*Change)->Values.Num() != 2 || !(*Change)->TryGetStringField(TEXT("path"), Path) || !(*Change)->HasField(TEXT("value")) || Paths.Contains(Path))
+                return Failure(TEXT("Each change requires exactly one unique path and value"));
+            const auto* Leaf = Leaves.FindByPredicate([&](const FNotifyLeaf& Field) { return Field.Path == Path; });
+            if (!Leaf) return Failure(TEXT("Unsupported Notify leaf: ") + Path);
+            Paths.Add(Path);
+            if (!Staged.Contains(Leaf->Root)) Staged.Add(Leaf->Root, MakeUnique<FNotifyStorage>(Leaf->Root, Notify));
+            if (!UnrealMCPAssetProperties::DecodeValue(Leaf->Property, Leaf->Address(Notify, Staged[Leaf->Root]->Data), (*Change)->Values[TEXT("value")], Error)) return Failure(Path + TEXT(": ") + Error);
+        }
+        auto Address = [&](const TCHAR* Path)
+        {
+            const auto& Leaf = *Leaves.FindByPredicate([&](const FNotifyLeaf& Field) { return Field.Path == Path; });
+            return Leaf.Address(Notify, Staged.Contains(Leaf.Root) ? Staged[Leaf.Root]->Data : nullptr);
+        };
+        const auto* Template = CastField<FObjectProperty>(Leaves[0].Property);
+        auto* System = Cast<UNiagaraSystem>(Template->GetObjectPropertyValue(Address(TEXT("Template"))));
+        const auto SizeName = *static_cast<FName*>(Address(TEXT("Appearance.SizeParameter")));
+        const float Size = *static_cast<float*>(Address(TEXT("Appearance.SizeMultiplier")));
+        const auto Scale = *static_cast<FVector*>(Address(TEXT("Scale")));
+        if (!System || System->GetPackage()->IsDirty() || !FMath::IsFinite(Size) || Size < 0.01f || Scale.GetMin() < 0.01 || Scale.ContainsNaN()
+            || (SizeName.IsNone() && Size != 1) || (!SizeName.IsNone() && (!SizeName.ToString().StartsWith(TEXT("User."))
+                || System->GetExposedParameters().IndexOf(FNiagaraVariable(FNiagaraTypeDefinition::GetFloatDef(), SizeName)) == INDEX_NONE)))
+            return Failure(TEXT("Require a saved Niagara Template, positive Scale >=0.01, Size >=0.01 and an existing User Float; None requires multiplier 1"));
+        FReader ProposalReader; ProposalReader.Root = Montage; ProposalReader.TypedNotify = Notify;
+        TSharedPtr<FJsonObject> Proposed;
+        if (!FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Json(Before->GetObjectField(TEXT("animation")))), Proposed)) return Failure(TEXT("Cannot stage protected snapshot"));
+        auto Rows = Proposed->GetArrayField(TEXT("notifies"));
+        TSharedPtr<FJsonObject> Fields;
+        for (const auto& Row : Rows) if (Row->AsObject()->GetStringField(TEXT("guid")) == Guid.ToString(EGuidFormats::DigitsWithHyphens))
+            Fields = Row->AsObject()->GetObjectField(TEXT("fields"))->GetObjectField(TEXT("Notify"))->GetObjectField(TEXT("fields"));
+        if (!Fields) return Failure(TEXT("Cannot stage selected event"));
+        bool Changed = false; TSet<const FProperty*> Excluded;
+        for (const auto& Leaf : Leaves) if (Paths.Contains(Leaf.Path)) Excluded.Add(Leaf.Property);
+        for (const auto& Pair : Staged)
+        {
+            Changed |= !Pair.Key->Identical(Pair.Key->ContainerPtrToValuePtr<void>(Notify), Pair.Value->Data);
+            Fields->SetField(Pair.Key->GetName(), ProposalReader.Value(Pair.Key, Pair.Value->Data, Pair.Key->GetName(), 0));
+        }
+        if (ProposalReader.Failures) return Failure(TEXT("Staged values cannot be read completely"));
+        auto Result = Receipt(Before, DryRun, Changed); Result->SetNumberField(TEXT("notify_properties_contract"), 1); Result->SetStringField(TEXT("event_guid"), Guid.ToString(EGuidFormats::DigitsWithHyphens));
+        Result->SetObjectField(TEXT("proposed"), Proposed);
+        if (DryRun || !Changed) return Result;
+        const FString Protected = NotifyWitness(Notify, Excluded, Error); if (!Error.IsEmpty()) return Failure(Error);
+        auto Normalize = [](const TSharedPtr<FJsonObject>& Scope)
+        {
+            auto Copy = MakeShared<FJsonObject>(*Scope);
+            for (const auto* Name : {TEXT("baseline"), TEXT("package_dirty"), TEXT("semantics")}) Copy->RemoveField(Name);
+            return Json(Copy);
+        };
+        const FString Expected = Normalize(Proposed);
+        const auto Current = NotifyScope(Montage, Notify, Guid, Leaves, Error);
+        if (!Current || Current->GetStringField(TEXT("baseline")) != Baseline || Montage->GetPackage()->IsDirty()
+            || System->GetPackage()->IsDirty() || FAssetCompilingManager::Get().GetNumRemainingAssets() != 0)
+            return Failure(TEXT("Target/reference changed or compilation started during preflight; read again"));
+        {
+            const FScopedTransaction Transaction(NSLOCTEXT("UnrealMCP", "MontageNotifyProperties", "Patch montage Niagara notify properties"));
+            Montage->SetFlags(RF_Transactional); Notify->SetFlags(RF_Transactional); Montage->Modify(); Notify->Modify();
+            for (const auto& Pair : Staged) Notify->PreEditChange(Pair.Key);
+            for (const auto& Pair : Staged) Pair.Key->CopyCompleteValue(Pair.Key->ContainerPtrToValuePtr<void>(Notify), Pair.Value->Data);
+            for (const auto& Pair : Staged)
+            {
+                FPropertyChangedEvent Event(Pair.Key, EPropertyChangeType::ValueSet); Notify->PostEditChangeProperty(Event);
+            }
+            static_cast<UAnimSequenceBase*>(Montage)->RefreshCacheData(); Montage->MarkPackageDirty();
+        }
+        Result->SetBoolField(TEXT("modified"), true);
+        auto Verify = [&]()
+        {
+            Error.Empty(); auto After = NotifyScope(Montage, Notify, Guid, Leaves, Error);
+            if (After) Result->SetObjectField(TEXT("after"), After);
+            bool Preserved = After && Normalize(After->GetObjectField(TEXT("animation"))) == Expected && NotifyWitness(Notify, Excluded, Error) == Protected;
+            if (After)
+                for (const auto& Pair : Before->GetObjectField(TEXT("stored_witnesses"))->Values)
+                    if (Pair.Key != Notify->GetPathName()) Preserved &= After->GetObjectField(TEXT("stored_witnesses"))->GetStringField(Pair.Key) == Pair.Value->AsString();
+            Result->SetBoolField(TEXT("existing_data_preserved"), Preserved); Result->SetBoolField(TEXT("package_dirty"), Montage->GetPackage()->IsDirty());
+            if (!Preserved) { Result->SetBoolField(TEXT("success"), false); Result->SetStringField(TEXT("stage"), TEXT("readback")); Result->SetStringField(TEXT("error"), TEXT("Protected author data differs after edit/save; actual state remains, no rollback/retry. ") + Error); }
+            return Preserved;
+        };
+        if (!Verify() || !SaveAsset) return Result;
+        bool Saved = false;
+#if WITH_DEV_AUTOMATION_TESTS
+        if (!FailSaveForTest)
+#endif
+            Saved = UEditorAssetLibrary::SaveLoadedAsset(Montage, false) && !Montage->GetPackage()->IsDirty();
+        Result->SetBoolField(TEXT("saved"), Saved);
+        Verify();
+        if (!Saved && Result->GetBoolField(TEXT("success"))) { Result->SetBoolField(TEXT("success"), false); Result->SetStringField(TEXT("stage"), TEXT("save")); Result->SetStringField(TEXT("error"), TEXT("Applied Notify changes remain; target save failed")); }
+        return Result;
     }
 
     TSharedPtr<FJsonObject> Read(const TSharedPtr<FJsonObject>& Params)
@@ -523,8 +806,21 @@ namespace UnrealMCPAnimation
     }
 }
 
+void UMCPAnimationAppearanceTestNotify::BranchingPointNotify(FBranchingPointNotifyPayload& Payload)
+{
+    ++CallCount;
+    auto* Component = NewObject<UNiagaraComponent>();
+    Component->SetAsset(Template);
+    Component->SetVariableFloat(Appearance.SizeParameter, Appearance.SizeMultiplier);
+    bool Valid = false;
+    DeliveredSize = Component->GetVariableFloat(Appearance.SizeParameter, Valid);
+    if (!Valid) DeliveredSize = -1;
+}
+
 #if WITH_DEV_AUTOMATION_TESTS
 #include "Misc/AutomationTest.h"
+#include "Commands/UnrealMCPNiagaraCommands.h"
+#include "IAssetCompilingManager.h"
 #include "Animation/AnimNotifies/AnimNotify_PlaySound.h"
 #include "Animation/AnimData/IAnimationDataController.h"
 #include "Engine/SkeletalMesh.h"
@@ -535,7 +831,6 @@ namespace UnrealMCPAnimation
 #include "Misc/Paths.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
-#include "Tests/MCPAssetPropertyTestTypes.h"
 #include "Animation/AnimInstance.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Sound/SoundWave.h"
@@ -741,6 +1036,135 @@ bool FMCPAnimationNotifyTest::RunTest(const FString& Parameters)
     const FString Receipt = FPaths::ProjectSavedDir() / TEXT("AnimationAcceptance") / FPackageName::GetShortName(Root) / TEXT("montage.json");
     IFileManager::Get().MakeDirectory(*FPaths::GetPath(Receipt), true); TestTrue(TEXT("Notify cold oracle saved"), FFileHelper::SaveStringToFile(Json(Read(Params)), *Receipt, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM));
     AddInfo(TEXT("Animation notify fixture: ") + Root); return !HasAnyErrors();
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMCPAnimationNotifyPropertiesTest, "UnrealMCP.Animation.NotifyProperties", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FMCPAnimationNotifyPropertiesTest::RunTest(const FString& Parameters)
+{
+    using namespace UnrealMCPAnimation;
+    const FString Root = TEXT("/Game/__Dev/NotifyProperties_") + FGuid::NewGuid().ToString(EGuidFormats::Digits);
+    auto* Sequence = FixtureSequence(Root);
+    if (!UEditorAssetLibrary::SaveLoadedAsset(Sequence->GetSkeleton(), false) || !UEditorAssetLibrary::SaveLoadedAsset(Sequence, false)) return false;
+    auto* Dynamic = UAnimMontage::CreateSlotAnimationAsDynamicMontage(Sequence, FName(TEXT("DefaultSlot")), 0.03f, 0.04f);
+    auto* Montage = DuplicateObject<UAnimMontage>(Dynamic, CreatePackage(*(Root + TEXT("/AM_Test"))), FName(TEXT("AM_Test")));
+    Montage->ClearFlags(RF_Transient); Montage->SetFlags(RF_Public | RF_Standalone | RF_Transactional); FAssetRegistryModule::AssetCreated(Montage); Montage->InitializeNotifyTrack();
+    static_cast<UAnimCompositeBase*>(Montage)->SetCompositeLength(Sequence->GetPlayLength());
+    Montage->bEnableAutoBlendOut = false;
+    const auto Track = Montage->AnimNotifyTracks[0].TrackName;
+    auto* Sound = Cast<UAnimNotify_PlaySound>(UAnimationBlueprintLibrary::AddAnimationNotifyEvent(Montage, Track, 0.01f, UAnimNotify_PlaySound::StaticClass()));
+    Sound->VolumeMultiplier = 0.23f;
+    auto* Fire = UAnimationBlueprintLibrary::AddAnimationNotifyEvent(Montage, Track, 0.02f, UMCPAnimationTestNotify::StaticClass());
+    auto* Notify = Cast<UMCPAnimationAppearanceTestNotify>(UAnimationBlueprintLibrary::AddAnimationNotifyEvent(Montage, Track, 0.03f, UMCPAnimationAppearanceTestNotify::StaticClass()));
+    Notify->Appearance.Colors.Add(FLinearColor(0.1f, 0.2f, 0.3f, 0.4f)); Notify->LocationOffset = FVector(2, 3, 4);
+    FUnrealMCPNiagaraCommands Niagara;
+    auto SystemParams = MakeShared<FJsonObject>(); SystemParams->SetStringField(TEXT("asset_path"), Root + TEXT("/NS_Test"));
+    Niagara.HandleCommand(TEXT("create_niagara_system"), SystemParams);
+    auto* System = Cast<UNiagaraSystem>(UEditorAssetLibrary::LoadAsset(Root + TEXT("/NS_Test")));
+    if (!TestNotNull(TEXT("Factory-initialized Niagara system"), System)) return false;
+    System->GetExposedParameters().SetParameterValue(1.0f, FNiagaraVariable(FNiagaraTypeDefinition::GetFloatDef(), TEXT("User.Size")), true);
+    Notify->Template = System;
+    if (!TestTrue(TEXT("Save isolated system and Montage"), UEditorAssetLibrary::SaveLoadedAsset(System, false) && UEditorAssetLibrary::SaveLoadedAsset(Montage, false))) return false;
+    TArray<UObject*> Ready{Sequence, Montage, System}; FAssetCompilingManager::Get().FinishCompilationForObjects(Ready);
+    System->WaitForCompilationComplete(true, false);
+    FAssetCompilingManager::Get().FinishAllCompilation();
+    FAssetCompilingManager::Get().ProcessAsyncTasks(false);
+    for (const auto* Manager : FAssetCompilingManager::Get().GetRegisteredManagers())
+        if (Manager->GetNumRemainingAssets() != 0)
+            AddInfo(FString::Printf(TEXT("Notify fixture pending compiler: %s=%d"), *Manager->GetAssetTypeName().ToString(), Manager->GetNumRemainingAssets()));
+    if (!TestEqual(TEXT("Fixture compilers are idle before reader/writer"), FAssetCompilingManager::Get().GetNumRemainingAssets(), 0)) return false;
+    const auto* TargetEvent = Montage->Notifies.FindByPredicate([&](const FAnimNotifyEvent& Event) { return Event.Notify == Notify; });
+    const FGuid Guid = TargetEvent->Guid;
+    auto Params = MakeShared<FJsonObject>(); Params->SetStringField(TEXT("asset_path"), Root + TEXT("/AM_Test")); Params->SetStringField(TEXT("event_guid"), Guid.ToString(EGuidFormats::DigitsWithHyphens));
+    auto ReaderParams = MakeShared<FJsonObject>(*Params);
+    const int32 CompilingBeforeRead = FAssetCompilingManager::Get().GetNumRemainingAssets();
+    const auto Legacy = Snapshot(Montage); TestFalse(TEXT("Legacy custom Notify remains partial"), Legacy->GetBoolField(TEXT("complete")));
+    const auto Before = ReadNotifyProperties(ReaderParams);
+    TestEqual(TEXT("Reader does not start compilation"), FAssetCompilingManager::Get().GetNumRemainingAssets(), CompilingBeforeRead);
+    if (!TestTrue(TEXT("Dedicated finite Notify contract readable"), Before->GetBoolField(TEXT("success")))) { AddError(Json(Before)); return false; }
+    auto Refresh = [&]()
+    {
+        const auto State = ReadNotifyProperties(ReaderParams);
+        Params->SetStringField(TEXT("expected_baseline"), State->GetStringField(TEXT("baseline")));
+        Params->SetStringField(TEXT("expected_class"), State->GetStringField(TEXT("notify_class")));
+        Params->SetStringField(TEXT("expected_outer"), State->GetStringField(TEXT("outer_path"))); return State;
+    };
+    Refresh();
+    auto Change = [](const TCHAR* Path, TSharedPtr<FJsonValue> Value)
+    { auto Result = MakeShared<FJsonObject>(); Result->SetStringField(TEXT("path"), Path); Result->SetField(TEXT("value"), Value); return MakeShared<FJsonValueObject>(Result); };
+    TArray<TSharedPtr<FJsonValue>> Changes{
+        Change(TEXT("Appearance.SizeParameter"), MakeShared<FJsonValueString>(TEXT("User.Size"))),
+        Change(TEXT("Appearance.SizeMultiplier"), MakeShared<FJsonValueNumber>(0.1)),
+        Change(TEXT("SocketName"), MakeShared<FJsonValueString>(TEXT("Muzzle"))),
+        Change(TEXT("bAbsoluteScale"), MakeShared<FJsonValueBoolean>(true))};
+    Params->SetArrayField(TEXT("changes"), Changes);
+    const FString File = FPackageName::LongPackageNameToFilename(Root + TEXT("/AM_Test"), FPackageName::GetAssetPackageExtension()); const auto DiskBefore = FMD5Hash::HashFile(*File);
+    const auto Preview = PatchNotifyProperties(Params);
+    if (!TestTrue(TEXT("Preview accepted"), Preview->GetBoolField(TEXT("success")))) { AddError(Json(Preview)); return false; }
+    TestFalse(TEXT("Preview clean"), Montage->GetPackage()->IsDirty()); TestEqual(TEXT("Preview no new Notify"), Montage->Notifies.Num(), 3);
+    TestEqual(TEXT("Preview original multiplier"), Notify->Appearance.SizeMultiplier, 1.0f);
+    auto Invalid = Changes; Invalid.Add(Change(TEXT("HiddenSentinel"), MakeShared<FJsonValueNumber>(9))); Params->SetArrayField(TEXT("changes"), Invalid);
+    TestFalse(TEXT("Illegal final hidden member rejects batch"), PatchNotifyProperties(Params)->GetBoolField(TEXT("success")));
+    TestTrue(TEXT("Rejected batch has no mutation"), Notify->Appearance.SizeParameter.IsNone() && !Montage->GetPackage()->IsDirty());
+    Invalid = Changes; Invalid.Add(Change(TEXT("Template"), MakeShared<FJsonValueString>(Sequence->GetPathName()))); Params->SetArrayField(TEXT("changes"), Invalid);
+    TestFalse(TEXT("Wrong reference type refused"), PatchNotifyProperties(Params)->GetBoolField(TEXT("success")));
+    Invalid = Changes; Invalid[1] = Change(TEXT("Appearance.SizeMultiplier"), MakeShared<FJsonValueNumber>(std::numeric_limits<double>::infinity())); Params->SetArrayField(TEXT("changes"), Invalid);
+    TestFalse(TEXT("Nonfinite value refused"), PatchNotifyProperties(Params)->GetBoolField(TEXT("success")));
+    Invalid = Changes; Invalid[0] = Change(TEXT("Appearance.SizeParameter"), MakeShared<FJsonValueString>(TEXT("User.Missing"))); Params->SetArrayField(TEXT("changes"), Invalid);
+    TestFalse(TEXT("Missing User Float refused"), PatchNotifyProperties(Params)->GetBoolField(TEXT("success"))); Params->SetArrayField(TEXT("changes"), Changes);
+    Params->SetStringField(TEXT("expected_class"), UAnimNotify::StaticClass()->GetPathName()); TestFalse(TEXT("Wrong class refused"), PatchNotifyProperties(Params)->GetBoolField(TEXT("success"))); Refresh();
+    Params->SetStringField(TEXT("expected_outer"), TEXT("wrong")); TestFalse(TEXT("Wrong Outer refused"), PatchNotifyProperties(Params)->GetBoolField(TEXT("success"))); Refresh();
+    Params->SetStringField(TEXT("expected_baseline"), TEXT("stale")); TestFalse(TEXT("Stale refused"), PatchNotifyProperties(Params)->GetBoolField(TEXT("success"))); Refresh();
+    const auto OriginalGuid = Montage->Notifies[0].Guid; Montage->Notifies[0].Guid = Guid;
+    TestFalse(TEXT("Duplicate GUID refused"), ReadNotifyProperties(ReaderParams)->GetBoolField(TEXT("success"))); Montage->Notifies[0].Guid = OriginalGuid;
+    Notify->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors | REN_NonTransactional);
+    TestFalse(TEXT("Wrong real Outer refused"), ReadNotifyProperties(ReaderParams)->GetBoolField(TEXT("success"))); Notify->Rename(nullptr, Montage, REN_DontCreateRedirectors | REN_NonTransactional);
+    Montage->GetPackage()->SetDirtyFlag(false); Refresh(); Params->SetBoolField(TEXT("dry_run"), false);
+    const auto Draft = PatchNotifyProperties(Params);
+    if (!TestTrue(TEXT("Apply draft preserves all protected data"), Draft->GetBoolField(TEXT("success")) && Draft->GetBoolField(TEXT("existing_data_preserved")))) { AddError(Json(Draft)); return false; }
+    TestTrue(TEXT("Draft truthful"), Draft->GetBoolField(TEXT("modified")) && !Draft->GetBoolField(TEXT("saved")) && Draft->GetBoolField(TEXT("package_dirty")));
+    TestTrue(TEXT("Draft disk unchanged"), FMD5Hash::HashFile(*File) == DiskBefore);
+    TestFalse(TEXT("Dirty draft refused"), PatchNotifyProperties(Params)->GetBoolField(TEXT("success")));
+    TestEqual(TEXT("Stored size"), Notify->Appearance.SizeMultiplier, 0.1f); TestEqual(TEXT("Stored socket"), Notify->SocketName, FName(TEXT("Muzzle")));
+    TestEqual(TEXT("Hidden sentinel retained"), Notify->HiddenSentinel, 73); TestEqual(TEXT("Brightness retained"), Notify->Appearance.BrightnessMultiplier, 3.0f);
+    TestEqual(TEXT("Colors retained"), Notify->Appearance.Colors[0], FLinearColor(0.1f, 0.2f, 0.3f, 0.4f)); TestEqual(TEXT("Location retained"), Notify->LocationOffset, FVector(2, 3, 4));
+    TestEqual(TEXT("Fire identity retained"), Montage->Notifies[1].Notify.Get(), Fire); TestEqual(TEXT("Sound identity retained"), Montage->Notifies[0].Notify.Get(), static_cast<UAnimNotify*>(Sound));
+    GEditor->UndoTransaction(); TestEqual(TEXT("Undo size"), Notify->Appearance.SizeMultiplier, 1.0f);
+    GEditor->RedoTransaction(); TestEqual(TEXT("Redo size"), Notify->Appearance.SizeMultiplier, 0.1f);
+    GEditor->UndoTransaction(); Montage->GetPackage()->SetDirtyFlag(false); Refresh(); Params->SetBoolField(TEXT("save"), true);
+    FailSaveForTest = true; const auto Failed = PatchNotifyProperties(Params); FailSaveForTest = false;
+    if (!TestTrue(TEXT("Save failure actual modified/unsaved"), !Failed->GetBoolField(TEXT("success")) && Failed->GetBoolField(TEXT("modified")) && !Failed->GetBoolField(TEXT("saved")))) { AddError(Json(Failed)); return false; }
+    TestEqual(TEXT("Save failure stage"), Failed->GetStringField(TEXT("stage")), FString(TEXT("save"))); TestTrue(TEXT("Save failure disk unchanged"), FMD5Hash::HashFile(*File) == DiskBefore);
+    GEditor->UndoTransaction(); Montage->GetPackage()->SetDirtyFlag(false); Refresh();
+    const auto Applied = PatchNotifyProperties(Params);
+    if (!TestTrue(TEXT("Apply/save and protected readback"), Applied->GetBoolField(TEXT("success")) && Applied->GetBoolField(TEXT("saved")))) { AddError(Json(Applied)); return false; }
+    Refresh(); const auto Repeat = PatchNotifyProperties(Params); TestTrue(TEXT("Same values no-op/clean/no-save"), Repeat->GetBoolField(TEXT("success")) && !Repeat->GetBoolField(TEXT("modified")) && !Repeat->GetBoolField(TEXT("saved")) && !Repeat->GetBoolField(TEXT("package_dirty")));
+    auto* Component = NewObject<USkeletalMeshComponent>(); auto* AnimInstance = NewObject<UAnimInstance>(Component);
+    UMCPAnimationAppearanceTestNotify::CallCount = 0; UMCPAnimationTestNotify::CallCount = 0;
+    auto Instance = MakeUnique<FAnimMontageInstance>(AnimInstance);
+    AnimInstance->MontageInstances.Add(Instance.Get());
+    Instance->Initialize(Montage); Instance->Play(); Instance->UpdateWeight(1.0f); Instance->Advance(0.04f, nullptr, false);
+    AnimInstance->MontageInstances.Remove(Instance.Get());
+    TestEqual(TEXT("Montage dispatches one appearance Notify"), UMCPAnimationAppearanceTestNotify::CallCount, 1); TestEqual(TEXT("Gameplay Fire still once"), UMCPAnimationTestNotify::CallCount, 1);
+    TestEqual(TEXT("Notify sends actual Niagara component User Float"), UMCPAnimationAppearanceTestNotify::DeliveredSize, 0.1f);
+    TestEqual(TEXT("Shared system default remains 1"), System->GetExposedParameters().GetParameterValue<float>(FNiagaraVariable(FNiagaraTypeDefinition::GetFloatDef(), TEXT("User.Size"))), 1.0f);
+    const FString Receipt = FPaths::ProjectSavedDir() / TEXT("NotifyPropertiesAcceptance") / FPackageName::GetShortName(Root) / TEXT("snapshot.json");
+    IFileManager::Get().MakeDirectory(*FPaths::GetPath(Receipt), true); TestTrue(TEXT("Save cold oracle"), FFileHelper::SaveStringToFile(Json(ReadNotifyProperties(ReaderParams)), *Receipt, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM));
+    AddInfo(TEXT("Notify properties fixture: ") + Root + TEXT(" event_guid=") + Guid.ToString(EGuidFormats::DigitsWithHyphens)); return !HasAnyErrors();
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMCPAnimationNotifyPropertiesReloadTest, "UnrealMCP.Animation.NotifyPropertiesCold", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FMCPAnimationNotifyPropertiesReloadTest::RunTest(const FString& Parameters)
+{
+    using namespace UnrealMCPAnimation; FString Root;
+    if (!FParse::Value(FCommandLine::Get(), TEXT("MCPNotifyPropertiesReload="), Root)) { AddInfo(TEXT("Explicit fixture root required; no cold evidence")); return true; }
+    if (!Root.StartsWith(TEXT("/Game/__Dev/NotifyProperties_"))) return false;
+    FString Expected; const FString File = FPaths::ProjectSavedDir() / TEXT("NotifyPropertiesAcceptance") / FPackageName::GetShortName(Root) / TEXT("snapshot.json");
+    if (!TestTrue(TEXT("Cold oracle exists"), FFileHelper::LoadFileToString(Expected, *File))) return false;
+    TSharedPtr<FJsonObject> Oracle; if (!FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Expected), Oracle)) return false;
+    auto Params = MakeShared<FJsonObject>(); Params->SetStringField(TEXT("asset_path"), Root + TEXT("/AM_Test")); Params->SetStringField(TEXT("event_guid"), Oracle->GetStringField(TEXT("event_guid")));
+    const auto Actual = ReadNotifyProperties(Params);
+    TestEqual(TEXT("Cold full scope/config/GUID/Outer/witness identical"), Json(Actual), Expected);
+    TestFalse(TEXT("Cold clean"), Actual->GetBoolField(TEXT("package_dirty"))); return !HasAnyErrors();
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMCPAnimationReloadTest, "UnrealMCP.Animation.Reload", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
