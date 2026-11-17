@@ -37,9 +37,9 @@ arbitrary UObjects and instanced subobject writes require specialized editors.
 
 This addition passed maintenance UE5.7.4 native authoring, independent cold load,
 106 Python tests and actual public grouped MCP on 2026-11-13. Subsequently authorized
-**NF deployment passed matching DLL/native/cold/public read acceptance**; SkillTest
-source was subsequently copied at the user's request, with build/restart deferred.
-Its existing DLL is unchanged and does not yet provide these operations. Clients must reconnect;
+**NF deployment passed matching DLL/native/cold/public read acceptance**. SkillTest's
+previously deferred source was compiled in the full 2026-11-17 particle-diagnostics
+deployment; the full property-authoring matrix was not repeated there. Clients must reconnect;
 discovery alone does not update DLLs. NF production GA values were only read, not edited.
 Old DataAsset whole-value, FText, Notify and component-default contracts remain.
 

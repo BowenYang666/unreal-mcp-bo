@@ -38,6 +38,8 @@
 #include "NiagaraNodeInput.h"
 #include "Serialization/ArchiveReplaceObjectRef.h"
 #include "Curves/RichCurve.h"
+#include "Misc/PackageName.h"
+#include "UObject/UObjectIterator.h"
 
 // Editor includes
 #include "AssetRegistry/AssetRegistryModule.h"
@@ -228,6 +230,10 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleCommand(const FString& 
 	else if (CommandType == TEXT("read_niagara_system"))
 	{
 		return HandleReadNiagaraSystem(Params);
+	}
+	else if (CommandType == TEXT("read_niagara_diagnostics"))
+	{
+		return HandleReadNiagaraDiagnostics(Params);
 	}
 	else if (CommandType == TEXT("set_niagara_parameter"))
 	{
@@ -2805,7 +2811,7 @@ static bool ResolveEmitterScript(FVersionedNiagaraEmitterData* EmitterData, cons
 	else if (S == TEXT("update"))         { OutScript = EmitterData->UpdateScriptProps.Script;       OutUsage = ENiagaraScriptUsage::ParticleUpdateScript; }
 	else if (S == TEXT("emitter_spawn"))  { OutScript = EmitterData->EmitterSpawnScriptProps.Script; OutUsage = ENiagaraScriptUsage::EmitterSpawnScript; }
 	else if (S == TEXT("emitter_update")) { OutScript = EmitterData->EmitterUpdateScriptProps.Script;OutUsage = ENiagaraScriptUsage::EmitterUpdateScript; }
-	else { OutError = FString::Printf(TEXT("Invalid script_type '%s'. Must be 'spawn', 'update', 'emitter_spawn', or 'emitter_update'."), *ScriptType); return false; }
+	else { OutError = FString::Printf(TEXT("Invalid script_type '%s'. Legacy input editing supports spawn/update/emitter_spawn/emitter_update only. For event/simulation-stage reads use read_niagara_diagnostics with exact emitter_handle_id, script_usage_id and module_node_guid; write scopes are unchanged."), *ScriptType); return false; }
 	if (!OutScript) { OutError = FString::Printf(TEXT("No %s script found on emitter"), *ScriptType); return false; }
 	return true;
 }
@@ -3068,6 +3074,390 @@ static FString AnnotateOverrideMode(TSharedPtr<FJsonObject> Obj, UEdGraphPin* Ov
 // ─────────────────────────────────────────────────────────────────────────────
 // list_module_inputs
 // ─────────────────────────────────────────────────────────────────────────────
+
+static bool ReadDiagnosticStack(UNiagaraNodeOutput* Output, TArray<UNiagaraNodeFunctionCall*>& Modules)
+{
+	TSet<UEdGraphNode*> Visited; UNiagaraNode* Current = Output;
+	while (Current && Visited.Num() < 2048)
+	{
+		if (Visited.Contains(Current)) return false;
+		Visited.Add(Current);
+		if (auto* Module = Cast<UNiagaraNodeFunctionCall>(Current)) Modules.Add(Module);
+		TArray<UEdGraphPin*> Pins; Current->GetInputPins(Pins); UEdGraphPin* ParameterMap = nullptr;
+		for (auto* Pin : Pins)
+			if (Pin && Pin->PinType.PinSubCategoryObject == FNiagaraTypeDefinition::GetParameterMapDef().GetStruct())
+			{ if (ParameterMap) return false; ParameterMap = Pin; }
+		if (!ParameterMap) { Algo::Reverse(Modules); return Current->IsA<UNiagaraNodeInput>(); }
+		if (ParameterMap->LinkedTo.Num() != 1 || !ParameterMap->LinkedTo[0]) return false;
+		Current = Cast<UNiagaraNode>(ParameterMap->LinkedTo[0]->GetOwningNode());
+	}
+	return false;
+}
+
+static TArray<TSharedPtr<FJsonValue>> ReadDiagnosticInputs(FVersionedNiagaraEmitter Emitter, UNiagaraScript* Script,
+	UNiagaraNodeFunctionCall* Module, TSet<FGuid>& Visited, int32 Depth, int32& Budget)
+{
+	TArray<TSharedPtr<FJsonValue>> Result;
+	if (!Script || !Module) return Result;
+	if (Depth > 6 || --Budget < 0 || Visited.Contains(Module->NodeGuid)) { Budget = -1; return Result; }
+	Visited.Add(Module->NodeGuid);
+	FCompileConstantResolver Resolver(Emitter, Script->GetUsage());
+	TArray<FNiagaraVariable> Variables; TSet<FNiagaraVariable> Hidden;
+	FNiagaraStackGraphUtilities::GetStackFunctionInputs(*Module, Variables, Hidden, Resolver,
+		FNiagaraStackGraphUtilities::ENiagaraGetStackFunctionInputPinsOptions::ModuleInputsOnly, false);
+	const auto RapidNames = GetRapidParameterNameSet(Script->RapidIterationParameters);
+	for (const auto& Variable : Variables)
+	{
+		if (--Budget < 0) break;
+		auto Row = MakeShared<FJsonObject>(); const auto Type = Variable.GetType();
+		Row->SetStringField(TEXT("name"), Variable.GetName().ToString()); Row->SetStringField(TEXT("type"), Type.GetName());
+		Row->SetBoolField(TEXT("hidden"), Hidden.Contains(Variable)); Row->SetBoolField(TEXT("static"), Type.IsStatic());
+		Row->SetStringField(TEXT("time_domain"), TEXT("unresolved: determined by actual graph bindings, not inferred from module name"));
+		Row->SetStringField(TEXT("units"), TEXT("unresolved: no unit conversion or time-domain inference"));
+		FNiagaraParameterHandle Handle(Variable.GetName());
+		const auto Aliased = FNiagaraParameterHandle::CreateAliasedModuleParameterHandle(Handle, Module);
+		auto* Override = FindOverridePinReadOnly(*Module, Aliased.GetParameterHandleString().ToString());
+		Row->SetBoolField(TEXT("has_explicit_override"), Override != nullptr);
+		FString Origin = TEXT("script_default");
+		Row->SetBoolField(TEXT("value_resolved"), false);
+		UEdGraphPin* ValuePin = Override;
+		if (!ValuePin) Row->SetStringField(TEXT("default_access"), TEXT("unresolved: script default pin API is not exported; see exact function/version and static switch pins"));
+		if (ValuePin)
+		{
+			Row->SetStringField(TEXT("raw_default"), ValuePin->GetDefaultAsString());
+			Row->SetStringField(TEXT("value_pin_path"), ValuePin->GetOwningNode()->GetPathName());
+			Row->SetStringField(TEXT("value_pin_id"), ValuePin->PinId.ToString(EGuidFormats::DigitsWithHyphens));
+			if (ValuePin->LinkedTo.IsEmpty())
+			{
+				float Scalar; int32 Integer; const FString Raw = ValuePin->GetDefaultAsString();
+				if (Type == FNiagaraTypeDefinition::GetFloatDef() && LexTryParseString(Scalar, *Raw) && FMath::IsFinite(Scalar))
+				{ Row->SetNumberField(TEXT("value"), Scalar); Row->SetBoolField(TEXT("value_resolved"), true); }
+				else if (Type == FNiagaraTypeDefinition::GetIntDef() && LexTryParseString(Integer, *Raw))
+				{ Row->SetNumberField(TEXT("value"), Integer); Row->SetBoolField(TEXT("value_resolved"), true); }
+			}
+		}
+		if (!Override && ValuePin && !ValuePin->LinkedTo.IsEmpty()) Override = ValuePin;
+		if (Override)
+		{
+			Row->SetStringField(TEXT("override_pin"), Override->PinName.ToString());
+			Row->SetStringField(TEXT("raw_default"), Override->GetDefaultAsString());
+			Origin = Override->LinkedTo.IsEmpty() ? TEXT("local_pin") : TEXT("unresolved_override");
+			if (Override->LinkedTo.Num() == 1)
+			{
+				auto* Source = Override->LinkedTo[0]->GetOwningNode();
+				if (Source)
+				{
+					Row->SetStringField(TEXT("source_node_guid"), Source->NodeGuid.ToString(EGuidFormats::DigitsWithHyphens));
+					Row->SetStringField(TEXT("source_node_path"), Source->GetPathName());
+					Row->SetStringField(TEXT("source_pin"), Override->LinkedTo[0]->PinName.ToString());
+					if (Source->GetClass()->GetName() == TEXT("NiagaraNodeParameterMapGet"))
+					{ Origin = TEXT("linked_parameter"); Row->SetStringField(TEXT("linked_parameter"), Override->LinkedTo[0]->PinName.ToString()); }
+					else if (Source->GetClass()->GetName() == TEXT("NiagaraNodeCustomHlsl")) Origin = TEXT("expression_unresolved");
+					else if (auto* Dynamic = Cast<UNiagaraNodeFunctionCall>(Source))
+					{
+						Origin = TEXT("dynamic_input"); Row->SetStringField(TEXT("function_path"), Dynamic->FunctionScript ? Dynamic->FunctionScript->GetPathName() : TEXT("unavailable"));
+						Row->SetArrayField(TEXT("inputs"), ReadDiagnosticInputs(Emitter, Script, Dynamic, Visited, Depth + 1, Budget));
+					}
+					else if (Source->IsA<UNiagaraNodeInput>()) Origin = Type.IsDataInterface() ? TEXT("data_interface") : TEXT("input_node_unresolved");
+				}
+			}
+			else if (Override->LinkedTo.Num() > 1) Origin = TEXT("ambiguous_multiple_links");
+		}
+		if ((Origin == TEXT("script_default") || Origin == TEXT("local_pin")) && IsRapidIterationInputType(Type))
+		{
+			const auto Rapid = MakeRapidIterationParameter(Emitter.Emitter->GetUniqueEmitterName(), Script->GetUsage(), Aliased.GetParameterHandleString(), Type);
+			if (RapidNames.Contains(Rapid.GetName()))
+			{
+				Origin = TEXT("rapid_iteration"); Row->SetStringField(TEXT("rapid_parameter"), Rapid.GetName().ToString());
+				auto Value = ReadRapidVariableToJson(Script->RapidIterationParameters, Rapid); Row->SetField(TEXT("value"), Value);
+				Row->SetBoolField(TEXT("value_resolved"), Value.IsValid() && Value->Type != EJson::Null);
+			}
+		}
+		if (const UEnum* Enum = Type.GetEnum())
+		{
+			auto EnumInfo = MakeShared<FJsonObject>(); EnumInfo->SetStringField(TEXT("path"), Enum->GetPathName());
+			TArray<TSharedPtr<FJsonValue>> Entries;
+			for (int32 Index = 0; Index < FMath::Min(Enum->NumEnums(), 128); ++Index)
+			{
+				auto Entry = MakeShared<FJsonObject>(); Entry->SetStringField(TEXT("name"), Enum->GetNameStringByIndex(Index));
+				Entry->SetNumberField(TEXT("value"), Enum->GetValueByIndex(Index)); Entry->SetStringField(TEXT("display_name"), Enum->GetDisplayNameTextByIndex(Index).ToString());
+				Entries.Add(MakeShared<FJsonValueObject>(Entry));
+			}
+			EnumInfo->SetArrayField(TEXT("entries"), Entries); EnumInfo->SetBoolField(TEXT("entries_truncated"), Enum->NumEnums() > 128);
+			if (ValuePin && ValuePin->LinkedTo.IsEmpty())
+			{
+				const FString Raw = ValuePin->GetDefaultAsString(); int64 Numeric;
+				const int64 EnumValue = LexTryParseString(Numeric, *Raw) ? Numeric : Enum->GetValueByNameString(Raw);
+				const int32 Index = Enum->GetIndexByValue(EnumValue);
+				if (Index != INDEX_NONE)
+				{ EnumInfo->SetStringField(TEXT("selected_name"), Enum->GetNameStringByIndex(Index)); EnumInfo->SetStringField(TEXT("selected_display_name"), Enum->GetDisplayNameTextByIndex(Index).ToString()); EnumInfo->SetNumberField(TEXT("selected_value"), EnumValue); Row->SetBoolField(TEXT("value_resolved"), true); }
+			}
+			Row->SetObjectField(TEXT("enum"), EnumInfo);
+		}
+		Row->SetStringField(TEXT("origin"), Origin); Result.Add(MakeShared<FJsonValueObject>(Row));
+	}
+	Visited.Remove(Module->NodeGuid); return Result;
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleReadNiagaraDiagnostics(const TSharedPtr<FJsonObject>& Params)
+{
+	const TSet<FString> Allowed{TEXT("asset_path"), TEXT("emitter_handle_id"), TEXT("script_type"), TEXT("script_usage_id"), TEXT("module_node_guid"), TEXT("include_inputs")};
+	if (!Params) return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Missing diagnostic arguments"));
+	for (const auto& Pair : Params->Values) if (!Allowed.Contains(Pair.Key)) return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Unknown diagnostic argument: ") + Pair.Key);
+	FString Path, HandleText, StageFilter, UsageText, NodeText; bool IncludeInputs = true;
+	if (!Params->TryGetStringField(TEXT("asset_path"), Path) || !Path.StartsWith(TEXT("/Game/")) || Path.Contains(TEXT(".")) || Path.Len() >= NAME_SIZE || !FPackageName::IsValidLongPackageName(Path))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Require an exact /Game NiagaraSystem package path, not an inline object path"));
+	Params->TryGetStringField(TEXT("emitter_handle_id"), HandleText); Params->TryGetStringField(TEXT("script_type"), StageFilter);
+	Params->TryGetStringField(TEXT("script_usage_id"), UsageText); Params->TryGetStringField(TEXT("module_node_guid"), NodeText);
+	if (Params->HasField(TEXT("include_inputs")) && !Params->TryGetBoolField(TEXT("include_inputs"), IncludeInputs)) return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("include_inputs must be boolean"));
+	FGuid HandleId, UsageId, NodeId;
+	auto Guid = [](const FString& Text, FGuid& Value) { return Text.IsEmpty() || (FGuid::ParseExact(Text, EGuidFormats::DigitsWithHyphens, Value) && Value.IsValid()); };
+	if (!Guid(HandleText, HandleId) || !Guid(UsageText, UsageId) || !Guid(NodeText, NodeId) || ((!UsageText.IsEmpty() || !NodeText.IsEmpty()) && HandleText.IsEmpty()))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Require nonzero hyphenated GUIDs and exact emitter Handle for Usage/module selection"));
+	const TSet<FString> Stages{TEXT(""), TEXT("spawn"), TEXT("update"), TEXT("emitter_spawn"), TEXT("emitter_update"), TEXT("event"), TEXT("simulation_stage")};
+	if (!Stages.Contains(StageFilter)) return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Unknown diagnostic script_type; use spawn/update/emitter_spawn/emitter_update/event/simulation_stage"));
+	if ((!NodeText.IsEmpty() && StageFilter.IsEmpty()) || (!NodeText.IsEmpty() && (StageFilter == TEXT("event") || StageFilter == TEXT("simulation_stage")) && UsageText.IsEmpty()))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Module selection requires exact script_type; event/simulation-stage modules additionally require script_usage_id"));
+	auto* System = Cast<UNiagaraSystem>(UEditorAssetLibrary::LoadAsset(Path));
+	if (!System || System->GetPackage()->GetName() != Path) return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Exact NiagaraSystem not found"));
+	auto Result = MakeShared<FJsonObject>(); Result->SetBoolField(TEXT("success"), true); Result->SetNumberField(TEXT("diagnostics_contract"), 1);
+	Result->SetStringField(TEXT("asset_path"), Path); Result->SetStringField(TEXT("object_path"), System->GetPathName());
+	Result->SetBoolField(TEXT("modified"), false); Result->SetBoolField(TEXT("saved"), false); Result->SetBoolField(TEXT("package_dirty"), System->GetPackage()->IsDirty());
+	auto Coverage = MakeShared<FJsonObject>(); Coverage->SetStringField(TEXT("authored_data"), TEXT("selected versions, saved event settings and renderer enabled flags"));
+	Coverage->SetStringField(TEXT("execution_stack"), TEXT("ordered parameter-map stack from exact usage/Usage ID output, not all shared graph nodes"));
+	Coverage->SetStringField(TEXT("editor_preview"), TEXT("current system/handle isolation plus existing component identities; not full visibility/culling evaluation"));
+	Coverage->SetStringField(TEXT("runtime"), TEXT("unsupported")); Coverage->SetStringField(TEXT("external_dependencies"), TEXT("references only; materials/textures/conversion logs not expanded"));
+	Result->SetObjectField(TEXT("coverage"), Coverage); Result->SetBoolField(TEXT("isolation_enabled"), System->GetIsolateEnabled());
+	TArray<TSharedPtr<FJsonValue>> Emitters, Handlers, Unsupported, Components;
+	bool Complete = true, FoundHandle = HandleText.IsEmpty(), FoundUsage = UsageText.IsEmpty(), FoundNode = NodeText.IsEmpty(); int32 Budget = 8192, HandleMatches = 0, UsageMatches = 0, NodeMatches = 0;
+	auto Missing = [&](const FString& Identity, const FString& Reason)
+	{ Complete = false; if (Unsupported.Num() < 128) { auto Row = MakeShared<FJsonObject>(); Row->SetStringField(TEXT("identity"), Identity); Row->SetStringField(TEXT("reason"), Reason); Unsupported.Add(MakeShared<FJsonValueObject>(Row)); } };
+	for (const auto& Handle : System->GetEmitterHandles())
+	{
+		if (!HandleText.IsEmpty() && Handle.GetId() != HandleId) continue;
+		FoundHandle = true; ++HandleMatches; const auto Emitter = Handle.GetInstance(); auto* Data = Emitter.GetEmitterData();
+		auto Row = MakeShared<FJsonObject>(); const FString Id = Handle.GetId().ToString(EGuidFormats::DigitsWithHyphens);
+		Row->SetStringField(TEXT("handle_id"), Id); Row->SetStringField(TEXT("name"), Handle.GetName().ToString());
+		Row->SetBoolField(TEXT("authored_enabled"), Handle.GetIsEnabled()); Row->SetBoolField(TEXT("isolated"), Handle.IsIsolated());
+		Row->SetBoolField(TEXT("render_excluded_by_isolation"), System->GetIsolateEnabled() && !Handle.IsIsolated());
+		Row->SetStringField(TEXT("simulation_state"), TEXT("unresolved: isolation filtering is not proof simulation stopped"));
+		if (!Data || !Emitter.Emitter) { Missing(Id, TEXT("Emitter data unavailable or stateless; no stateful execution reconstruction")); Emitters.Add(MakeShared<FJsonValueObject>(Row)); continue; }
+		Row->SetStringField(TEXT("emitter_path"), Emitter.Emitter->GetPathName()); Row->SetStringField(TEXT("version_guid"), Emitter.Version.ToString(EGuidFormats::DigitsWithHyphens));
+		Row->SetStringField(TEXT("simulation_target"), Data->SimTarget == ENiagaraSimTarget::CPUSim ? TEXT("CPU") : TEXT("GPU"));
+		TArray<TSharedPtr<FJsonValue>> Renderers, Stacks;
+		const auto& NativeRenderers = Data->GetRenderers();
+		for (int32 Index = 0; Index < NativeRenderers.Num(); ++Index)
+		{
+			const auto* Renderer = NativeRenderers[Index]; if (!Renderer) continue;
+			auto RendererRow = MakeShared<FJsonObject>(); RendererRow->SetNumberField(TEXT("index"), Index); RendererRow->SetStringField(TEXT("path"), Renderer->GetPathName());
+			RendererRow->SetStringField(TEXT("class"), Renderer->GetClass()->GetPathName()); RendererRow->SetBoolField(TEXT("authored_enabled"), Renderer->GetIsEnabled());
+			RendererRow->SetStringField(TEXT("visibility"), TEXT("unresolved: renderer enabled/isolation are not complete runtime culling")); Renderers.Add(MakeShared<FJsonValueObject>(RendererRow));
+		}
+		Row->SetArrayField(TEXT("renderers"), Renderers); Row->SetBoolField(TEXT("has_renderer"), !NativeRenderers.IsEmpty());
+		auto Stack = [&](UNiagaraScript* Script, const FString& Stage)
+		{
+			if (!StageFilter.IsEmpty() && StageFilter != Stage) return;
+			if (!Script) { Missing(Id + TEXT("/") + Stage, TEXT("Missing saved script")); return; }
+			if (!UsageText.IsEmpty() && Script->GetUsageId() != UsageId) return;
+			FoundUsage = true; ++UsageMatches; auto StackRow = MakeShared<FJsonObject>();
+			StackRow->SetStringField(TEXT("script_type"), Stage); StackRow->SetStringField(TEXT("script_path"), Script->GetPathName());
+			StackRow->SetStringField(TEXT("usage"), StaticEnum<ENiagaraScriptUsage>()->GetNameStringByValue(static_cast<int64>(Script->GetUsage())));
+			StackRow->SetStringField(TEXT("usage_id"), Script->GetUsageId().ToString(EGuidFormats::DigitsWithHyphens));
+			auto* Source = Cast<UNiagaraScriptSource>(Script->GetLatestSource()); auto* Graph = Source ? Source->NodeGraph.Get() : nullptr;
+			UNiagaraNodeOutput* Output = nullptr; int32 Matches = 0;
+			if (Graph)
+			{
+				StackRow->SetStringField(TEXT("graph_path"), Graph->GetPathName());
+				for (UEdGraphNode* GraphNode : Graph->Nodes)
+					if (auto* Candidate = Cast<UNiagaraNodeOutput>(GraphNode))
+						if (UNiagaraScript::IsEquivalentUsage(Candidate->GetUsage(), Script->GetUsage()) && Candidate->GetUsageId() == Script->GetUsageId()) { Output = Candidate; ++Matches; }
+			}
+			if (Matches != 1) { Missing(Script->GetPathName(), TEXT("Missing/ambiguous exact usage output; never use another stage or shared graph node list")); StackRow->SetBoolField(TEXT("complete"), false); }
+			else
+			{
+				StackRow->SetStringField(TEXT("output_node_guid"), Output->NodeGuid.ToString(EGuidFormats::DigitsWithHyphens)); TArray<UNiagaraNodeFunctionCall*> Modules;
+				const bool StackResolved = ReadDiagnosticStack(Output, Modules); TArray<TSharedPtr<FJsonValue>> Ordered;
+				if (!StackResolved) { Missing(Script->GetPathName(), TEXT("Cyclic/ambiguous/disconnected parameter-map execution chain")); Modules.Empty(); }
+				if (Modules.Num() > 256) { Missing(Script->GetPathName(), TEXT("Stack exceeds 256 modules")); Modules.SetNum(256); }
+				for (int32 Index = 0; Index < Modules.Num(); ++Index)
+				{
+					auto* Module = Modules[Index]; if (!Module) continue; if (!NodeText.IsEmpty() && Module->NodeGuid != NodeId) continue;
+					FoundNode = true; ++NodeMatches; auto ModuleRow = MakeShared<FJsonObject>(); ModuleRow->SetNumberField(TEXT("stack_index"), Index);
+					ModuleRow->SetStringField(TEXT("name"), Module->GetFunctionName()); ModuleRow->SetStringField(TEXT("node_guid"), Module->NodeGuid.ToString(EGuidFormats::DigitsWithHyphens));
+					ModuleRow->SetStringField(TEXT("node_path"), Module->GetPathName()); ModuleRow->SetBoolField(TEXT("enabled"), Module->IsNodeEnabled());
+					ModuleRow->SetStringField(TEXT("function_path"), Module->FunctionScript ? Module->FunctionScript->GetPathName() : TEXT("unavailable"));
+					ModuleRow->SetStringField(TEXT("selected_version_guid"), Module->SelectedScriptVersion.ToString(EGuidFormats::DigitsWithHyphens));
+					const auto* Version = Module->FunctionScript ? Module->FunctionScript->GetScriptData(Module->SelectedScriptVersion) : nullptr;
+					ModuleRow->SetStringField(TEXT("version_status"), Version ? TEXT("resolved") : TEXT("unresolved"));
+					if (Version) ModuleRow->SetStringField(TEXT("resolved_version_guid"), Version->Version.VersionGuid.ToString(EGuidFormats::DigitsWithHyphens));
+					FCompileConstantResolver Resolver(Emitter, Script->GetUsage()); TArray<UEdGraphPin*> Switches; TSet<UEdGraphPin*> Hidden;
+					FNiagaraStackGraphUtilities::GetStackFunctionStaticSwitchPins(*Module, Switches, Hidden, Resolver);
+					TArray<TSharedPtr<FJsonValue>> StaticPins;
+					if (Switches.Num() > 256) { Missing(Module->GetPathName(), TEXT("Static switches exceed 256 pins")); Switches.SetNum(256); }
+					for (const auto* Pin : Switches)
+					{
+						if (!Pin) continue; auto PinRow = MakeShared<FJsonObject>(); PinRow->SetStringField(TEXT("name"), Pin->PinName.ToString());
+						PinRow->SetStringField(TEXT("raw_default"), Pin->GetDefaultAsString()); PinRow->SetBoolField(TEXT("hidden"), Hidden.Contains(const_cast<UEdGraphPin*>(Pin)));
+						PinRow->SetStringField(TEXT("category"), Pin->PinType.PinCategory.ToString());
+						if (auto* Enum = Cast<UEnum>(Pin->PinType.PinSubCategoryObject.Get()))
+						{
+							PinRow->SetStringField(TEXT("enum_path"), Enum->GetPathName()); int64 Numeric; const FString Raw = Pin->GetDefaultAsString();
+							const int64 Value = LexTryParseString(Numeric, *Raw) ? Numeric : Enum->GetValueByNameString(Raw); const int32 EnumIndex = Enum->GetIndexByValue(Value);
+							if (EnumIndex != INDEX_NONE) { PinRow->SetNumberField(TEXT("enum_value"), Value); PinRow->SetStringField(TEXT("enum_name"), Enum->GetNameStringByIndex(EnumIndex)); PinRow->SetStringField(TEXT("enum_display_name"), Enum->GetDisplayNameTextByIndex(EnumIndex).ToString()); }
+						}
+						StaticPins.Add(MakeShared<FJsonValueObject>(PinRow));
+					}
+					ModuleRow->SetArrayField(TEXT("static_switch_pins"), StaticPins);
+					if (IncludeInputs) { TSet<FGuid> Visited; ModuleRow->SetArrayField(TEXT("inputs"), ReadDiagnosticInputs(Emitter, Script, Module, Visited, 0, Budget)); }
+					Ordered.Add(MakeShared<FJsonValueObject>(ModuleRow));
+				}
+				StackRow->SetArrayField(TEXT("modules"), Ordered); StackRow->SetBoolField(TEXT("complete"), StackResolved && Budget >= 0);
+			}
+			Stacks.Add(MakeShared<FJsonValueObject>(StackRow));
+		};
+		Stack(Data->EmitterSpawnScriptProps.Script, TEXT("emitter_spawn")); Stack(Data->EmitterUpdateScriptProps.Script, TEXT("emitter_update"));
+		Stack(Data->SpawnScriptProps.Script, TEXT("spawn")); Stack(Data->UpdateScriptProps.Script, TEXT("update"));
+		for (const auto& Event : Data->GetEventHandlers())
+		{
+			if (!Event.Script) { Missing(Id, TEXT("Null event handler script")); continue; }
+			if ((!StageFilter.IsEmpty() && StageFilter != TEXT("event")) || (!UsageText.IsEmpty() && Event.Script->GetUsageId() != UsageId)) continue;
+			auto EventRow = MakeShared<FJsonObject>(); EventRow->SetStringField(TEXT("emitter_handle_id"), Id); EventRow->SetStringField(TEXT("script_path"), Event.Script->GetPathName());
+			EventRow->SetStringField(TEXT("usage_id"), Event.Script->GetUsageId().ToString(EGuidFormats::DigitsWithHyphens)); EventRow->SetStringField(TEXT("source_event_name"), Event.SourceEventName.ToString());
+			EventRow->SetStringField(TEXT("execution_mode"), StaticEnum<EScriptExecutionMode>()->GetNameStringByValue(static_cast<int64>(Event.ExecutionMode)));
+			EventRow->SetNumberField(TEXT("spawn_number"), Event.SpawnNumber); EventRow->SetNumberField(TEXT("max_events_per_frame"), Event.MaxEventsPerFrame);
+			EventRow->SetBoolField(TEXT("random_spawn_number"), Event.bRandomSpawnNumber); EventRow->SetNumberField(TEXT("min_spawn_number"), Event.MinSpawnNumber);
+			EventRow->SetStringField(TEXT("source_emitter_id"), Event.SourceEmitterID.ToString(EGuidFormats::DigitsWithHyphens));
+			const FGuid ResolvedSource = Event.SourceEmitterID.IsValid() ? Event.SourceEmitterID : Handle.GetId();
+			int32 SourceMatches = 0; for (const auto& SourceHandle : System->GetEmitterHandles()) if (SourceHandle.GetId() == ResolvedSource) { ++SourceMatches; EventRow->SetStringField(TEXT("source_emitter_name"), SourceHandle.GetName().ToString()); }
+			EventRow->SetStringField(TEXT("resolved_source_handle_id"), ResolvedSource.ToString(EGuidFormats::DigitsWithHyphens)); EventRow->SetStringField(TEXT("source_resolution"), SourceMatches == 1 ? TEXT("resolved") : TEXT("missing_or_ambiguous"));
+			if (SourceMatches != 1) Missing(Id, TEXT("Event source Handle missing/ambiguous"));
+			EventRow->SetStringField(TEXT("event_counts"), TEXT("unsupported: authored limits are not runtime production/consumption counts"));
+			Handlers.Add(MakeShared<FJsonValueObject>(EventRow)); Stack(Event.Script, TEXT("event"));
+		}
+		for (const auto* SimulationStage : Data->GetSimulationStages()) if (SimulationStage) Stack(SimulationStage->Script, TEXT("simulation_stage"));
+		Row->SetArrayField(TEXT("stacks"), Stacks); Emitters.Add(MakeShared<FJsonValueObject>(Row));
+	}
+	if (!FoundHandle || !FoundUsage || !FoundNode) return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Exact Handle/Usage ID/module not found in the selected execution stack; no name or stage fallback"));
+	if ((!HandleText.IsEmpty() && HandleMatches != 1) || (!UsageText.IsEmpty() && UsageMatches != 1) || (!NodeText.IsEmpty() && NodeMatches != 1))
+		return FUnrealMCPCommonUtils::CreateErrorResponse(TEXT("Ambiguous duplicate Handle/Usage ID/module identity in selected execution stacks"));
+	if (Budget < 0) Missing(Path, TEXT("Input traversal exceeds 8192 values or six dynamic levels"));
+	for (TObjectIterator<UNiagaraComponent> Component; Component; ++Component)
+	{
+		if (Component->GetAsset() != System || Component->IsTemplate()) continue;
+		if (Components.Num() >= 128) { Missing(Path, TEXT("More than 128 existing components; preview identities truncated")); break; }
+		auto Row = MakeShared<FJsonObject>(); Row->SetStringField(TEXT("object_path"), Component->GetPathName());
+		Row->SetBoolField(TEXT("active"), Component->IsActive()); Row->SetBoolField(TEXT("registered"), Component->IsRegistered());
+		Row->SetStringField(TEXT("world_path"), Component->GetWorld() ? Component->GetWorld()->GetPathName() : TEXT("unavailable"));
+		Row->SetStringField(TEXT("particle_snapshot"), TEXT("unsupported: no simulation tick/reset or GPU readback")); Components.Add(MakeShared<FJsonValueObject>(Row));
+	}
+	Result->SetArrayField(TEXT("emitters"), Emitters); Result->SetArrayField(TEXT("event_handlers"), Handlers); Result->SetArrayField(TEXT("components"), Components);
+	Result->SetStringField(TEXT("preview_instance_status"), Components.IsEmpty() ? TEXT("no_existing_component") : TEXT("existing_components_observed"));
+	Result->SetArrayField(TEXT("unsupported"), Unsupported); Result->SetBoolField(TEXT("complete"), Complete);
+	Result->SetStringField(TEXT("scope"), TEXT("Stored selected execution stacks plus current editor isolation only; no runtime reconstruction, visibility proof, conversion-log parsing or asset mutation."));
+	return Result;
+}
+
+#if WITH_DEV_AUTOMATION_TESTS
+#include "Misc/AutomationTest.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
+#include "Misc/Paths.h"
+#include "Misc/SecureHash.h"
+#include "Misc/FileHelper.h"
+#include "AssetCompilingManager.h"
+#include "NiagaraRibbonRendererProperties.h"
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMCPNiagaraDiagnosticsTest, "UnrealMCP.Niagara.Diagnostics.ReadOnly",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FMCPNiagaraDiagnosticsTest::RunTest(const FString& Parameters)
+{
+	const FString Root = TEXT("/Game/__Dev/NiagaraDiagnostics_") + FGuid::NewGuid().ToString(EGuidFormats::Digits);
+	const FString Path = Root / TEXT("NS_Test");
+	auto* System = Cast<UNiagaraSystem>(UEditorAssetLibrary::DuplicateAsset(TEXT("/Niagara/DefaultAssets/DefaultSystem"), Path));
+	if (!TestNotNull(TEXT("Initialized diagnostic system"), System) || !TestTrue(TEXT("Default emitter present"), System->GetEmitterHandles().Num() > 0)) return false;
+	FUnrealMCPNiagaraCommands Commands; auto Add = MakeShared<FJsonObject>(); Add->SetStringField(TEXT("path"), Path);
+	Add->SetStringField(TEXT("template_name"), TEXT("SimpleSpriteBurst")); Add->SetStringField(TEXT("new_emitter_name"), TEXT("Electricity"));
+	if (!TestTrue(TEXT("Independent child created"), Commands.HandleCommand(TEXT("add_emitter_to_system"), Add)->HasField(TEXT("new_emitter")))) return false;
+	auto& Source = System->GetEmitterHandles()[0]; auto& Child = System->GetEmitterHandles()[1];
+	Source.SetName(TEXT("TrailCore"), *System); Source.GetEmitterData()->bRequiresPersistentIDs = true; Child.GetEmitterData()->bRequiresPersistentIDs = true;
+	auto Renderers = Source.GetEmitterData()->GetRenderers();
+	for (auto* Renderer : Renderers) Source.GetInstance().Emitter->RemoveRenderer(Renderer, Source.GetInstance().Version);
+	auto* Ribbon = NewObject<UNiagaraRibbonRendererProperties>(Child.GetInstance().Emitter, NAME_None, RF_Transactional);
+	Child.GetInstance().Emitter->AddRenderer(Ribbon, Child.GetInstance().Version);
+	auto* Generate = Cast<UNiagaraScript>(UEditorAssetLibrary::LoadAsset(TEXT("/Niagara/Modules/Events/GenerateLocationEvent")));
+	auto* Receive = Cast<UNiagaraScript>(UEditorAssetLibrary::LoadAsset(TEXT("/Niagara/Modules/Events/ReceiveLocationEvent")));
+	if (!TestNotNull(TEXT("Real GenerateLocationEvent"), Generate) || !TestNotNull(TEXT("Real ReceiveLocationEvent"), Receive)) return false;
+	auto* SourceGraph = CastChecked<UNiagaraScriptSource>(Source.GetEmitterData()->UpdateScriptProps.Script->GetLatestSource());
+	auto* SourceOutput = SourceGraph->NodeGraph->FindEquivalentOutputNode(ENiagaraScriptUsage::ParticleUpdateScript);
+	if (!TestNotNull(TEXT("Source output"), SourceOutput) || !TestNotNull(TEXT("Generator module on actual update stack"), FNiagaraStackGraphUtilities::AddScriptModuleToStack(Generate, *SourceOutput))) return false;
+	auto* SharedSource = CastChecked<UNiagaraScriptSource>(Child.GetEmitterData()->SpawnScriptProps.Script->GetLatestSource());
+	TArray<FGuid> Usages; TArray<FGuid> Modules;
+	for (int32 Index = 0; Index < 2; ++Index)
+	{
+		const FGuid Usage = FGuid::NewGuid(); Usages.Add(Usage);
+		auto* Script = DuplicateObject<UNiagaraScript>(Child.GetEmitterData()->SpawnScriptProps.Script, Child.GetInstance().Emitter, FName(*FString::Printf(TEXT("DiagnosticEvent%d"), Index)));
+		Script->SetUsage(ENiagaraScriptUsage::ParticleEventScript); Script->SetUsageId(Usage); Script->SetLatestSource(SharedSource);
+		auto* Graph = SharedSource->NodeGraph.Get(); auto* Output = NewObject<UNiagaraNodeOutput>(Graph);
+		Graph->AddNode(Output, false, false); Output->CreateNewGuid(); Output->SetUsage(ENiagaraScriptUsage::ParticleEventScript); Output->SetUsageId(Usage);
+		Output->Outputs.Add(FNiagaraVariable(FNiagaraTypeDefinition::GetParameterMapDef(), TEXT("OutputMap"))); Output->AllocateDefaultPins();
+		auto* Input = NewObject<UNiagaraNodeInput>(Graph); Graph->AddNode(Input, false, false); Input->CreateNewGuid();
+		Input->Input = FNiagaraVariable(FNiagaraTypeDefinition::GetParameterMapDef(), TEXT("InputMap")); Input->Usage = ENiagaraInputNodeUsage::Parameter; Input->AllocateDefaultPins();
+		TArray<UEdGraphPin*> InputPins, OutputPins; Output->GetInputPins(InputPins); Input->GetOutputPins(OutputPins);
+		if (!TestTrue(TEXT("Event parameter-map pins"), !InputPins.IsEmpty() && !OutputPins.IsEmpty())) return false;
+		OutputPins[0]->MakeLinkTo(InputPins[0]);
+		FNiagaraEventScriptProperties Handler; Handler.Script = Script; Handler.SourceEmitterID = Source.GetId(); Handler.SourceEventName = TEXT("LocationEvent");
+		Handler.ExecutionMode = EScriptExecutionMode::SpawnedParticles; Handler.SpawnNumber = Index + 2; Handler.MaxEventsPerFrame = Index + 7;
+		Child.GetInstance().Emitter->AddEventHandler(Handler, Child.GetInstance().Version);
+		auto* Module = FNiagaraStackGraphUtilities::AddScriptModuleToStack(Receive, *Output);
+		if (!TestNotNull(TEXT("Receive on exact event output"), Module)) return false;
+		Modules.Add(Module->NodeGuid);
+	}
+	System->PostEditChange(); System->RequestCompile(true); System->WaitForCompilationComplete(true, false);
+	FAssetCompilingManager::Get().FinishAllCompilation(); FAssetCompilingManager::Get().ProcessAsyncTasks(false);
+	if (!TestTrue(TEXT("Save isolated diagnostic fixture"), UEditorAssetLibrary::SaveLoadedAsset(System, false))) return false;
+	const FString File = FPackageName::LongPackageNameToFilename(Path, FPackageName::GetAssetPackageExtension()); const auto Hash = FMD5Hash::HashFile(*File);
+	auto Params = MakeShared<FJsonObject>(); Params->SetStringField(TEXT("asset_path"), Path); Params->SetBoolField(TEXT("include_inputs"), true);
+	const auto Full = Commands.HandleCommand(TEXT("read_niagara_diagnostics"), Params);
+	if (!TestTrue(TEXT("Diagnostics contract readable"), Full->GetBoolField(TEXT("success")))) return false;
+	TestTrue(TEXT("Normal/interpolated spawn and event stacks complete within scope"), Full->GetBoolField(TEXT("complete")));
+	TestEqual(TEXT("Two independent Handler rows"), Full->GetArrayField(TEXT("event_handlers")).Num(), 2);
+	TestFalse(TEXT("Invisible source needs no renderer"), Full->GetArrayField(TEXT("emitters"))[0]->AsObject()->GetBoolField(TEXT("has_renderer")));
+	TestEqual(TEXT("Runtime coverage explicitly unsupported"), Full->GetObjectField(TEXT("coverage"))->GetStringField(TEXT("runtime")), FString(TEXT("unsupported")));
+	for (int32 Index = 0; Index < 2; ++Index)
+	{
+		auto Event = Full->GetArrayField(TEXT("event_handlers"))[Index]->AsObject();
+		TestEqual(TEXT("Exact event source"), Event->GetStringField(TEXT("resolved_source_handle_id")), Source.GetId().ToString(EGuidFormats::DigitsWithHyphens));
+		TestEqual(TEXT("Authored spawn number"), Event->GetNumberField(TEXT("spawn_number")), static_cast<double>(Index + 2));
+	}
+	Params->SetStringField(TEXT("emitter_handle_id"), Child.GetId().ToString(EGuidFormats::DigitsWithHyphens)); Params->SetStringField(TEXT("script_type"), TEXT("event"));
+	Params->SetStringField(TEXT("script_usage_id"), Usages[0].ToString(EGuidFormats::DigitsWithHyphens)); Params->SetStringField(TEXT("module_node_guid"), Modules[0].ToString(EGuidFormats::DigitsWithHyphens));
+	const auto Selected = Commands.HandleCommand(TEXT("read_niagara_diagnostics"), Params);
+	if (!TestTrue(TEXT("Exact event and module selected"), Selected->GetBoolField(TEXT("success")))) return false;
+	auto Stack = Selected->GetArrayField(TEXT("emitters"))[0]->AsObject()->GetArrayField(TEXT("stacks"))[0]->AsObject();
+	TestEqual(TEXT("Selected stack has exact Usage ID"), Stack->GetStringField(TEXT("usage_id")), Usages[0].ToString(EGuidFormats::DigitsWithHyphens));
+	TestEqual(TEXT("Only reachable selected module returned"), Stack->GetArrayField(TEXT("modules")).Num(), 1);
+	TestTrue(TEXT("Event module inputs use same typed reader"), Stack->GetArrayField(TEXT("modules"))[0]->AsObject()->HasField(TEXT("inputs")));
+	Params->SetStringField(TEXT("script_usage_id"), Usages[1].ToString(EGuidFormats::DigitsWithHyphens));
+	TestTrue(TEXT("Module cannot fall back across handlers"), Commands.HandleCommand(TEXT("read_niagara_diagnostics"), Params)->HasField(TEXT("error")));
+	Params->RemoveField(TEXT("script_usage_id")); TestTrue(TEXT("Ambiguous event module request rejected"), Commands.HandleCommand(TEXT("read_niagara_diagnostics"), Params)->HasField(TEXT("error")));
+	Params->RemoveField(TEXT("module_node_guid")); Params->RemoveField(TEXT("emitter_handle_id")); Params->RemoveField(TEXT("script_type"));
+	System->SetIsolateEnabled(true); Source.SetIsolated(false); Child.SetIsolated(true);
+	const auto Isolated = Commands.HandleCommand(TEXT("read_niagara_diagnostics"), Params);
+	TestTrue(TEXT("Current isolation observed"), Isolated->GetBoolField(TEXT("isolation_enabled")));
+	TestTrue(TEXT("Source authored enabled retained"), Isolated->GetArrayField(TEXT("emitters"))[0]->AsObject()->GetBoolField(TEXT("authored_enabled")));
+	TestTrue(TEXT("Source only excluded from isolation render"), Isolated->GetArrayField(TEXT("emitters"))[0]->AsObject()->GetBoolField(TEXT("render_excluded_by_isolation")));
+	TestFalse(TEXT("Child remains included"), Isolated->GetArrayField(TEXT("emitters"))[1]->AsObject()->GetBoolField(TEXT("render_excluded_by_isolation")));
+	TestTrue(TEXT("Reader did not remove Solo"), System->GetIsolateEnabled() && Child.IsIsolated() && !Source.IsIsolated());
+	TestFalse(TEXT("Reader leaves clean package"), System->GetPackage()->IsDirty()); TestTrue(TEXT("Read leaves disk bytes"), Hash == FMD5Hash::HashFile(*File));
+	System->SetIsolateEnabled(false); Child.SetIsolated(false);
+	const FGuid SavedSource = Child.GetEmitterData()->EventHandlerScriptProps[0].SourceEmitterID;
+	Child.GetEmitterData()->EventHandlerScriptProps[0].SourceEmitterID = FGuid::NewGuid();
+	const auto Invalid = Commands.HandleCommand(TEXT("read_niagara_diagnostics"), Params); TestFalse(TEXT("Invalid source explicit incomplete"), Invalid->GetBoolField(TEXT("complete")));
+	TestEqual(TEXT("Invalid source is not inferred by name"), Invalid->GetArrayField(TEXT("event_handlers"))[0]->AsObject()->GetStringField(TEXT("source_resolution")), FString(TEXT("missing_or_ambiguous")));
+	Child.GetEmitterData()->EventHandlerScriptProps[0].SourceEmitterID = SavedSource;
+	AddInfo(TEXT("Niagara diagnostic fixture: ") + Path); return !HasAnyErrors();
+}
+#endif
 
 TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleListModuleInputs(const TSharedPtr<FJsonObject>& Params)
 {

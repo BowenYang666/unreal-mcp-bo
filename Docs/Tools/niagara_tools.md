@@ -101,6 +101,71 @@ Use the existing static-switch/input readers for their inventories. Graph call
 enumeration is not a proof of output-stack execution order or of whether a
 module consumes SpawnCountScale. No module-name behavior table is embedded.
 
+### `read_niagara_diagnostics`
+
+Discover `niagara_search(tool="read_niagara_diagnostics")`, then use its returned
+read endpoint. This operation remains available in read-only mode and follows the
+independent Niagara filter. Updated native `diagnostics_contract=1` is required;
+an old DLL reports a capability error, never a graph-wide fallback.
+
+| Parameter | Default / Meaning |
+| --- | --- |
+| `asset_path` | Required exact `/Game` Niagara System package; no inline subobject path |
+| `emitter_handle_id` | `""`; exact nonzero Handle GUID when selecting a Usage/module |
+| `script_type` | `""`; `spawn`, `update`, `emitter_spawn`, `emitter_update`, `event`, `simulation_stage` |
+| `script_usage_id` | `""`; exact nonzero Usage GUID, essential for distinguishing event handlers/stages |
+| `module_node_guid` | `""`; exact call-node GUID in the selected stack, never display-name selection |
+| `include_inputs` | `true`; bounded input/static-switch and override-source diagnostics |
+
+The system read lists selected emitter versions, authored enabled flags, renderer
+slots, event handlers and ordered output-linked stacks. Events retain owner Handle,
+Usage ID, source GUID/name, execution mode and authored spawn/event limits. A zero
+native SourceEmitterID means self; missing/ambiguous sources are unresolved, not
+guessed by display name. No Renderer on a source emitter is legal. Authored limits
+are not runtime event or particle counts.
+
+Stack traversal follows a unique parameter-map chain to an exact output Usage ID,
+using the engine's normal/interpolated Spawn equivalence only. Disconnected,
+ambiguous or cyclic chains are unsupported; shared graph node enumeration is not
+execution order. Missing/ambiguous selected identities refuse instead of reading
+another handler. Module records include call identity, function and selected/resolved
+version; event module selection requires Handle, script type and Usage ID.
+
+Inputs distinguish explicit overrides, rapid iteration, linked parameters, dynamic
+inputs, local pins, data-interface/unresolved expressions and script defaults.
+Dynamic chains are bounded (depth 6, 8192 inputs); typed enums retain native paths,
+numeric values and canonical/display names. Unexported script-default pin access is
+explicitly unresolved, not a fabricated effective value. Time domain/units are also
+unresolved unless actually available; names do not establish business semantics.
+
+`coverage` separates authored data, execution stacks, editor preview, runtime and
+external dependencies. Current `isolation_enabled`/per-Handle `isolated` and
+`render_excluded_by_isolation` are distinct from authored enabled or simulation
+state. Existing non-template component identities/worlds/active/registered flags
+are observed only; an absent component is not a zero-particle measurement. Full
+runtime culling, event counts and CPU/GPU particle snapshots remain **unsupported**.
+External materials/textures/conversion logs are not fully decoded here.
+
+`success` does not imply `complete`: unsupported stack/source/configuration paths
+set `complete=false` with exact reasons. Even `complete=true` covers only the
+declared supported domains, not runtime simulation. Large responses spill the full
+JSON and retain contract/coverage metadata; read `file_path`, not only its preview.
+The reader never sets Solo/isolation, spawns/ticks/resets simulation, compiles or
+saves assets, changes global quality or clears user drafts. Editor restart itself
+does not guarantee preservation of transient preview/Solo state.
+
+2026-11-17: fully built/deployed to SkillTest and NF, preserving local plugin
+customizations and client settings. Both actual DLLs passed the two native tests
+and original-profile grouped-read acceptance; SkillTest's reported Converted asset
+read complete and resolved TrailCore's LocationEvent to Electricity. All 14905
+SkillTest/5914 NF protected original files were unchanged; each project added only
+one isolated diagnostic fixture. This is diagnostic read acceptance, not runtime
+particle sampling or visual reconstruction. Reconnect existing MCP services.
+
+Legacy `list_module_inputs` and all existing input writers retain their four-stage
+scope; use this operation for event/simulation-stage reads, not guessed inline
+UObject paths. See the [feedback and acceptance record](../reported-issues/particle-system-inspection-event-ribbon-preview.md).
+
 ### `read_niagara_effect_type`
 
 Required: `asset_path`, e.g. `/Game/Effects/EffectTypes/EffectType_World_Portal`.

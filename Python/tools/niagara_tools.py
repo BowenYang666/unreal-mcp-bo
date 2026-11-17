@@ -28,11 +28,11 @@ def _spill_niagara_read(result: dict, operation: str) -> dict:
     from uuid import uuid4
 
     spilled = spill_if_oversized(result, operation, uuid4().hex,
-        preview_keys=("name", "path", "asset_path", "class_path", "reader_contract", "scalability_complete", "contract_version", "complete", "scope", "authoring_contract", "baseline", "target", "object_path"),
+        preview_keys=("name", "path", "asset_path", "class_path", "reader_contract", "diagnostics_contract", "coverage", "scalability_complete", "contract_version", "complete", "scope", "authoring_contract", "baseline", "target", "object_path"),
         count_keys=("emitters", "user_parameters", "unsupported"),
         hint="Read the complete JSON file for all saved rules, field states, versions and curve keys. A preview is not the full result.")
     if spilled is not result and spilled.get("overflow"):
-        for key in ("success", "reader_contract", "emitter_removal_contract", "reader_copy_contract", "scalability_complete", "contract_version", "complete", "scope", "read_context", "scalability_status", "authoring_contract", "baseline", "target", "object_path"):
+        for key in ("success", "reader_contract", "diagnostics_contract", "coverage", "emitter_removal_contract", "reader_copy_contract", "scalability_complete", "contract_version", "complete", "scope", "read_context", "scalability_status", "authoring_contract", "baseline", "target", "object_path"):
             if key in result:
                 spilled[key] = result[key]
     return spilled
@@ -58,6 +58,40 @@ def _authoring_call(operation: str, arguments: dict) -> dict:
 
 def register_niagara_tools(mcp: FastMCP):
     """Register Niagara tools with the MCP server."""
+
+    @mcp.tool()
+    def read_niagara_diagnostics(ctx: Context, asset_path: str, emitter_handle_id: str = "",
+                                 script_type: str = "", script_usage_id: str = "",
+                                 module_node_guid: str = "", include_inputs: bool = True) -> dict:
+        """Read exact Niagara execution stacks, event sources and editor isolation, without simulation.
+
+        Example: asset_path='/Game/VFX/NS_Test' enumerates selected emitter versions,
+        ordered regular/event stacks and handler settings. To inspect one event use
+        emitter_handle_id=<Handle GUID>, script_type='event', script_usage_id=<Usage ID>;
+        module_node_guid selects an exact reachable module, never a display-name match.
+        Inputs report typed source/override/default/dynamic-chain/enum information;
+        ambiguous or unsupported evaluation remains unresolved. Coverage separates
+        authored/execution/editor-preview/runtime/external domains. Isolation/isolated
+        flags are not authored enabled, visibility proof or a claim that source simulation
+        stopped. CPU/GPU particle snapshots are unsupported, never fabricated zero counts.
+        No playback, tick/reset/spawn, Solo change, compile, asset edit or save. Read the
+        complete spill file. Requires matching diagnostics_contract=1 native plugin.
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            response = get_unreal_connection().send_command("read_niagara_diagnostics", dict(asset_path=asset_path,
+                emitter_handle_id=emitter_handle_id, script_type=script_type, script_usage_id=script_usage_id,
+                module_node_guid=module_node_guid, include_inputs=include_inputs))
+            if not response:
+                return _niagara_transport_error("No response from Unreal Engine")
+            if response.get("status") == "error":
+                return _niagara_error(response)
+            result = response.get("result", response)
+            if result.get("diagnostics_contract") != 1:
+                return {"success": False, "stage": "capability", "message": "Updated native Niagara diagnostics plugin required; no fallback."}
+            return _spill_niagara_read(result, "read_niagara_diagnostics")
+        except Exception as error:
+            return _niagara_transport_error(str(error))
 
     @mcp.tool()
     def read_niagara_authoring(ctx: Context, asset_path: str, target: str = "system",
@@ -1181,6 +1215,10 @@ def register_niagara_tools(mcp: FastMCP):
         script_type: str = "spawn"
     ) -> Dict[str, Any]:
         """List a module's input pins with type and value mode (discovery for enable_module_input).
+
+        This legacy name-based editor helper covers four regular script stages only.
+        For event/simulation-stage reads use read_niagara_diagnostics with exact Handle,
+        Usage ID and module GUID, not guessed event names or spawn/update substitution.
 
         script_type: "spawn"/"update"/"emitter_spawn"/"emitter_update". Each input returns
         name, type, current_mode (Local=has value / Default=not exposed), can_enable_local,

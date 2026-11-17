@@ -1,7 +1,7 @@
 # Unreal MCP Tools
 
-Index for **176 internal operations**. Default grouped mode exposes **57 MCP
-tools** before read-only/category filtering; direct compatibility mode exposes 176.
+Index for **177 internal operations**. Default grouped mode exposes **57 MCP
+tools** before read-only/category filtering; direct compatibility mode exposes 177.
 
 - [Actor Tools](actor_tools.md) (8)
 - [Scene Tools](scene_tools.md) (20) - Guarded instances, captures, imports, placement manifests, Outliner folders, temporary editor visibility and controlled undo
@@ -16,7 +16,7 @@ tools** before read-only/category filtering; direct compatibility mode exposes 1
 - [Blueprint Tools](blueprint_tools.md) (13) - Includes [typed CDO paths](blueprint_tools.md#read_blueprint_property_paths) and [guarded skeletal component defaults](blueprint_tools.md#skeletal-component-defaults)
 - [Reading Blueprints](reading_blueprints.md) - How to discover and inspect existing Blueprints
 - [Node Tools](node_tools.md) (8)
-- [Niagara Tools](niagara_tools.md) (38)
+- [Niagara Tools](niagara_tools.md) (39)
 - [Material Tools](material_tools.md) (17)
 - [UMG Tools](umg_tools.md) (23) - Widget Blueprints / in-game UI
 - [Project Tools](project_tools.md) (6) - Input mappings, reflection, Behavior Trees, Blackboards, StateTrees
@@ -99,8 +99,8 @@ routing/argument errors are MCP tool errors.
 
 - `MCP_TOOL_MODE=grouped` (default): 57 public tools; original names from these
 	six categories are internal and cannot be called directly via MCP.
-- `MCP_TOOL_MODE=direct`: all 176 public operations, no grouped entry points.
-- `UNREAL_MCP_READ_ONLY=1`: 29 public tools in grouped mode, 53 in direct mode.
+- `MCP_TOOL_MODE=direct`: all 177 public operations, no grouped entry points.
+- `UNREAL_MCP_READ_ONLY=1`: 29 public tools in grouped mode, 54 in direct mode.
 	Only approved read operations remain; hidden writes cannot be searched or run.
 - Existing `MCP_MATERIAL_ENABLED`, `MCP_NIAGARA_ENABLED`, `MCP_UMG_ENABLED`, `MCP_SCENE_ENABLED`,
   `MCP_BLUEPRINT_ENABLED`, `MCP_ASSET_ENABLED`

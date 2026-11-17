@@ -1,4 +1,5 @@
 #include "Commands/UnrealMCPProjectCommands.h"
+#include "EdGraph/EdGraphPin.h"
 #include "Commands/UnrealMCPCommonUtils.h"
 #include "EditorAssetLibrary.h"
 #include "Particles/ParticleSystem.h"
@@ -12,6 +13,7 @@
 #include "Distributions/Distribution.h"
 #include "UObject/UnrealType.h"
 #include "UObject/Package.h"
+#include "Misc/EngineVersion.h"
 
 namespace
 {
@@ -79,6 +81,38 @@ namespace
                     Unavailable(Path, TEXT("Custom class: reflected fields only; custom serialized data and runtime logic are not decoded"));
                 }
                 Entry->SetObjectField(TEXT("properties"), Properties(Object->GetClass(), Object, Path, Depth + 1));
+                if (const auto* Module = Cast<UParticleModule>(Object))
+                {
+                    auto Semantics = MakeShared<FJsonObject>(); Semantics->SetBoolField(TEXT("authored_enabled"), Module->bEnabled);
+                    Semantics->SetStringField(TEXT("effective_value"), TEXT("unresolved: saved values/modes/curves do not prove runtime consumption"));
+                    Semantics->SetStringField(TEXT("engine_version"), FEngineVersion::Current().ToString());
+                    const FString Class = Object->GetClass()->GetName();
+                    if (FEngineVersion::Current().GetMajor() == 5 && FEngineVersion::Current().GetMinor() == 7)
+                    {
+                        if (Class == TEXT("ParticleModuleVelocityCone"))
+                        {
+                            Semantics->SetStringField(TEXT("rule"), TEXT("A zero stored Direction uses native +Z fallback, not an effective zero direction; no global axis rewrite implied"));
+                            Semantics->SetStringField(TEXT("source"), TEXT("Engine/Source/Runtime/Engine/Private/Particles/ParticleModules_Velocity.cpp: UParticleModuleVelocityCone::SpawnEx (UE5.7)"));
+                        }
+                        else if (Class == TEXT("ParticleModuleSizeScaleBySpeed"))
+                        {
+                            Semantics->SetStringField(TEXT("rule"), TEXT("Official Cascade converter multiplies MaxScale by 10; source values and converted values are not interchangeable visual proofs"));
+                            Semantics->SetNumberField(TEXT("converter_max_scale_factor"), 10);
+                            Semantics->SetStringField(TEXT("source"), TEXT("CascadeToNiagaraConverter/Content/Python/ModuleConversionScripts/CascadeSizeScaleBySpeedToNiagara.py (UE5.7)"));
+                        }
+                        else if (Class == TEXT("ParticleModuleSpawnPerUnit"))
+                        {
+                            Semantics->SetStringField(TEXT("rule"), TEXT("UnitScalar and SpawnPerUnit are distance-based authored controls; actual source motion matters, not a fixed particles-per-second value"));
+                            Semantics->SetStringField(TEXT("source"), TEXT("Engine/Source/Runtime/Engine/Classes/Particles/Spawn/ParticleModuleSpawnPerUnit.h (UE5.7)"));
+                        }
+                        else if (Class == TEXT("ParticleModuleTypeDataRibbon"))
+                        {
+                            Semantics->SetStringField(TEXT("rule"), TEXT("MaxTrailCount/MaxParticleInTrailCount are limits and SheetsPerTrail is geometry configuration, not measured active ribbon/particle counts"));
+                            Semantics->SetStringField(TEXT("source"), TEXT("Engine/Source/Runtime/Engine/Classes/Particles/TypeData/ParticleModuleTypeDataRibbon.h (UE5.7)"));
+                        }
+                    }
+                    Entry->SetObjectField(TEXT("diagnostic_semantics"), Semantics);
+                }
             }
             return MakeShared<FJsonValueObject>(Reference);
         }
@@ -307,6 +341,10 @@ namespace
         Result->SetBoolField(TEXT("complete"), Context.Warnings.IsEmpty());
         Result->SetArrayField(TEXT("warnings"), Context.Warnings);
         Result->SetStringField(TEXT("scope"), TEXT("Authored reflected data for the selected emitters/LODs; no simulation, runtime overrides, external asset contents or custom binary payloads"));
+        auto Coverage = MakeShared<FJsonObject>(); Coverage->SetStringField(TEXT("authored_data"), TEXT("existing reflected scope; complete retains its original meaning"));
+        Coverage->SetStringField(TEXT("execution_stack"), TEXT("saved Cascade module/LOD order and event fields, not evaluated Niagara execution"));
+        Coverage->SetStringField(TEXT("editor_preview"), TEXT("unsupported")); Coverage->SetStringField(TEXT("runtime"), TEXT("unsupported"));
+        Coverage->SetStringField(TEXT("external_dependencies"), TEXT("references only")); Result->SetObjectField(TEXT("coverage"), Coverage);
         return Result;
     }
 }

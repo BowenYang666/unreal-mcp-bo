@@ -67,8 +67,9 @@ Maintenance native/actual MCP/independent cold acceptance passed on 2026-11-13,
 including numeric/Name/String/Enum keys, struct/array combinations, parent/sibling
 isolation, bit preservation, conditions, Undo/Redo, compile/save fault and actual
 new instance consumption. NF deployment subsequently passed its matching DLL/native
-matrix/explicit cold load and real GA typed-path public read smoke. SkillTest source
-was copied, but build/restart was explicitly deferred; its old DLL remains unchanged.
+matrix/explicit cold load and real GA typed-path public read smoke. SkillTest's
+previously deferred source was compiled in the full 2026-11-17 particle-diagnostics
+deployment; the full property-authoring matrix was not repeated in that deployment.
 Existing clients must reconnect after their matching DLL update; no production GA patch
 or hierarchy propagation was executed during NF deployment.
 

@@ -59,6 +59,16 @@ event traces or proof that matching names execute at a particular time.
 
 ## Boundaries
 
+`coverage` now separates authored data from execution/preview/runtime and external
+dependencies. Module objects additionally expose `diagnostic_semantics`, retaining
+the authored enabled flag and an explicitly unresolved effective value. On UE 5.7
+only, finite version/source-qualified annotations cover VelocityCone's conditional
+zero-direction +Z fallback, the official SizeScaleBySpeed converter's MaxScale x10,
+SpawnPerUnit's source-motion/distance dependence and Ribbon limits versus geometry.
+These are documented engine/converter rules, not evaluated particles, a conversion
+equivalence claim or an instruction to rewrite source values. Existing reflected
+properties, scope and completeness semantics are unchanged.
+
 No simulation, compilation, conversion, module-list rebuilding, editing, dirty
 flag clearing or saving is performed. Transient/deprecated properties, the
 curve-editor UI setup and the embedded thumbnail image are excluded. The latter

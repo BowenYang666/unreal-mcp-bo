@@ -129,6 +129,75 @@ class GroupedToolsTests(unittest.IsolatedAsyncioTestCase):
 
 
 class GroupedServerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_particle_diagnostics_is_readonly_with_exact_identity(self):
+        server = self.load_server()
+        search = server.mcp._tool_manager.get_tool("niagara_search")
+        contract = await search.run({"tool": "read_niagara_diagnostics"})
+        self.assertEqual(contract["effect"], "read")
+        self.assertEqual(contract["input_schema"]["required"], ["asset_path"])
+        connection = Mock()
+        connection.send_command.return_value = {"status": "success", "result": {
+            "success": True, "diagnostics_contract": 1, "coverage": {"runtime": "unsupported"}, "event_handlers": []}}
+        module = ModuleType("unreal_mcp_server")
+        module.get_unreal_connection = Mock(return_value=connection)
+        module.spill_if_oversized = server.spill_if_oversized
+        arguments = {"asset_path": "/Game/NS_Test", "emitter_handle_id": "handle", "script_type": "event",
+                     "script_usage_id": "usage", "module_node_guid": "node"}
+        with patch.dict(sys.modules, unreal_mcp_server=module):
+            result = await server.mcp._tool_manager.get_tool(contract["call_tool"]).run({"tool": "read_niagara_diagnostics", "arguments": arguments})
+        self.assertEqual(result["diagnostics_contract"], 1)
+        self.assertEqual(result["coverage"]["runtime"], "unsupported")
+        connection.send_command.assert_called_once_with("read_niagara_diagnostics", {**arguments, "include_inputs": True})
+        readonly = self.load_server(read_only=True)
+        self.assertEqual((await readonly.mcp._tool_manager.get_tool("niagara_search").run({"tool": "read_niagara_diagnostics"}))["effect"], "read")
+
+    async def test_particle_diagnostics_failure_capability_and_full_spill(self):
+        server = self.load_server("direct")
+        tool = server.mcp._tool_manager.get_tool("read_niagara_diagnostics")
+        connection = Mock()
+        module = ModuleType("unreal_mcp_server")
+        module.get_unreal_connection = Mock(return_value=connection)
+        module.spill_if_oversized = server.spill_if_oversized
+        with patch.dict(sys.modules, unreal_mcp_server=module):
+            connection.send_command.return_value = {"status": "success", "result": {"success": True}}
+            self.assertEqual(tool.fn(None, "/Game/NS_Test")["stage"], "capability")
+            connection.send_command.return_value = {"status": "error", "error": "Missing exact Usage ID", "result": {"stage": "identity"}}
+            self.assertEqual(tool.fn(None, "/Game/NS_Test")["stage"], "identity")
+            connection.reset_mock()
+            connection.send_command.side_effect = TimeoutError("timeout")
+            result = tool.fn(None, "/Game/NS_Test")
+            self.assertEqual(result["execution_state"], "unknown")
+            self.assertNotIn("modified", result)
+            connection.send_command.assert_called_once()
+            connection.send_command.side_effect = None
+            payload = {"success": True, "diagnostics_contract": 1, "complete": False,
+                       "coverage": {"runtime": "unsupported", "editor_preview": "existing state"},
+                       "event_handlers": [{"evidence": "x" * 26000}]}
+            connection.send_command.return_value = {"status": "success", "result": payload}
+            with tempfile.TemporaryDirectory() as directory, patch("tempfile.gettempdir", return_value=directory):
+                result = tool.fn(None, "/Game/NS_Test")
+                self.assertTrue(result["overflow"])
+                self.assertEqual(result["coverage"], payload["coverage"])
+                self.assertFalse(result["complete"])
+                self.assertEqual(json.loads(Path(result["file_path"]).read_text(encoding="utf-8")), payload)
+        disabled = self.load_server(disabled=("niagara",))
+        self.assertIsNone(disabled.mcp._tool_manager.get_tool("niagara_search"))
+
+    async def test_server_initialization_supports_explicit_sdk_constructor(self):
+        def create_server(name, *, instructions, lifespan):
+            return FastMCP(name, instructions=instructions, lifespan=lifespan)
+
+        with patch("mcp.server.fastmcp.FastMCP", side_effect=create_server) as constructor:
+            server = self.load_server()
+
+        constructor.assert_called_once_with(
+            "UnrealMCP",
+            instructions="Unreal Engine integration via Model Context Protocol",
+            lifespan=server.server_lifespan,
+        )
+        self.assertIsInstance(server.mcp, FastMCP)
+        self.assertIsNone(server._unreal_connection)
+
     def load_server(self, mode=None, read_only=False, disabled=()):
         environment = {f"MCP_{category.upper()}_ENABLED": "1" for category in (
             "material", "niagara", "umg", "editor", "asset", "blueprint", "node", "project", "navigation", "cascade", "scene")}
@@ -151,7 +220,7 @@ class GroupedServerTests(unittest.IsolatedAsyncioTestCase):
         grouped = self.load_server()
         direct_tools = await direct.mcp.list_tools()
         grouped_tools = await grouped.mcp.list_tools()
-        self.assertEqual(len(direct_tools), 176)
+        self.assertEqual(len(direct_tools), 177)
         self.assertEqual(len(grouped_tools), 57)
         self.assertEqual(set().union(*direct._CATEGORY_TOOLS.values()), {tool.name for tool in direct_tools})
         size = lambda tools: len(json.dumps([tool.model_dump(exclude_none=True) for tool in tools]))
@@ -169,7 +238,7 @@ class GroupedServerTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(contract["effect"], expected_effect)
 
     async def test_readonly_and_disabled_categories(self):
-        self.assertEqual(len(await self.load_server("direct", True).mcp.list_tools()), 53)
+        self.assertEqual(len(await self.load_server("direct", True).mcp.list_tools()), 54)
         self.assertEqual(len(await self.load_server(disabled=("node",)).mcp.list_tools()), 49)
         readonly = self.load_server(read_only=True)
         self.assertEqual(len(await readonly.mcp.list_tools()), 29)

@@ -333,7 +333,7 @@ async def server_lifespan(server: FastMCP) -> AsyncIterator[Dict[str, Any]]:
 # Initialize server
 mcp = FastMCP(
     "UnrealMCP",
-    description="Unreal Engine integration via Model Context Protocol",
+    instructions="Unreal Engine integration via Model Context Protocol",
     lifespan=server_lifespan
 )
 
@@ -377,6 +377,7 @@ _READ_ONLY_TOOLS = {
     "read_data_asset_text_references",
     "read_input_mapping_context",
     "read_niagara_authoring",
+    "read_niagara_diagnostics",
     "read_niagara_particle_reader",
     "read_string_table",
     "get_editor_context", "list_scene_actors", "inspect_scene_target",
@@ -480,6 +481,7 @@ _CATEGORY_TOOLS = {
         "add_custom_hlsl_expression", "set_expression_position",
     },
     "niagara": {
+        "read_niagara_diagnostics",
         "read_niagara_authoring", "create_niagara_effect_type", "set_niagara_scalability", "save_niagara_authoring",
         "read_niagara_particle_reader", "bind_niagara_particle_reader",
         "set_niagara_user_parameters", "bind_niagara_module_input", "set_niagara_material_bindings",
