@@ -21,6 +21,7 @@ private:
 	/** Read detailed info about a specific Niagara system: emitters, User.* parameters, sim targets. */
 	TSharedPtr<FJsonObject> HandleReadNiagaraSystem(const TSharedPtr<FJsonObject>& Params);
 	TSharedPtr<FJsonObject> HandleReadNiagaraDiagnostics(const TSharedPtr<FJsonObject>& Params);
+	TSharedPtr<FJsonObject> HandleSetNiagaraEmitterSolo(const TSharedPtr<FJsonObject>& Params);
 
 	/** Set a User.* parameter on a Niagara component in the level. */
 	TSharedPtr<FJsonObject> HandleSetNiagaraParameter(const TSharedPtr<FJsonObject>& Params);

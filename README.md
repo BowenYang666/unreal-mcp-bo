@@ -4,14 +4,14 @@ Fork of [chongdashu/unreal-mcp](https://github.com/chongdashu/unreal-mcp) for AI
 
 ## Tool Surface
 
-**177 internal operations**, exposed as **57 tools** in default grouped mode.
+**178 internal operations**, exposed as **57 tools** in default grouped mode.
 Material, Niagara, UMG, Scene, Blueprint and Asset use search/read/write entry
 points; other categories remain direct. `MCP_TOOL_MODE=direct` exposes original names.
 
 | Category | Operations | Access In Grouped Mode | Main Capabilities |
 |---|---:|---|---|
 | [Material](Docs/Tools/material_tools.md) | 17 | `material_search` | Material graphs, instances, parameters and physical-material assignment |
-| [Niagara](Docs/Tools/niagara_tools.md) | 39 | `niagara_search` | Systems, exact event stacks, input/isolation diagnostics, renderers, User/Particle Reader bindings and scalability |
+| [Niagara](Docs/Tools/niagara_tools.md) | 40 | `niagara_search` | Systems, exact event stacks, guarded Solo, input/isolation diagnostics, renderers, Reader bindings and scalability |
 | [UMG](Docs/Tools/umg_tools.md) | 23 | `umg_search` | Widgets, layout, bindings, reparenting and Designer preview settings |
 | [Scene](Docs/Tools/scene_tools.md) | 20 | `scene_search` | Guarded level instances, placement, captures, imports, Outliner folders and undo |
 | [Blueprint](Docs/Tools/blueprint_tools.md) | 13 | `blueprint_search` | Asset structure, typed CDO paths, inherited skeletal defaults and compilation |

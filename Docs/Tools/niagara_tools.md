@@ -166,6 +166,81 @@ Legacy `list_module_inputs` and all existing input writers retain their four-sta
 scope; use this operation for event/simulation-stage reads, not guessed inline
 UObject paths. See the [feedback and acceptance record](../reported-issues/particle-system-inspection-event-ribbon-preview.md).
 
+### `set_niagara_emitter_solo`
+
+**Native Solo affects every registered component referencing the same System,
+including scene VFX, not only its Niagara editor preview.** This is an explicit
+transient write, hidden in read-only mode; it is not independent preview isolation.
+Discover `niagara_search(tool="set_niagara_emitter_solo")`, then use the returned
+write endpoint. Requires the matching `solo_contract=1` native DLL; there is no
+fallback to persistent emitter enabled flags.
+
+| Parameter | Meaning |
+| --- | --- |
+| `asset_path` | Required exact `/Game` Niagara System package |
+| `emitter_handle_ids` | Required complete Solo GUID set; one selects one emitter, multiple select that set, `[]` clears Solo |
+| `expected_baseline` | `""` for initial preview; apply requires the fresh baseline |
+| `dry_run` | `true` by default; only `false` changes isolation |
+
+Preview first and inspect `before`, `proposed`, `affected_components` and `warning`.
+Take exact Handle GUIDs from `read_niagara_diagnostics`, never emitter names. Apply
+the same requested set with the preview's `baseline` and `dry_run=false`. A stale
+baseline, missing/duplicate Handle, inconsistent native isolation flags, game-world
+component, PIE/simulation, saving, GC, modal/slow task or asset compilation refuses
+before mutation. Bounds are 256 Handles and 128 affected components; impact is never
+silently truncated. Draft packages are allowed but their dirty state is preserved.
+
+The baseline covers current isolation, Handle identity/version/authored enabled and
+the registered same-asset component identities, scoped to this process/System.
+A UI Solo change or new affected scene instance invalidates the old preview. It is
+an optimistic state check, not a durable revision or proof against change-and-revert.
+Successful writes return `before`, actual `after`, `baseline` and `restore_arguments`.
+For temporary AI preview, keep the original `before.emitter_handle_ids`, then call
+the same tool with `restore_arguments` after inspection. If state/components have
+changed, do not force restoration: preview the original set again and review its
+new impact/baseline. On a timeout read state before any retry; no automatic retry.
+
+Example initial preview clearing Solo (no mutation):
+
+```text
+niagara_search(tool="set_niagara_emitter_solo")
+niagara_call_write(tool="set_niagara_emitter_solo", arguments={
+	"asset_path": "/Game/VFX/NS_Test", "emitter_handle_ids": []
+})
+```
+
+On real apply, native Handle isolated flags/System isolation are updated and the
+same-asset registered components are marked for render-state refresh, matching
+Niagara's UI behavior. No simulation tick/reset/activation, dependency shutdown,
+authored enabled/renderer changes, transaction, explicit compile/save, dirty clearing
+or global quality switching. A no-op never refreshes render state. Receipts mark
+`session_only=true`, `undo_supported=false`, `saved=false`, `compiled=false`;
+`modified` means transient isolation changed, not that an asset was edited on disk.
+UI refresh is asynchronous; this is not frame/pixel or runtime particle verification.
+Restart persistence is not guaranteed. Read spilled full JSON as well as preserved
+restoration/warning metadata.
+
+Maintenance acceptance: 111 Python tests, complete linked DLL and native
+`UnrealMCP.Niagara.Solo` plus `Diagnostics.ReadOnly` passed. The owned fixture tests
+two same-asset components, another asset, preview/apply/multi/clear/no-op/restore,
+stale UI/component impact, disabled authored emitter, draft/dirty/disk preservation,
+no activation/age reset and saving/slow-task rejection. A fixture-only pending
+compilation after component setup was completed before testing; guards remain.
+NF/SkillTest complete target builds and both native matrices also passed (SkillTest
+1412.60s, NF55.77s). Both original-profile grouped endpoints passed actual owned-fixture
+preview/apply/no-op/stale refusal/restore and diagnostic readback, retaining authored
+enabled, clean drafts, map/viewports, quality/Profile context and unchanged fixture
+disk bytes. No production asset Solo request was used. Deployment records and full
+old-plugin backups: `Saved/UnrealMCPDeployment/NiagaraSolo_20261117_115924` and
+`Saved/UnrealMCPBackups/NiagaraSolo_20261117_115924`. Reconnect existing MCP services;
+SDK smoke does not grant GUI-client trust. Final protection passed: all 14913
+SkillTest/5915 NF original Content/Config/project Source/uproject/client files kept
+SHA256, all non-target plugin source stayed byte-identical and the three feature
+files matched maintenance source. Each target added only one diagnostic and one
+Solo fixture under `__Dev`; both public Solo fixtures retained their disk hashes.
+Both normal GUIs remain open on SkillTest13091/NF13090; original permissions and
+bindings are unchanged. No production VFX Solo or save was issued for acceptance.
+
 ### `read_niagara_effect_type`
 
 Required: `asset_path`, e.g. `/Game/Effects/EffectTypes/EffectType_World_Portal`.

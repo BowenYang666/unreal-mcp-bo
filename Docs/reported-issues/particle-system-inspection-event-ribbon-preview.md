@@ -1,6 +1,6 @@
 # Particle System 诊断读取：事件链、Ribbon、参数语义与隔离显示
 
-日期：2026-11-16；维护更新2026-11-17。状态：**第一阶段只读合同已完整构建部署SkillTest／NF并通过公开验收。运行快照及电表现仍未验收。**
+日期：2026-11-16；维护更新2026-11-17。状态：**只读诊断及后续受控Solo均已完整构建部署SkillTest／NF并通过公开验收。运行快照及电表现仍未验收。**
 
 以下原始报告只整理已有公开 MCP 回执、已有资产读取结果和本机 UE5.7.4 源码证据，
 没有为写报告访问 Editor、修改插件、Build、重启或写资产。
@@ -300,3 +300,54 @@ NF:        public-29fde4a461dc4218a86dda5fd7119763
 本轮未提交或push代码，也未修改供应商／生产资产、全局画质或NF玩法配置。
 第一阶段工具缺口已处理；CPU／GPU逐粒子运行快照、完整转换日志诊断及电弧视觉复原
 仍是明确未完成的独立范围，不能据此关闭原使用侧VFX任务。
+
+## 10. 后续授权：受控 Emitter Solo
+
+用户随后明确要求增加 AI 可控制的 Solo，并授权关闭闲置 SkillTest、完成后完整部署
+NF 和 SkillTest。这是独立的瞬态写合同，不改变第8／9节诊断 reader 的只读承诺。
+
+新增 `set_niagara_emitter_solo(asset_path, emitter_handle_ids, expected_baseline="", dry_run=true)`，
+属于 Niagara write，只读模式隐藏。按精确 Handle GUID 设置完整集合，单个为一层、
+多个为多层、空数组清除；不按显示名定位，不替换 authored enabled。
+先预检影响，再使用新鲜 baseline 显式应用。回执含 before／after／proposed、
+affected_components、warning 和带 after baseline 的 restore_arguments。
+状态／影响实例变化后拒绝旧请求，恢复同样需要重新确认；超时不得盲目重试。
+
+该工具复用原生标记和渲染刷新语义，**会影响引用同一 System 的所有已注册组件，
+包括关卡 VFX，不是独立预览实例**。只能提供临时隔离和显式恢复，不会让 Solo 变成
+“仅 Niagara 窗口可见”。不推进／重置／激活模拟，不停止事件源依赖，不编译／保存，
+不清脏标记或修改 enabled，不提供持久 Undo，重启保留不作保证。
+PIE／模拟、同资产游戏世界组件、保存／GC／模态／慢任务／编译忙碌、无效或重复身份、
+不一致隔离标记、过期状态都拒绝。参数遵守仓库具体 MCP 类型规则。
+
+维护侧完整DLL构建／链接通过；`UnrealMCP.Niagara.Solo` 和 `Diagnostics.ReadOnly`
+通过。自有夹具验证两个同资产组件受影响、不同资产不受影响、单选／多选／清除／
+无操作／恢复、UI与新增实例导致stale拒绝、disabled与草稿／磁盘保持、无激活或年龄
+重置及保存／慢任务拒绝。首次组件准备触发编译忙碌，仅在夹具准备阶段完成队列后通过，
+没有放宽工具保护。111项Python回归通过，包括只读隐藏、精确转发、未知结果无重试及
+完整spill的恢复元数据。未据此声称像素或粒子运行快照验收。
+
+双项目备份／验收标识为 `NiagaraSolo_20261117_115924`，三个原生文件经三方核对合入，
+保留本地插件定制，完整旧插件移入各自 `Saved/UnrealMCPBackups`。
+NF原本关闭；SkillTest预检曾有4项草稿，用户选择保存全部再关闭，但再次检查时已为0，
+所以本轮没有发保存请求，正常关闭保存0。部署保护基线取自这次干净状态之后，不能拿
+先前内存草稿状态声称磁盘回滚或由本工具保存。两边完整构建／链接及Solo／诊断原生矩阵
+已通过（SkillTest35动作1412.60秒，NF36动作55.77秒）。两边沿原配置的实际公开MCP
+预检／应用／无操作／stale拒绝／恢复均通过；诊断读回确认恢复原隔离状态、authored
+enabled保持，地图／视口／画质与Profile上下文保持、草稿0、自有夹具磁盘SHA256未变。
+没有向生产资产发送Solo请求。完整回执分别位于本轮记录目录的：
+
+```text
+SkillTest: public-ca6ec2972e6146d3970d01791679ceca
+NF:        public-9734071407244cb48a85fdb8d1918c9a
+```
+
+两个正常GUI保持打开，SkillTest恢复本轮记录的原地图及相机，NF由规定助手启动，
+持久端口13091／13090、工程绑定及权限不变。客户端重连加载共享Python合同，独立SDK
+不代替信任审批。最终保护核对通过：SkillTest14913个、NF5915个原有Content／Config／
+项目Source／uproject／MCP配置文件SHA256全部保持；非目标插件源码逐字节保持，三个
+功能文件与维护源码一致，两边各仅新增一份诊断和一份Solo夹具，无其它新增Content。
+两份公开Solo夹具磁盘SHA256前后相同，证明应用／恢复不保存资产。各项目记录中的
+`protected-final.json`、`source-final.json`、`public-final.json`、`dll.json` 保留实际证据，
+完整旧插件备份保留。此次Solo改动未提交或push，未修改生产VFX的Solo／enabled／配置；
+用户的原始电弧视觉任务及逐粒子运行快照仍不因此关闭。

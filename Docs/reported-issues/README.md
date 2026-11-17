@@ -10,7 +10,7 @@
 
 | 问题 | 当前状态 | 结论边界 |
 | --- | --- | --- |
-| [Particle System事件／Ribbon／预览诊断读取](particle-system-inspection-event-ribbon-preview.md) | 第一阶段已完整构建部署SkillTest／NF，2026-11-17 | 109 Python、双项目原生／实际grouped及原Converted完整读取通过，确认TrailCore→Electricity事件；14905／5914原文件保持，默认值未解析如实标注，逐粒子快照及视觉复原未完成，未改业务VFX或认定Solo根因 |
+| [Particle System事件／Ribbon／预览诊断读取](particle-system-inspection-event-ribbon-preview.md) | 只读诊断及后续受控Solo均已完整部署SkillTest／NF，2026-11-17 | 111 Python、双项目原生及实际Solo预检／应用／stale拒绝／恢复通过；14913／5915原文件保持，原Converted事件证据保留；Solo会影响同资产场景实例，需显式恢复，不修改生产Solo，逐粒子快照及视觉复原未完成 |
 | [Montage自定义Notify参数作者缺口](montage-custom-notify-property-authoring.md) | 有限合同已验收并构建部署NF／SkillTest，2026-11-13 | 104项Python、维护实际作者／回调传参／独立冷读与公开MCP、新DLL回归及双项目绑定只读烟测通过；未重放NF四层视觉或写业务配置，旧partial及Add限制保留 |
 | [DataAsset结构体数组初始化](dataasset-struct-array-initialization.md) | 有限追加合同已验收；随后经新授权构建部署NF／SkillTest，2026-11-13 | 默认构造后仅写可编辑叶子、隐藏及已有值保持；SkillTest新DLL追加／独立冷读与NF公开array_append读取通过，未向T3／T4／T5发业务追加请求；旧限制保留 |
 | [GA Blueprint CDO嵌套Map叶子作者缺口](blueprint-ga-cdo-nested-map-property-authoring.md) | 共用typed核心已验收并部署NF；SkillTest此前仅copy状态由2026-11-17粒子诊断完整DLL构建更新 | 2026-11-13的106 Python、维护共享回归／冷读／公开MCP和NF实际GA只读证据保留；原NF5681文件保持、生产值未写；本次SkillTest已编入待构建源码，未重跑完整属性作者矩阵 |

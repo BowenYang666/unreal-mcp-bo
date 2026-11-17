@@ -481,6 +481,7 @@ _CATEGORY_TOOLS = {
         "add_custom_hlsl_expression", "set_expression_position",
     },
     "niagara": {
+        "set_niagara_emitter_solo",
         "read_niagara_diagnostics",
         "read_niagara_authoring", "create_niagara_effect_type", "set_niagara_scalability", "save_niagara_authoring",
         "read_niagara_particle_reader", "bind_niagara_particle_reader",

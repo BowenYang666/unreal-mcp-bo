@@ -129,6 +129,64 @@ class GroupedToolsTests(unittest.IsolatedAsyncioTestCase):
 
 
 class GroupedServerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_emitter_solo_is_guarded_write(self):
+        server = self.load_server()
+        contract = await server.mcp._tool_manager.get_tool("niagara_search").run({"tool": "set_niagara_emitter_solo"})
+        self.assertEqual(contract["effect"], "write")
+        self.assertEqual(contract["input_schema"]["required"], ["asset_path", "emitter_handle_ids"])
+        connection = Mock()
+        connection.send_command.return_value = {"status": "success", "result": {
+            "success": True, "solo_contract": 1, "modified": False, "saved": False, "dry_run": True}}
+        module = ModuleType("unreal_mcp_server")
+        module.get_unreal_connection = Mock(return_value=connection)
+        module.spill_if_oversized = server.spill_if_oversized
+        arguments = {"asset_path": "/Game/NS_Test", "emitter_handle_ids": []}
+        with patch.dict(sys.modules, unreal_mcp_server=module):
+            result = await server.mcp._tool_manager.get_tool(contract["call_tool"]).run({
+                "tool": "set_niagara_emitter_solo", "arguments": arguments})
+        self.assertFalse(result["modified"])
+        connection.send_command.assert_called_once_with("set_niagara_emitter_solo", {
+            **arguments, "expected_baseline": "", "dry_run": True})
+        readonly = self.load_server(read_only=True)
+        with self.assertRaises(ToolError):
+            await readonly.mcp._tool_manager.get_tool("niagara_search").run({"tool": "set_niagara_emitter_solo"})
+        disabled = self.load_server(disabled=("niagara",))
+        self.assertIsNone(disabled.mcp._tool_manager.get_tool("niagara_search"))
+
+    async def test_emitter_solo_failure_unknown_and_spill_preserve_restore(self):
+        server = self.load_server("direct")
+        tool = server.mcp._tool_manager.get_tool("set_niagara_emitter_solo")
+        connection = Mock()
+        module = ModuleType("unreal_mcp_server")
+        module.get_unreal_connection = Mock(return_value=connection)
+        module.spill_if_oversized = server.spill_if_oversized
+        with patch.dict(sys.modules, unreal_mcp_server=module):
+            connection.send_command.return_value = {"status": "success", "result": {"success": True}}
+            self.assertEqual(tool.fn(None, "/Game/NS_Test", [])["stage"], "capability")
+            connection.send_command.return_value = {"status": "error", "error": "Stale Solo", "result": {
+                "solo_contract": 1, "stage": "preflight", "modified": False, "saved": False}}
+            self.assertEqual(tool.fn(None, "/Game/NS_Test", [])["stage"], "preflight")
+            connection.reset_mock()
+            connection.send_command.side_effect = TimeoutError("timeout")
+            result = tool.fn(None, "/Game/NS_Test", [], "baseline", False)
+            self.assertEqual(result["execution_state"], "unknown")
+            self.assertNotIn("modified", result)
+            connection.send_command.assert_called_once()
+            connection.send_command.side_effect = None
+            payload = {"success": True, "solo_contract": 1, "modified": True, "saved": False,
+                       "dry_run": False, "session_only": True, "affects_all_instances": True,
+                       "warning": "All same-asset scene instances", "baseline": "after",
+                       "restore_arguments": {"asset_path": "/Game/NS_Test", "emitter_handle_ids": [],
+                                             "expected_baseline": "after", "dry_run": False},
+                       "before": {"evidence": "x" * 26000}}
+            connection.send_command.return_value = {"status": "success", "result": payload}
+            with tempfile.TemporaryDirectory() as directory, patch("tempfile.gettempdir", return_value=directory):
+                result = tool.fn(None, "/Game/NS_Test", [], "baseline", False)
+                self.assertTrue(result["overflow"])
+                for key in ("solo_contract", "modified", "saved", "affects_all_instances", "warning", "restore_arguments"):
+                    self.assertEqual(result[key], payload[key])
+                self.assertEqual(json.loads(Path(result["file_path"]).read_text(encoding="utf-8")), payload)
+
     async def test_particle_diagnostics_is_readonly_with_exact_identity(self):
         server = self.load_server()
         search = server.mcp._tool_manager.get_tool("niagara_search")
@@ -220,7 +278,7 @@ class GroupedServerTests(unittest.IsolatedAsyncioTestCase):
         grouped = self.load_server()
         direct_tools = await direct.mcp.list_tools()
         grouped_tools = await grouped.mcp.list_tools()
-        self.assertEqual(len(direct_tools), 177)
+        self.assertEqual(len(direct_tools), 178)
         self.assertEqual(len(grouped_tools), 57)
         self.assertEqual(set().union(*direct._CATEGORY_TOOLS.values()), {tool.name for tool in direct_tools})
         size = lambda tools: len(json.dumps([tool.model_dump(exclude_none=True) for tool in tools]))

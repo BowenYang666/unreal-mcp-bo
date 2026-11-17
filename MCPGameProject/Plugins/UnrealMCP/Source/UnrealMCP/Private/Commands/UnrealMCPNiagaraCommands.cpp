@@ -40,6 +40,11 @@
 #include "Curves/RichCurve.h"
 #include "Misc/PackageName.h"
 #include "UObject/UObjectIterator.h"
+#include "Misc/SecureHash.h"
+#include "AssetCompilingManager.h"
+#include "Editor.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Misc/ScopeExit.h"
 
 // Editor includes
 #include "AssetRegistry/AssetRegistryModule.h"
@@ -234,6 +239,10 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleCommand(const FString& 
 	else if (CommandType == TEXT("read_niagara_diagnostics"))
 	{
 		return HandleReadNiagaraDiagnostics(Params);
+	}
+	else if (CommandType == TEXT("set_niagara_emitter_solo"))
+	{
+		return HandleSetNiagaraEmitterSolo(Params);
 	}
 	else if (CommandType == TEXT("set_niagara_parameter"))
 	{
@@ -3199,6 +3208,128 @@ static TArray<TSharedPtr<FJsonValue>> ReadDiagnosticInputs(FVersionedNiagaraEmit
 	Visited.Remove(Module->NodeGuid); return Result;
 }
 
+namespace MCPSolo
+{
+static bool Busy()
+{
+	return !IsInGameThread() || !GIsEditor || !GEditor || GEditor->PlayWorld || GEditor->bIsSimulatingInEditor ||
+		GIsSavingPackage || IsGarbageCollecting() || GIsSlowTask || FAssetCompilingManager::Get().GetNumRemainingAssets() > 0 ||
+		(FSlateApplication::IsInitialized() && FSlateApplication::Get().GetActiveModalWindow().IsValid());
+}
+
+static bool Snapshot(UNiagaraSystem* System, TSharedPtr<FJsonObject>& State, TArray<UNiagaraComponent*>& Components, FString& Error)
+{
+	if (System->GetEmitterHandles().Num() > 256) { Error = TEXT("Solo supports at most 256 emitter Handles"); return false; }
+	State = MakeShared<FJsonObject>(); Components.Reset();
+	State->SetBoolField(TEXT("isolation_enabled"), System->GetIsolateEnabled());
+	TArray<TSharedPtr<FJsonValue>> Handles, Isolated, Affected; TSet<FGuid> Ids;
+	bool AnyIsolated = false;
+	static const FString Session = FGuid::NewGuid().ToString();
+	FString Witness = Session + TEXT("|") + System->GetPathName() + FString::FromInt(System->GetUniqueID()) + (System->GetIsolateEnabled() ? TEXT("|1") : TEXT("|0"));
+	for (const auto& Handle : System->GetEmitterHandles())
+	{
+		if (!Handle.GetId().IsValid() || Ids.Contains(Handle.GetId())) { Error = TEXT("Invalid or ambiguous emitter Handle identity"); return false; }
+		Ids.Add(Handle.GetId()); const FString Id = Handle.GetId().ToString(EGuidFormats::DigitsWithHyphens);
+		auto Row = MakeShared<FJsonObject>(); Row->SetStringField(TEXT("handle_id"), Id); Row->SetStringField(TEXT("name"), Handle.GetName().ToString());
+		Row->SetBoolField(TEXT("isolated"), Handle.IsIsolated()); Row->SetBoolField(TEXT("authored_enabled"), Handle.GetIsEnabled());
+		Row->SetStringField(TEXT("version_guid"), Handle.GetInstance().Version.ToString(EGuidFormats::DigitsWithHyphens));
+		Handles.Add(MakeShared<FJsonValueObject>(Row));
+		if (Handle.IsIsolated()) { AnyIsolated = true; Isolated.Add(MakeShared<FJsonValueString>(Id)); }
+		FString Encoded; auto Writer = TJsonWriterFactory<>::Create(&Encoded); FJsonSerializer::Serialize(Row, Writer); Witness += TEXT("|") + Encoded;
+	}
+	if (AnyIsolated != System->GetIsolateEnabled()) { Error = TEXT("Inconsistent native isolation flags; inspect/correct through the Niagara editor before using Solo"); return false; }
+	for (TObjectIterator<UNiagaraComponent> Component; Component; ++Component)
+	{
+		if (!IsValid(*Component) || Component->IsTemplate() || !Component->IsRegistered() || Component->GetAsset() != System) continue;
+		if (Component->GetWorld() && Component->GetWorld()->IsGameWorld()) { Error = TEXT("A matching game-world component is present; Solo is editor-only"); return false; }
+		if (Components.Num() >= 128) { Error = TEXT("More than 128 affected components; Solo refuses rather than hiding impact"); return false; }
+		Components.Add(*Component);
+	}
+	Components.Sort([](const UNiagaraComponent& Left, const UNiagaraComponent& Right) { return Left.GetPathName() < Right.GetPathName(); });
+	for (auto* Component : Components)
+	{
+		auto Row = MakeShared<FJsonObject>(); Row->SetStringField(TEXT("object_path"), Component->GetPathName());
+		Row->SetStringField(TEXT("world_path"), Component->GetWorld() ? Component->GetWorld()->GetPathName() : TEXT("unavailable"));
+		Row->SetBoolField(TEXT("active"), Component->IsActive()); Affected.Add(MakeShared<FJsonValueObject>(Row));
+		Witness += TEXT("|") + Component->GetPathName() + TEXT(":") + FString::FromInt(Component->GetUniqueID());
+	}
+	FTCHARToUTF8 Bytes(*Witness); uint8 Digest[FSHA1::DigestSize]; FSHA1::HashBuffer(Bytes.Get(), Bytes.Length(), Digest);
+	State->SetStringField(TEXT("baseline"), BytesToHex(Digest, FSHA1::DigestSize));
+	State->SetArrayField(TEXT("emitter_handle_ids"), Isolated); State->SetArrayField(TEXT("emitters"), Handles); State->SetArrayField(TEXT("affected_components"), Affected);
+	return true;
+}
+}
+
+TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleSetNiagaraEmitterSolo(const TSharedPtr<FJsonObject>& Params)
+{
+	auto Fail = [](const FString& Message)
+	{
+		auto Result = FUnrealMCPCommonUtils::CreateErrorResponse(Message); Result->SetBoolField(TEXT("success"), false);
+		Result->SetNumberField(TEXT("solo_contract"), 1); Result->SetStringField(TEXT("stage"), TEXT("preflight"));
+		Result->SetStringField(TEXT("execution_state"), TEXT("not_started")); Result->SetBoolField(TEXT("modified"), false); Result->SetBoolField(TEXT("saved"), false); return Result;
+	};
+	if (MCPSolo::Busy()) return Fail(TEXT("Solo requires idle editor mode, without PIE/simulation, saving, GC, modal dialogs or asset compilation"));
+	const TSet<FString> Allowed{TEXT("asset_path"), TEXT("emitter_handle_ids"), TEXT("expected_baseline"), TEXT("dry_run")};
+	if (!Params) return Fail(TEXT("Missing Solo arguments"));
+	for (const auto& Pair : Params->Values) if (!Allowed.Contains(Pair.Key)) return Fail(TEXT("Unknown Solo argument: ") + Pair.Key);
+	FString Path, Expected; bool DryRun = true; const TArray<TSharedPtr<FJsonValue>>* Requested;
+	if (!Params->TryGetStringField(TEXT("asset_path"), Path) || !Path.StartsWith(TEXT("/Game/")) || Path.Contains(TEXT(".")) || Path.Len() >= NAME_SIZE || !FPackageName::IsValidLongPackageName(Path))
+		return Fail(TEXT("Require an exact /Game NiagaraSystem package path"));
+	if (!Params->TryGetArrayField(TEXT("emitter_handle_ids"), Requested) || Requested->Num() > 256) return Fail(TEXT("emitter_handle_ids must be an array of at most 256 exact GUIDs; [] clears Solo"));
+	if ((Params->HasField(TEXT("expected_baseline")) && !Params->TryGetStringField(TEXT("expected_baseline"), Expected)) || (Params->HasField(TEXT("dry_run")) && !Params->TryGetBoolField(TEXT("dry_run"), DryRun))) return Fail(TEXT("Invalid baseline or dry_run type"));
+	TSet<FGuid> Desired;
+	for (const auto& Value : *Requested)
+	{
+		FString Text; FGuid Id;
+		if (!Value.IsValid() || !Value->TryGetString(Text) || !FGuid::ParseExact(Text, EGuidFormats::DigitsWithHyphens, Id) || !Id.IsValid() || Desired.Contains(Id))
+			return Fail(TEXT("Require unique nonzero hyphenated emitter Handle GUIDs, not names"));
+		Desired.Add(Id);
+	}
+	if (!UEditorAssetLibrary::DoesAssetExist(Path)) return Fail(TEXT("NiagaraSystem not found"));
+	auto* System = Cast<UNiagaraSystem>(UEditorAssetLibrary::LoadAsset(Path));
+	if (!System || System->IsTemplate() || System->GetPackage()->GetName() != Path) return Fail(TEXT("Exact NiagaraSystem not found; no redirector fallback"));
+	if (MCPSolo::Busy()) return Fail(TEXT("Editor became busy while loading; inspect state before retrying"));
+	TSharedPtr<FJsonObject> Before; TArray<UNiagaraComponent*> Components; FString Error;
+	if (!MCPSolo::Snapshot(System, Before, Components, Error)) return Fail(Error);
+	int32 Found = 0; bool Changed = System->GetIsolateEnabled() != !Desired.IsEmpty();
+	TArray<TSharedPtr<FJsonValue>> ProposedIds;
+	for (const auto& Handle : System->GetEmitterHandles())
+	{
+		const bool Isolated = Desired.Contains(Handle.GetId()); if (Isolated) { ++Found; ProposedIds.Add(MakeShared<FJsonValueString>(Handle.GetId().ToString(EGuidFormats::DigitsWithHyphens))); }
+		Changed |= Isolated != Handle.IsIsolated();
+	}
+	if (Found != Desired.Num()) return Fail(TEXT("An exact emitter Handle was not found; no display-name fallback"));
+	if ((!DryRun && Expected.IsEmpty()) || (!Expected.IsEmpty() && Expected != Before->GetStringField(TEXT("baseline"))))
+	{
+		auto Result = Fail(TEXT("Missing/stale Solo baseline; preview again to protect UI state and affected instances")); Result->SetObjectField(TEXT("before"), Before); return Result;
+	}
+	const bool DirtyBefore = System->GetPackage()->IsDirty();
+	auto After = Before;
+	if (!DryRun && Changed)
+	{
+		for (auto& Handle : System->GetEmitterHandles()) Handle.SetIsolated(Desired.Contains(Handle.GetId()));
+		System->SetIsolateEnabled(!Desired.IsEmpty());
+		for (auto* Component : Components) Component->MarkRenderStateDirty();
+		if (!MCPSolo::Snapshot(System, After, Components, Error))
+		{
+			auto Result = Fail(Error); Result->SetStringField(TEXT("stage"), TEXT("verify")); Result->SetStringField(TEXT("execution_state"), TEXT("completed"));
+			Result->SetBoolField(TEXT("modified"), true); Result->SetBoolField(TEXT("after_unavailable"), true); Result->SetBoolField(TEXT("package_dirty"), System->GetPackage()->IsDirty()); return Result;
+		}
+	}
+	auto Result = MakeShared<FJsonObject>(); Result->SetBoolField(TEXT("success"), Error.IsEmpty() && DirtyBefore == System->GetPackage()->IsDirty());
+	Result->SetNumberField(TEXT("solo_contract"), 1); Result->SetStringField(TEXT("asset_path"), Path); Result->SetBoolField(TEXT("dry_run"), DryRun);
+	Result->SetBoolField(TEXT("modified"), !DryRun && Changed); Result->SetBoolField(TEXT("would_modify"), Changed); Result->SetBoolField(TEXT("saved"), false); Result->SetBoolField(TEXT("compiled"), false);
+	Result->SetBoolField(TEXT("session_only"), true); Result->SetBoolField(TEXT("undo_supported"), false); Result->SetBoolField(TEXT("affects_all_instances"), true);
+	Result->SetBoolField(TEXT("package_dirty"), System->GetPackage()->IsDirty()); Result->SetObjectField(TEXT("before"), Before); Result->SetObjectField(TEXT("after"), After);
+	Result->SetArrayField(TEXT("affected_components"), Before->GetArrayField(TEXT("affected_components"))); Result->SetStringField(TEXT("baseline"), After->GetStringField(TEXT("baseline")));
+	auto Proposed = MakeShared<FJsonObject>(); Proposed->SetBoolField(TEXT("isolation_enabled"), !Desired.IsEmpty()); Proposed->SetArrayField(TEXT("emitter_handle_ids"), ProposedIds); Result->SetObjectField(TEXT("proposed"), Proposed);
+	auto Restore = MakeShared<FJsonObject>(); Restore->SetStringField(TEXT("asset_path"), Path); Restore->SetArrayField(TEXT("emitter_handle_ids"), Before->GetArrayField(TEXT("emitter_handle_ids")));
+	Restore->SetStringField(TEXT("expected_baseline"), After->GetStringField(TEXT("baseline"))); Restore->SetBoolField(TEXT("dry_run"), false); Result->SetObjectField(TEXT("restore_arguments"), Restore);
+	Result->SetStringField(TEXT("warning"), TEXT("Native Solo changes ALL registered instances of this asset, including scene VFX, not only the Niagara preview. No simulation reset, dependency stop, asset save or persistent Undo. Restore explicitly with a fresh baseline; never blindly retry unknown outcomes."));
+	if (!Result->GetBoolField(TEXT("success"))) { Result->SetStringField(TEXT("stage"), TEXT("verify")); Result->SetStringField(TEXT("error"), Error.IsEmpty() ? TEXT("Package dirty state changed during Solo") : Error); }
+	return Result;
+}
+
 TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleReadNiagaraDiagnostics(const TSharedPtr<FJsonObject>& Params)
 {
 	const TSet<FString> Allowed{TEXT("asset_path"), TEXT("emitter_handle_id"), TEXT("script_type"), TEXT("script_usage_id"), TEXT("module_node_guid"), TEXT("include_inputs")};
@@ -3366,6 +3497,80 @@ TSharedPtr<FJsonObject> FUnrealMCPNiagaraCommands::HandleReadNiagaraDiagnostics(
 #include "Misc/FileHelper.h"
 #include "AssetCompilingManager.h"
 #include "NiagaraRibbonRendererProperties.h"
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMCPNiagaraSoloTest, "UnrealMCP.Niagara.Solo",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+bool FMCPNiagaraSoloTest::RunTest(const FString& Parameters)
+{
+	const FString Path = TEXT("/Game/__Dev/NiagaraSolo_") + FGuid::NewGuid().ToString(EGuidFormats::Digits) + TEXT("/NS_Test");
+	auto* System = Cast<UNiagaraSystem>(UEditorAssetLibrary::DuplicateAsset(TEXT("/Niagara/DefaultAssets/DefaultSystem"), Path));
+	if (!TestNotNull(TEXT("Isolated Solo fixture"), System)) return false;
+	FUnrealMCPNiagaraCommands Commands; auto Add = MakeShared<FJsonObject>(); Add->SetStringField(TEXT("path"), Path);
+	Add->SetStringField(TEXT("template_name"), TEXT("SimpleSpriteBurst")); Add->SetStringField(TEXT("new_emitter_name"), TEXT("SoloChild"));
+	if (!TestTrue(TEXT("Second emitter"), Commands.HandleCommand(TEXT("add_emitter_to_system"), Add)->HasField(TEXT("new_emitter")))) return false;
+	auto& Source = System->GetEmitterHandles()[0]; auto& Child = System->GetEmitterHandles()[1];
+	Source.SetIsEnabled(false, *System, false);
+	System->PostEditChange(); System->RequestCompile(true); System->WaitForCompilationComplete(true, false);
+	FAssetCompilingManager::Get().FinishAllCompilation(); FAssetCompilingManager::Get().ProcessAsyncTasks(false);
+	if (!TestTrue(TEXT("Save only owned fixture"), UEditorAssetLibrary::SaveLoadedAsset(System, false))) return false;
+	const FString File = FPackageName::LongPackageNameToFilename(Path, FPackageName::GetAssetPackageExtension()); const auto Hash = FMD5Hash::HashFile(*File);
+	auto* World = UWorld::CreateWorld(EWorldType::EditorPreview, false);
+	if (!TestNotNull(TEXT("Owned preview world"), World)) return false;
+	ON_SCOPE_EXIT { World->DestroyWorld(false); };
+	auto* First = World->SpawnActor<ANiagaraActor>()->GetNiagaraComponent(); First->SetAutoActivate(false); First->SetAsset(System);
+	auto* Second = World->SpawnActor<ANiagaraActor>()->GetNiagaraComponent(); Second->SetAutoActivate(false); Second->SetAsset(System);
+	auto* Other = World->SpawnActor<ANiagaraActor>()->GetNiagaraComponent(); Other->SetAutoActivate(false);
+	const bool ActiveBefore = First->IsActive(); const float AgeBefore = First->GetDesiredAge();
+	World->SendAllEndOfFrameUpdates();
+	System->WaitForCompilationComplete(true, false);
+	FAssetCompilingManager::Get().FinishAllCompilation(); FAssetCompilingManager::Get().ProcessAsyncTasks(false);
+	if (!TestEqual(TEXT("Owned component setup compilation finished"), FAssetCompilingManager::Get().GetNumRemainingAssets(), 0)) return false;
+	auto Params = MakeShared<FJsonObject>(); Params->SetStringField(TEXT("asset_path"), Path);
+	TArray<TSharedPtr<FJsonValue>> ChildIds{MakeShared<FJsonValueString>(Child.GetId().ToString(EGuidFormats::DigitsWithHyphens))};
+	Params->SetArrayField(TEXT("emitter_handle_ids"), ChildIds);
+	auto Invoke = [&]() { return Commands.HandleCommand(TEXT("set_niagara_emitter_solo"), Params); };
+	const auto Preview = Invoke();
+	if (!TestTrue(TEXT("Preview succeeds"), Preview->GetBoolField(TEXT("success")))) { FString Message; Preview->TryGetStringField(TEXT("error"), Message); AddError(Message); return false; }
+	TestTrue(TEXT("Default dry-run"), Preview->GetBoolField(TEXT("dry_run"))); TestFalse(TEXT("Preview did not modify"), Preview->GetBoolField(TEXT("modified")));
+	TestEqual(TEXT("Both same-asset components visible in impact"), Preview->GetArrayField(TEXT("affected_components")).Num(), 2);
+	TestFalse(TEXT("Preview did not isolate"), System->GetIsolateEnabled());
+	Params->SetBoolField(TEXT("dry_run"), false); TestTrue(TEXT("Apply without baseline refuses"), Invoke()->HasField(TEXT("error")));
+	const FString Initial = Preview->GetStringField(TEXT("baseline")); Params->SetStringField(TEXT("expected_baseline"), Initial);
+	Params->SetArrayField(TEXT("emitter_handle_ids"), {MakeShared<FJsonValueString>(FGuid::NewGuid().ToString(EGuidFormats::DigitsWithHyphens))});
+	TestTrue(TEXT("Unknown Handle refuses"), Invoke()->HasField(TEXT("error")));
+	Params->SetArrayField(TEXT("emitter_handle_ids"), {ChildIds[0], ChildIds[0]}); TestTrue(TEXT("Duplicate Handle refuses"), Invoke()->HasField(TEXT("error")));
+	Params->SetArrayField(TEXT("emitter_handle_ids"), ChildIds);
+	System->SetIsolateEnabled(true); Source.SetIsolated(true);
+	TestTrue(TEXT("UI state change invalidates baseline"), Invoke()->HasField(TEXT("error")));
+	System->SetIsolateEnabled(false); Source.SetIsolated(false);
+	auto* NewComponent = World->SpawnActor<ANiagaraActor>()->GetNiagaraComponent(); NewComponent->SetAutoActivate(false); NewComponent->SetAsset(System);
+	TestTrue(TEXT("New affected component invalidates baseline"), Invoke()->HasField(TEXT("error"))); NewComponent->UnregisterComponent();
+	const auto Applied = Invoke();
+	if (!TestTrue(TEXT("Exact Solo apply succeeds"), Applied->GetBoolField(TEXT("success")))) return false;
+	TestTrue(TEXT("Child isolated"), System->GetIsolateEnabled() && Child.IsIsolated() && !Source.IsIsolated());
+	TestFalse(TEXT("Disabled source stays authored disabled"), Source.GetIsEnabled()); TestTrue(TEXT("Child authored enabled stays true"), Child.GetIsEnabled());
+	TestTrue(TEXT("Both same-asset render states refreshed"), First->IsRenderStateDirty() && Second->IsRenderStateDirty());
+	TestEqual(TEXT("No component activation change"), First->IsActive(), ActiveBefore); TestEqual(TEXT("No playback age reset"), First->GetDesiredAge(), AgeBefore);
+	TestFalse(TEXT("Other asset render state untouched"), Other->IsRenderStateDirty()); TestFalse(TEXT("Solo never saves"), Applied->GetBoolField(TEXT("saved")));
+	World->SendAllEndOfFrameUpdates(); Params->SetStringField(TEXT("expected_baseline"), Applied->GetStringField(TEXT("baseline")));
+	const auto Noop = Invoke(); TestFalse(TEXT("Same Solo is no-op"), Noop->GetBoolField(TEXT("modified"))); TestFalse(TEXT("No-op does not refresh render state"), First->IsRenderStateDirty());
+	const auto Restored = Commands.HandleCommand(TEXT("set_niagara_emitter_solo"), Applied->GetObjectField(TEXT("restore_arguments")));
+	TestTrue(TEXT("Restore succeeds"), Restored->GetBoolField(TEXT("success"))); TestFalse(TEXT("Restore original no-Solo state"), System->GetIsolateEnabled() || Source.IsIsolated() || Child.IsIsolated());
+	TestTrue(TEXT("Old apply baseline cannot clear newer state"), Commands.HandleCommand(TEXT("set_niagara_emitter_solo"), Applied->GetObjectField(TEXT("restore_arguments")))->HasField(TEXT("error")));
+	Params->SetStringField(TEXT("expected_baseline"), Restored->GetStringField(TEXT("baseline")));
+	Params->SetArrayField(TEXT("emitter_handle_ids"), {MakeShared<FJsonValueString>(Source.GetId().ToString(EGuidFormats::DigitsWithHyphens)), ChildIds[0]});
+	const auto Multi = Invoke(); TestTrue(TEXT("Multi-emitter Solo"), Multi->GetBoolField(TEXT("success")) && Source.IsIsolated() && Child.IsIsolated());
+	System->GetPackage()->SetDirtyFlag(true); Params->SetStringField(TEXT("expected_baseline"), Multi->GetStringField(TEXT("baseline"))); Params->SetArrayField(TEXT("emitter_handle_ids"), {});
+	const auto Clear = Invoke(); TestTrue(TEXT("Clear Solo preserves existing dirty draft"), Clear->GetBoolField(TEXT("success")) && System->GetPackage()->IsDirty());
+	TestFalse(TEXT("Clear does not enable disabled source"), Source.GetIsEnabled()); TestFalse(TEXT("All isolation cleared"), System->GetIsolateEnabled() || Source.IsIsolated() || Child.IsIsolated());
+	System->GetPackage()->SetDirtyFlag(false);
+	System->SetIsolateEnabled(true); TestTrue(TEXT("Inconsistent isolation refuses"), Invoke()->HasField(TEXT("error"))); System->SetIsolateEnabled(false);
+	Params->SetStringField(TEXT("expected_baseline"), Clear->GetStringField(TEXT("baseline")));
+	{ TGuardValue<bool> Saving(GIsSavingPackage, true); TestTrue(TEXT("Saving refuses without mutation"), Invoke()->HasField(TEXT("error"))); }
+	{ TGuardValue<bool> SlowTask(GIsSlowTask, true); TestTrue(TEXT("Slow task refuses without mutation"), Invoke()->HasField(TEXT("error"))); }
+	TestFalse(TEXT("Clean package preserved"), System->GetPackage()->IsDirty()); TestTrue(TEXT("All Solo actions leave disk bytes"), Hash == FMD5Hash::HashFile(*File));
+	AddInfo(TEXT("Niagara Solo fixture: ") + Path); return !HasAnyErrors();
+}
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FMCPNiagaraDiagnosticsTest, "UnrealMCP.Niagara.Diagnostics.ReadOnly",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

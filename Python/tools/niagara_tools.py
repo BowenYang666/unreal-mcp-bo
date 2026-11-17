@@ -28,11 +28,11 @@ def _spill_niagara_read(result: dict, operation: str) -> dict:
     from uuid import uuid4
 
     spilled = spill_if_oversized(result, operation, uuid4().hex,
-        preview_keys=("name", "path", "asset_path", "class_path", "reader_contract", "diagnostics_contract", "coverage", "scalability_complete", "contract_version", "complete", "scope", "authoring_contract", "baseline", "target", "object_path"),
+        preview_keys=("name", "path", "asset_path", "class_path", "reader_contract", "diagnostics_contract", "solo_contract", "coverage", "scalability_complete", "contract_version", "complete", "scope", "authoring_contract", "baseline", "target", "object_path"),
         count_keys=("emitters", "user_parameters", "unsupported"),
         hint="Read the complete JSON file for all saved rules, field states, versions and curve keys. A preview is not the full result.")
     if spilled is not result and spilled.get("overflow"):
-        for key in ("success", "reader_contract", "diagnostics_contract", "coverage", "emitter_removal_contract", "reader_copy_contract", "scalability_complete", "contract_version", "complete", "scope", "read_context", "scalability_status", "authoring_contract", "baseline", "target", "object_path"):
+        for key in ("success", "reader_contract", "diagnostics_contract", "solo_contract", "modified", "saved", "dry_run", "session_only", "affects_all_instances", "warning", "restore_arguments", "coverage", "emitter_removal_contract", "reader_copy_contract", "scalability_complete", "contract_version", "complete", "scope", "read_context", "scalability_status", "authoring_contract", "baseline", "target", "object_path"):
             if key in result:
                 spilled[key] = result[key]
     return spilled
@@ -58,6 +58,41 @@ def _authoring_call(operation: str, arguments: dict) -> dict:
 
 def register_niagara_tools(mcp: FastMCP):
     """Register Niagara tools with the MCP server."""
+
+    @mcp.tool()
+    def set_niagara_emitter_solo(ctx: Context, asset_path: str, emitter_handle_ids: list[str],
+                                 expected_baseline: str = "", dry_run: bool = True) -> dict:
+        """Preview/set the complete transient Solo set for an exact Niagara System; never saves.
+
+        Example: asset_path='/Game/VFX/NS_Test', emitter_handle_ids=[] previews clearing Solo.
+        Use exact Handle GUIDs from read_niagara_diagnostics, not names. A one-element list
+        isolates one emitter; multiple GUIDs isolate that set. Read before/baseline from
+        the preview, then explicitly apply with expected_baseline and dry_run=False.
+        Restore using before.emitter_handle_ids and the latest after.baseline; stale state
+        refuses, so UI/user Solo changes are not silently overwritten. Inconsistent native
+        isolation flags refuse. A no-op never refreshes render state.
+        WARNING: native Solo affects ALL registered components referencing this same asset,
+        including scene instances, not just its Niagara editor preview. Inspect the returned
+        affected_components before applying. This does not start playback, stop dependencies,
+        change authored enabled, compile, save, clear dirty state or provide persistent Undo.
+        Session-only; restart preservation is not guaranteed. Requires native solo_contract=1.
+        Transport failures are unknown: read state again before any retry or restoration.
+        """
+        from unreal_mcp_server import get_unreal_connection
+        try:
+            response = get_unreal_connection().send_command("set_niagara_emitter_solo", dict(
+                asset_path=asset_path, emitter_handle_ids=emitter_handle_ids,
+                expected_baseline=expected_baseline, dry_run=dry_run))
+            if not response:
+                return _niagara_transport_error("No response from Unreal Engine")
+            if response.get("status") == "error":
+                return _niagara_error(response)
+            result = response.get("result", response)
+            if result.get("solo_contract") != 1:
+                return {"success": False, "stage": "capability", "message": "Updated native Solo plugin required; no retry or enabled-flag fallback."}
+            return _spill_niagara_read(result, "set_niagara_emitter_solo")
+        except Exception as error:
+            return _niagara_transport_error(str(error))
 
     @mcp.tool()
     def read_niagara_diagnostics(ctx: Context, asset_path: str, emitter_handle_id: str = "",
