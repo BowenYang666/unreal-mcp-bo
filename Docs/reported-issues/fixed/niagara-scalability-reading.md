@@ -28,7 +28,7 @@ ScalabilityOverrides 及完整 System/Effect Type 关联。导致互斥画质层
   不做算法符号推理，不按模块名猜倍率消费，不把图节点列表冒充执行顺序。
 - 大结果可靠 spill 到完整 JSON，保留能力和完整性状态；旧 DLL 明确缺少新能力。
 
-接口细节见[Niagara 工具文档](../Tools/niagara_tools.md#read_niagara_system)。
+接口细节见[Niagara 工具文档](../../Tools/niagara_tools.md#read_niagara_system)。
 
 ## 验证
 
@@ -59,7 +59,7 @@ ScalabilityOverrides 及完整 System/Effect Type 关联。导致互斥画质层
 此前脚本误要求 Placeable 超时也为0，失败 JSON 保留；按原约定修正该断言后全套通过，未改资产。
 读取前后脏包、10个样例包/配置 SHA256、质量 CVar 值/来源 flags、Active Profile 一致。
 
-可重复[验收脚本](../../Python/scripts/niagara/verify_scalability_read.py)只写本地 Saved JSON，
+可重复[验收脚本](../../../Python/scripts/niagara/verify_scalability_read.py)只写本地 Saved JSON，
 不使用原生文本导出替代公开 MCP 验收，也不修改任何全局上下文。
 
 ## 部署范围

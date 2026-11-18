@@ -5,7 +5,7 @@
 用户已授权为#139增加规范的CommonUI简易设置菜单，并选择Esc打开时暂停世界；
 遇到映射配置阻塞后，明确要求先反馈MCP缺口，尽量减少手工配置。
 
-[问题索引](README.md)
+[问题索引](../README.md)
 
 ## 1. 业务目标与当前阻塞
 
@@ -227,7 +227,7 @@ NF设置服务只有未构建草稿，CommonUI菜单／接入／保存恢复／�
 
 ## 8. 维护记录：2026-11-02 仓库实现与隔离验收
 
-新增两个直接 Asset 工具，完整合同见 [Enhanced Input Assets](../Tools/project_tools.md#enhanced-input-assets)：
+新增两个直接 Asset 工具，完整合同见 [Enhanced Input Assets](../../Tools/project_tools.md#enhanced-input-assets)：
 
 - `read_input_mapping_context(asset_path)`：正式默认行、实际 Profile overrides（含空 Profile）、
   有序 Trigger／Modifier、raw SettingBehavior／自有 Mappable、子对象 class／path／outer／typed 值、

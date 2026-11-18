@@ -4,7 +4,7 @@
 
 - **状态：维护源码修复及隔离回归通过，已构建部署SkillTest／NF并完成分范围公开验收。下文原始反馈与结论边界保留。**
 - 原始发生时间：2026-11-05；报告日期同日。
-- 这是跨系统独立快照问题，不与[同系统Emitter复制不执行](same-system-emitter-duplicate-not-executed.md)混为一项。
+- 这是跨系统独立快照问题，不与[同系统Emitter复制不执行](../same-system-emitter-duplicate-not-executed.md)混为一项。
 - 已确认：复制尾迹后，目标SpawnScript仍强引用源SystemUpdateScript下的私有Particle Read DI；
   reference_preflight正确阻止了保存，但目标已被修改并留下未保存层。
 - 随后通过公开remove_emitter_from_system删除该失败副本时，SkillTest发生Niagara访问违例并退出。

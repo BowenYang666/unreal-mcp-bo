@@ -1,7 +1,7 @@
 # GA Blueprint CDO嵌套Map叶子属性：安全作者入口缺口
 
 日期：2026-11-13。状态：**共用typed路径核心已验收并构建部署NF，生产值保持；SkillTest随后仅复制源码，按用户要求待其自行build，旧DLL未变。原始反馈保留。**
-[问题索引](README.md)
+[问题索引](../README.md)
 
 ## 1. 结论与边界
 
@@ -122,16 +122,16 @@ NF与维护仓库下列三个文件的完整SHA256逐项相同。
 | `UnrealMCPCommonUtils.cpp` | `DD6DD860DD33188EE60E1E9434D837C526DF740ABDB7B3259870C52BC3DBC732` |
 | `UnrealMCPAssetProperties.cpp` | `8A04975B32241DA8E258EE6F830ABABD1E58F1A3DE4FF517D2325BBAFDF7780A` |
 
-1. [Blueprint handler](../../MCPGameProject/Plugins/UnrealMCP/Source/UnrealMCP/Private/Commands/UnrealMCPBlueprintCommands.cpp#L971)
+1. [Blueprint handler](../../../MCPGameProject/Plugins/UnrealMCP/Source/UnrealMCP/Private/Commands/UnrealMCPBlueprintCommands.cpp#L971)
    在971～1022行取得`Blueprint->GeneratedClass->GetDefaultObject()`，
    然后把整个`property_name`交给`SetObjectProperty`。
-2. [属性定位](../../MCPGameProject/Plugins/UnrealMCP/Source/UnrealMCP/Private/Commands/UnrealMCPCommonUtils.cpp#L701)
+2. [属性定位](../../../MCPGameProject/Plugins/UnrealMCP/Source/UnrealMCP/Private/Commands/UnrealMCPCommonUtils.cpp#L701)
    在710行使用`FindPropertyByName(*PropertyName)`，随后对CDO本身取属性地址；
    不是逐段解析Struct／Map键的resolver。将完整嵌套路径作为名称传入，不会自动变成叶子地址。
-3. [通用string fallback](../../MCPGameProject/Plugins/UnrealMCP/Source/UnrealMCP/Private/Commands/UnrealMCPCommonUtils.cpp#L976)
+3. [通用string fallback](../../../MCPGameProject/Plugins/UnrealMCP/Source/UnrealMCP/Private/Commands/UnrealMCPCommonUtils.cpp#L976)
    在976～985行对已定位的**整个属性**执行`ImportText_Direct`。
    将`property_name`设成`Stages`属于整结构体导入，不是只修改目标float。
-4. [Structured目标门禁](../../MCPGameProject/Plugins/UnrealMCP/Source/UnrealMCP/Private/Commands/UnrealMCPAssetProperties.cpp#L566)
+4. [Structured目标门禁](../../../MCPGameProject/Plugins/UnrealMCP/Source/UnrealMCP/Private/Commands/UnrealMCPAssetProperties.cpp#L566)
    在566～578行仅接受既有DataAsset／指定PhysicalMaterial实例，
    并排除CDO／Archetype等目标，因此不能将其叶子合同直接套到GA Blueprint CDO。
 
@@ -241,8 +241,8 @@ dirty／stale和编辑器执行时机；Map缺键不插入，数组越界不扩�
 现有Notify专用合同没有被无条件放宽。旧Blueprint setter遇到嵌套名称会明确指向
 新reader／patch，DataAsset目标类型拒绝也指出Blueprint CDO入口，避免只返回
 笼统unsupported或建议整表ImportText。完整合同见
-[共用typed路径](../Tools/project_tools.md#typed-property-paths)和
-[Blueprint CDO入口](../Tools/blueprint_tools.md#read_blueprint_property_paths)。
+[共用typed路径](../../Tools/project_tools.md#typed-property-paths)和
+[Blueprint CDO入口](../../Tools/blueprint_tools.md#read_blueprint_property_paths)。
 
 维护项目隔离原生TypedLeaves矩阵通过：
 

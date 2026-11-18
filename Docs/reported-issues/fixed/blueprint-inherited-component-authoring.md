@@ -2,7 +2,7 @@
 
 日期：2026-11-03。状态：**有限专用合同已在仓库实现并验收，已部署 NF；NF读取／纯预览烟测通过，生产装配与游戏侧接入仍 Open。**
 来源：NodeFall UE5.7.4，T3 Cannon Lv0／A正式装配。
-[问题索引](README.md)
+[问题索引](../README.md)
 
 ## 1. 目标与授权边界
 
@@ -148,7 +148,7 @@ C:\Users\15208\.copilot\session-state\0c9ca56b-4750-4e5b-b4ee-9dfe98650c9b\files
 
 以上保留 NF 原始需求／恢复点，不代表已操作生产 BP 或恢复候选游戏源码。
 用户授权修复后，新增两个直接 Blueprint 分类工具，合同见
-[Skeletal Component Defaults](../Tools/blueprint_tools.md#skeletal-component-defaults)：
+[Skeletal Component Defaults](../../Tools/blueprint_tools.md#skeletal-component-defaults)：
 
 - `read_blueprint_component_defaults`：准确区分 cpp_inherited／inherited_scs／local_scs，
   selector 使用声明类、名字与原 SCS GUID；返回实际模板／Outer／archetype／目标 override、

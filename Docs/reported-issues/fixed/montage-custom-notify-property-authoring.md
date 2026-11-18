@@ -1,7 +1,7 @@
 # Montage 自定义 Notify 参数：受控编辑能力缺口
 
 日期：2026-11-13。状态：**有限参数合同已验收，并经授权构建部署NF／SkillTest；新DLL回归、冷读及绑定公开只读烟测通过。原始反馈及早期失败记录保留，未重放NF四层视觉。**
-[问题索引](README.md) · [既有 Additive／原生标记合同](animation-additive-montage-notify-authoring.md)
+[问题索引](../README.md) · [既有 Additive／原生标记合同](animation-additive-montage-notify-authoring.md)
 
 ## 1. 实际操作场景
 
@@ -182,7 +182,7 @@ patch_montage_notify_properties，以Montage路径／已有事件GUID定位，�
 RotationOffset／Scale和Appearance的SizeParameter／SizeMultiplier，默认预览不保存。
 暂存typed patch、GUID／Outer校验、脏包／过期拒绝、事务、未指定数据见证及目标保存
 已接入源码；这些保护的实际应用、Undo、故障及冷读验收**还没有通过**，不能据代码
-存在声称可交付。调用草案见[有限参数合同](../Tools/project_tools.md#patch_montage_notify_properties)。
+存在声称可交付。调用草案见[有限参数合同](../../Tools/project_tools.md#patch_montage_notify_properties)。
 
 当前已完成：新接口缺失红例后转绿；完整104项Python测试通过，包含参数默认值、
 分组／独立分类及只读权限、部分失败、完整溢出和超时未知／不重试；维护项目UHT、

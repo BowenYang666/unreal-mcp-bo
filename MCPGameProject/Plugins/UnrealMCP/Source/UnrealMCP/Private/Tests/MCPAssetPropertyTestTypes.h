@@ -2,6 +2,8 @@
 
 #include "CoreMinimal.h"
 #include "Engine/DataAsset.h"
+#include "Engine/DataTable.h"
+#include "Misc/DataValidation.h"
 #include "Engine/Texture2D.h"
 #include "GameFramework/Actor.h"
 #include "GameplayTagContainer.h"
@@ -10,6 +12,27 @@
 #include "Materials/MaterialInterface.h"
 #include "Animation/AnimNotifies/AnimNotify.h"
 #include "MCPAssetPropertyTestTypes.generated.h"
+
+USTRUCT()
+struct FMCPDataTableTestRow : public FTableRowBase
+{
+    GENERATED_BODY()
+    UPROPERTY(EditAnywhere, Category="Test", meta=(ClampMin="1"))
+    int32 Count = 1;
+    UPROPERTY(EditAnywhere, Category="Test", meta=(ClampMin="0"))
+    float Delay = 0;
+    UPROPERTY(EditAnywhere, Category="Test")
+    TSoftClassPtr<AActor> Enemy;
+    UPROPERTY(EditAnywhere, Category="Test")
+    FText Label;
+#if WITH_EDITOR
+    virtual EDataValidationResult IsDataValid(FDataValidationContext& Context) const override
+    {
+        if (Count < 1 || Delay < 0) { Context.AddError(NSLOCTEXT("MCPDataTableTest", "Invalid", "Invalid row count/delay")); return EDataValidationResult::Invalid; }
+        return EDataValidationResult::Valid;
+    }
+#endif
+};
 
 UCLASS(NotBlueprintable, Hidden, meta=(MCPAnimationNotifyAuthoringSafe="true"))
 class UMCPAnimationTestNotify : public UAnimNotify

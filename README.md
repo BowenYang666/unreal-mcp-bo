@@ -4,7 +4,7 @@ Fork of [chongdashu/unreal-mcp](https://github.com/chongdashu/unreal-mcp) for AI
 
 ## Tool Surface
 
-**178 internal operations**, exposed as **57 tools** in default grouped mode.
+**181 internal operations**, exposed as **57 tools** in default grouped mode.
 Material, Niagara, UMG, Scene, Blueprint and Asset use search/read/write entry
 points; other categories remain direct. `MCP_TOOL_MODE=direct` exposes original names.
 
@@ -15,7 +15,7 @@ points; other categories remain direct. `MCP_TOOL_MODE=direct` exposes original 
 | [UMG](Docs/Tools/umg_tools.md) | 23 | `umg_search` | Widgets, layout, bindings, reparenting and Designer preview settings |
 | [Scene](Docs/Tools/scene_tools.md) | 20 | `scene_search` | Guarded level instances, placement, captures, imports, Outliner folders and undo |
 | [Blueprint](Docs/Tools/blueprint_tools.md) | 13 | `blueprint_search` | Asset structure, typed CDO paths, inherited skeletal defaults and compilation |
-| [Asset](Docs/Tools/project_tools.md) | 26 | `asset_search` | Asset management, typed property paths, FText/String Tables, animation, Enhanced Input and migration |
+| [Asset](Docs/Tools/project_tools.md) | 29 | `asset_search` | Asset management, native DataTables, typed paths, FText/String Tables, animation, Enhanced Input and migration |
 | [Actor / Editor](Docs/Tools/editor_tools.md) | 18 | Direct | Actor inspection/editing, editor state, logs, opening assets/levels and explicit saves |
 | [Blueprint Node](Docs/Tools/node_tools.md) | 8 | Direct | Graph nodes, events, variables and connections |
 | [Project / AI](Docs/Tools/project_tools.md#ai--asset-reading) | 6 | Direct | Reflected properties, DataAsset/Behavior Tree/Blackboard/StateTree reads and legacy input mappings |

@@ -5,7 +5,7 @@
 来源：NodeFall ADO [#141 共享VFX参数与触发入口](https://dev.azure.com/BowenGame/UE5/_workitems/edit/141)。
 范围：制作端怎样声明／绑定颜色、大小、独立亮度；与[Scalability写能力](niagara-scalability-authoring.md)分开。
 
-[问题索引](README.md) · [保存配置读取已修复](niagara-scalability-reading.md)
+[问题索引](../README.md) · [保存配置读取已修复](niagara-scalability-reading.md)
 
 ## 1. 问题与实际检查
 
@@ -105,8 +105,8 @@ NF方案：
 新增 `set_niagara_user_parameters`、`bind_niagara_module_input`、
 `set_niagara_material_bindings`，共用精确`read_niagara_authoring`基线与默认预检/不保存、
 dirty/stale拒绝、事务、编译及真实保存/部分失败回执，不复用无限制UObject setter。
-工具及[公开验收脚本](../../Python/scripts/niagara/verify_authoring.py)见
-[完整合同](../Tools/niagara_tools.md#guarded-niagara-authoring)。
+工具及[公开验收脚本](../../../Python/scripts/niagara/verify_authoring.py)见
+[完整合同](../../Tools/niagara_tools.md#guarded-niagara-authoring)。
 
 - User Float/Int/Bool/Color声明及默认值：重复/错类型/非法值预检，同值no-op，未指定保留。
    Color为linear HDR `[r,g,b,a]`。这是修改批准的NS authoring默认值，**不是**运行实例传参；
@@ -218,7 +218,7 @@ Stars抖动／扩散与0.5/1/2对照；不是工具承诺任意效果完整尺�
 用户随后要求开始实现。新增三个显式有限write operation：
 `redirect_niagara_user_link`、`bind_niagara_dynamic_input`、`multiply_niagara_float_input`；
 现有reader扩展dynamic_input目标。完整参数/限制见
-[有限接线合同](../Tools/niagara_tools.md#limited-existing-link-and-curve-extensions)。
+[有限接线合同](../../Tools/niagara_tools.md#limited-existing-link-and-curve-extensions)。
 
 - 简单User重定向单独opt-in，预期旧link、同类型与当前module基线缺一不可。
    只断开目标边，旧变量/节点/其他使用者保留；默认旧bind仍拒绝异值覆盖。

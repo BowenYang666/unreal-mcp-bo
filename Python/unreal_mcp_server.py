@@ -371,7 +371,7 @@ _read_only = os.environ.get("UNREAL_MCP_READ_ONLY", "").strip() in ("1", "true",
 
 _READ_ONLY_TOOLS = {
     "read_blueprint_component_defaults",
-    "read_blueprint_property_paths", "read_asset_property_paths",
+    "read_blueprint_property_paths", "read_asset_property_paths", "read_data_table",
     "read_animation_asset",
     "read_montage_notify_properties",
     "read_data_asset_text_references",
@@ -454,6 +454,7 @@ _CATEGORY_TOOLS = {
         "read_animation_asset", "set_anim_sequence_additive", "add_montage_native_notify",
         "read_montage_notify_properties", "patch_montage_notify_properties",
         "read_asset_property_paths", "patch_asset_property_paths",
+        "read_data_table", "create_data_table", "import_data_table",
         "read_data_asset_text_references", "bind_data_asset_text_references",
         "read_input_mapping_context", "append_input_mapping_context_mappings",
         "append_data_asset_struct_array",

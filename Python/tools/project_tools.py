@@ -143,8 +143,87 @@ def call_text_reference_command(command: str, params: dict) -> dict:
                 spilled[key] = result[key]
     return spilled
 
+def call_data_table_command(command: str, arguments: dict) -> dict:
+    """Preserve complete table snapshots and truthful native/unknown write receipts."""
+    from unreal_mcp_server import spill_if_oversized
+    from uuid import uuid4
+
+    try:
+        if len(json.dumps(arguments, allow_nan=False).encode("utf-8")) > 262144:
+            raise ValueError("DataTable requests are limited to 256KiB")
+    except (TypeError, ValueError) as error:
+        return {"success": False, "stage": "validation", "execution_state": "not_started", "modified": False, "saved": False, "error": str(error)}
+    result = call_asset_command(command, arguments)
+    if result.get("stage") == "transport":
+        result.setdefault("execution_state", "unknown")
+    elif result.get("success", True) and result.get("data_table_contract") != 1:
+        return {"success": False, "stage": "capability", "error": "Updated native DataTable plugin required; no fallback or retry."}
+    metadata = ("success", "data_table_contract", "asset_path", "row_struct_path", "complete", "baseline",
+                "row_count", "returned_count", "offset", "limit", "next_offset", "has_more", "selection_complete",
+                "dry_run", "would_modify", "created", "modified", "saved", "package_dirty", "stage", "error", "execution_state")
+    spilled = spill_if_oversized(result, command, uuid4().hex, preview_keys=metadata,
+        hint="Read full rows/schema/import problems/before/proposed/after. Unknown writes must never be retried blindly.")
+    if spilled is not result and spilled.get("overflow"):
+        for key in metadata:
+            if key in result:
+                spilled[key] = result[key]
+    return spilled
+
+
 def register_project_tools(mcp: FastMCP):
     """Register project tools with the MCP server."""
+
+    @mcp.tool()
+    def read_data_table(ctx: Context, asset_path: str, row_names: list[str] = None,
+                        offset: int = 0, limit: int = 128) -> dict:
+        """Read actual native DataTable rows, typed schema, text identities and a whole-table baseline.
+
+        Example: asset_path='/Game/Data/DT_Waves', row_names=['Wave1'], offset=0, limit=128.
+        Empty row_names selects all rows in stable RowName order; follow next_offset and
+        compare baselines to detect table changes. Counts and completeness are explicit.
+        Native compiled FTableRowBase-derived structures only; unsupported fields are explicit.
+        Read full spill JSON. No mutation/compile/save; requires data_table_contract=1.
+        """
+        return call_data_table_command("read_data_table", dict(asset_path=asset_path,
+            row_names=[] if row_names is None else row_names, offset=offset, limit=limit))
+
+    @mcp.tool()
+    def create_data_table(ctx: Context, asset_path: str, row_struct_path: str,
+                          source: dict = None, dry_run: bool = True,
+                          save: bool = False) -> dict:
+        """Preview/create a new native-row DataTable without overwriting an existing package.
+
+        Example: asset_path='/Game/Data/DT_Waves', row_struct_path='/Script/MyGame.WaveRow'.
+        Native row structure must already be compiled and loaded. Optional source has
+        {'format':'csv'/'json','text':<native document>} and imports on a temporary table
+        first. Empty source creates an empty table. Defaults preview/no save. Invalid
+        rows/fields/references refuse before asset creation. Optional save targets only this
+        package; failed save may leave the created table dirty. No automatic retry.
+        """
+        return call_data_table_command("create_data_table", dict(asset_path=asset_path,
+            row_struct_path=row_struct_path, source={} if source is None else source, dry_run=dry_run, save=save))
+
+    @mcp.tool()
+    def import_data_table(ctx: Context, asset_path: str, expected_baseline: str,
+                          source: dict, mode: str = "merge",
+                          allow_missing_fields: bool = False, delete_rows: list[str] = None,
+                          allow_delete: bool = False, dry_run: bool = True, save: bool = False) -> dict:
+        """Stage native CSV/JSON rows, then preview/apply a guarded merge or explicit replacement.
+
+        Example: source={'format':'json','text':'[{"Name":"Wave1","Count":3}]'}, mode='merge',
+        asset_path='/Game/Data/DT_Waves', expected_baseline=<fresh read_data_table baseline>.
+        Merge preserves unspecified rows; allow_missing_fields=True preserves omitted fields
+        of existing rows and uses native defaults for new rows. Replace is explicit; deleting
+        rows, including via replace, requires allow_delete=True. delete_rows is an exact row
+        name array disjoint from imported rows. JSON [] allows explicit delete-only edits.
+        Dirty/stale/wrong structure, parse/validation/reference errors reject before mutation.
+        Defaults preview/no save; one Undo transaction and optional target-only save. No-op
+        never saves. Read truthful after/stage on failure; timeout is unknown, never retried.
+        """
+        return call_data_table_command("import_data_table", dict(asset_path=asset_path,
+            expected_baseline=expected_baseline, source=source, mode=mode,
+            allow_missing_fields=allow_missing_fields, delete_rows=[] if delete_rows is None else delete_rows,
+            allow_delete=allow_delete, dry_run=dry_run, save=save))
 
     @mcp.tool()
     def read_asset_property_paths(ctx: Context, asset_path: str, paths: list[list]) -> dict:

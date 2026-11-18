@@ -1,6 +1,7 @@
 #include "UnrealMCPBridge.h"
 #include "Commands/UnrealMCPAssetMigration.h"
 #include "Commands/UnrealMCPAssetProperties.h"
+#include "Commands/UnrealMCPDataTableCommands.h"
 #include "Commands/UnrealMCPStringTableCommands.h"
 #include "Commands/UnrealMCPEnhancedInputCommands.h"
 #include "Commands/UnrealMCPAnimationCommands.h"
@@ -346,6 +347,9 @@ FString UUnrealMCPBridge::ExecuteCommandOnGameThread(const FString& CommandType,
             else if (CommandType == TEXT("read_blueprint_property_paths")) ResultJson = UnrealMCPAssetProperties::ReadPaths(Params, true);
             else if (CommandType == TEXT("patch_blueprint_property_paths")) ResultJson = UnrealMCPAssetProperties::PatchPaths(Params, true);
             else if (CommandType == TEXT("read_asset_property_paths")) ResultJson = UnrealMCPAssetProperties::ReadPaths(Params, false);
+            else if (CommandType == TEXT("read_data_table")) ResultJson = UnrealMCPDataTableCommands::Read(Params);
+            else if (CommandType == TEXT("create_data_table")) ResultJson = UnrealMCPDataTableCommands::Create(Params);
+            else if (CommandType == TEXT("import_data_table")) ResultJson = UnrealMCPDataTableCommands::Import(Params);
             else if (CommandType == TEXT("patch_asset_property_paths")) ResultJson = UnrealMCPAssetProperties::PatchPaths(Params, false);
             else if (CommandType == TEXT("set_blueprint_skeletal_component_defaults")) ResultJson = UnrealMCPComponentDefaults::Write(Params);
             else if (CommandType == TEXT("read_data_asset_text_references")) ResultJson = UnrealMCPAssetProperties::ReadText(Params);
@@ -598,6 +602,7 @@ FString UUnrealMCPBridge::ExecuteCommandOnGameThread(const FString& CommandType,
                     || CommandType == TEXT("read_blueprint_component_defaults") || CommandType == TEXT("set_blueprint_skeletal_component_defaults")
                     || CommandType == TEXT("read_blueprint_property_paths") || CommandType == TEXT("patch_blueprint_property_paths")
                     || CommandType == TEXT("read_asset_property_paths") || CommandType == TEXT("patch_asset_property_paths")
+                    || CommandType == TEXT("read_data_table") || CommandType == TEXT("create_data_table") || CommandType == TEXT("import_data_table")
                     || CommandType == TEXT("read_data_asset_text_references") || CommandType == TEXT("bind_data_asset_text_references")
                     || CommandType == TEXT("delete_material_expression") || CommandType == TEXT("add_emitter_to_system")
                     || CommandType == TEXT("reparent_widget") || CommandType == TEXT("set_widget_preview_settings") || CommandType == TEXT("get_widget_preview_settings")

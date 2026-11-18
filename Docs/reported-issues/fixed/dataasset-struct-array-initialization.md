@@ -1,7 +1,7 @@
 # DataAsset 结构体数组初始化：能力边界与调用方式待核实
 
 日期：2026-11-13。状态：**有限追加合同已在维护源码验收，随后经用户新授权构建部署NF／SkillTest；SkillTest新DLL追加／独立冷读及NF公开只读合同通过。未重写业务数组，原始反馈保留。**
-[问题索引](README.md)
+[问题索引](../README.md)
 
 ## 1. 实际操作场景
 
@@ -194,7 +194,7 @@ set_asset_properties整体覆盖限制。结构化读取的array_append返回数
 相对字段／基线。新项先在暂存根副本中默认构造，之后只给可编辑字段赋值；隐藏字段即使
 提交默认值也拒绝，已有项和隐藏非默认值不被覆盖。无需改变NF业务结构体的UPROPERTY。
 
-调用方式见[结构体数组追加合同](../Tools/project_tools.md#append_data_asset_struct_array)。
+调用方式见[结构体数组追加合同](../../Tools/project_tools.md#append_data_asset_struct_array)。
 参数为asset_path、array_path、expected_baseline、items，默认dry_run=true／save=false。
 原始操作170，Asset22，分组仍57／只读29，direct只读50；MCP参数均使用具体类型，
 没有新增Any／Optional／Union参数。一次1～64项、总长≤1024，严格基线及脏包拒绝、

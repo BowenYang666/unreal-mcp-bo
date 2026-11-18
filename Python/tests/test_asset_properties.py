@@ -19,6 +19,65 @@ import test_grouped_tools
 
 
 class AssetPropertiesTests(unittest.TestCase):
+    def test_data_table_contract_defaults_and_receipts(self):
+        reader = self.tools.get_tool("read_data_table")
+        creator = self.tools.get_tool("create_data_table")
+        importer = self.tools.get_tool("import_data_table")
+        self.assertIsNotNone(reader)
+        self.assertIsNotNone(creator)
+        self.assertIsNotNone(importer)
+        self.connection.send_command.return_value = {"status": "success", "result": {"success": True, "data_table_contract": 1}}
+        asyncio.run(reader.run({"asset_path": "/Game/DT_Test"}, context=Mock()))
+        self.connection.send_command.assert_called_with("read_data_table", {
+            "asset_path": "/Game/DT_Test", "row_names": [], "offset": 0, "limit": 128})
+        asyncio.run(creator.run({"asset_path": "/Game/DT_Test", "row_struct_path": "/Script/Engine.TableRowBase"}, context=Mock()))
+        self.connection.send_command.assert_called_with("create_data_table", {
+            "asset_path": "/Game/DT_Test", "row_struct_path": "/Script/Engine.TableRowBase", "source": {}, "dry_run": True, "save": False})
+        arguments = {"asset_path": "/Game/DT_Test", "expected_baseline": "baseline", "source": {"format": "json", "text": '[{"Name":"Wave1","Count":3}]'}}
+        asyncio.run(importer.run(arguments, context=Mock()))
+        self.connection.send_command.assert_called_with("import_data_table", {
+            **arguments, "mode": "merge", "allow_missing_fields": False, "delete_rows": [], "allow_delete": False, "dry_run": True, "save": False})
+        self.connection.send_command.return_value = {"status": "error", "error": "Save failed", "result": {
+            "data_table_contract": 1, "modified": True, "saved": False, "stage": "save", "after": {"row_count": 1}}}
+        result = importer.fn(None, **arguments, dry_run=False, save=True)
+        self.assertTrue(result["modified"])
+        self.assertFalse(result["saved"])
+        self.assertEqual(result["after"], {"row_count": 1})
+        self.connection.reset_mock()
+        self.connection.send_command.side_effect = TimeoutError("timeout")
+        result = importer.fn(None, **arguments, dry_run=False)
+        self.assertEqual(result["execution_state"], "unknown")
+        self.assertNotIn("modified", result)
+        self.connection.send_command.assert_called_once()
+
+    def test_data_table_filters_overflow_capability_and_bounds(self):
+        fixture = test_grouped_tools.GroupedServerTests()
+        server = fixture.load_server()
+        module = sys.modules["unreal_mcp_server"]
+        payload = {"success": True, "data_table_contract": 1, "complete": True, "baseline": "whole",
+                   "row_count": 200, "returned_count": 128, "has_more": True, "next_offset": 128,
+                   "rows": [{"row_name": "Wave1", "values": {"Evidence": "x" * 26000}}]}
+        self.connection.send_command.return_value = {"status": "success", "result": payload}
+        with tempfile.TemporaryDirectory() as directory, patch("tempfile.gettempdir", return_value=directory), patch.object(module, "spill_if_oversized", server.spill_if_oversized):
+            result = self.tools.get_tool("read_data_table").fn(None, "/Game/DT_Test")
+            self.assertTrue(result["overflow"])
+            for key in ("data_table_contract", "row_count", "returned_count", "has_more", "next_offset", "baseline"):
+                self.assertEqual(result[key], payload[key])
+            self.assertEqual(json.loads(Path(result["file_path"]).read_text(encoding="utf-8")), payload)
+        self.connection.send_command.return_value = {"status": "success", "result": {"success": True}}
+        self.assertEqual(self.tools.get_tool("read_data_table").fn(None, "/Game/DT_Test")["stage"], "capability")
+        self.connection.reset_mock()
+        result = self.tools.get_tool("import_data_table").fn(None, "/Game/DT_Test", "baseline", {"format": "csv", "text": "x" * 262145})
+        self.assertEqual(result["stage"], "validation")
+        self.assertFalse(result["modified"])
+        self.connection.send_command.assert_not_called()
+        for mode in ("direct", "grouped"):
+            for readonly in (False, True):
+                for disabled in ((), ("asset",), ("project",)):
+                    tools = fixture.load_server(mode, readonly, disabled).mcp._tool_manager
+                    for name in ("read_data_table", "create_data_table", "import_data_table"):
+                        self.assert_available(tools, name, "asset" not in disabled and (not readonly or name == "read_data_table"))
+
     def setUp(self):
         server = FastMCP("asset-properties")
         register_project_tools(server)

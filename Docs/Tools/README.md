@@ -1,13 +1,14 @@
 # Unreal MCP Tools
 
-Index for **178 internal operations**. Default grouped mode exposes **57 MCP
-tools** before read-only/category filtering; direct compatibility mode exposes 178.
+Index for **181 internal operations**. Default grouped mode exposes **57 MCP
+tools** before read-only/category filtering; direct compatibility mode exposes 181.
 
 - [Actor Tools](actor_tools.md) (8)
 - [Scene Tools](scene_tools.md) (20) - Guarded instances, captures, imports, placement manifests, Outliner folders, temporary editor visibility and controlled undo
 - [Editor Tools](editor_tools.md) (10 editor + 3 asset operations)
 - [Bounded Asset Creation and Property Writes](project_tools.md#set_asset_properties) (4 additional Asset operations, including [default-constructed struct-array append](project_tools.md#append_data_asset_struct_array))
 - [Typed Property Paths](project_tools.md#typed-property-paths) (2 additional Asset operations, plus 2 Blueprint operations counted under Blueprint below)
+- [Native DataTables](project_tools.md#native-datatables) (3 Asset operations: actual row read, guarded new table and native CSV/JSON import; fully deployed/accepted on NF and SkillTest)
 - [DataAsset FText References](project_tools.md#dataasset-text-references) (2 additional Asset operations: native identity read and guarded String Table binding)
 - [String Table Assets](project_tools.md#string-table-assets) (4 additional Asset operations)
 - [Enhanced Input Assets](project_tools.md#enhanced-input-assets) (2 additional Asset operations: full IMC read and guarded default append)
@@ -99,8 +100,8 @@ routing/argument errors are MCP tool errors.
 
 - `MCP_TOOL_MODE=grouped` (default): 57 public tools; original names from these
 	six categories are internal and cannot be called directly via MCP.
-- `MCP_TOOL_MODE=direct`: all 178 public operations, no grouped entry points.
-- `UNREAL_MCP_READ_ONLY=1`: 29 public tools in grouped mode, 54 in direct mode.
+- `MCP_TOOL_MODE=direct`: all 181 public operations, no grouped entry points.
+- `UNREAL_MCP_READ_ONLY=1`: 29 public tools in grouped mode, 55 in direct mode.
 	Only approved read operations remain; hidden writes cannot be searched or run.
 - Existing `MCP_MATERIAL_ENABLED`, `MCP_NIAGARA_ENABLED`, `MCP_UMG_ENABLED`, `MCP_SCENE_ENABLED`,
   `MCP_BLUEPRINT_ENABLED`, `MCP_ASSET_ENABLED`

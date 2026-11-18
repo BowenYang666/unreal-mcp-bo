@@ -5,7 +5,7 @@
 来源：NodeFall UE5.7.4，ADO [#140 首批VFX画质分层](https://dev.azure.com/BowenGame/UE5/_workitems/edit/140)，New／rev1。
 这是新增写能力需求与现有合同不足，不是重新报告已修复的读取缺陷。
 
-[问题索引](README.md) · [已修复的保存配置读取](niagara-scalability-reading.md) ·
+[问题索引](../README.md) · [已修复的保存配置读取](niagara-scalability-reading.md) ·
 [独立的外观参数绑定问题](niagara-vfx-appearance-parameter-binding.md)
 
 ## 1. 业务目标与最低范围
@@ -132,11 +132,11 @@ P1可以一并纳入同一受控writer，不要求新建万能UObject写接口�
 
 仓库相关实现：
 
-- [Niagara命令](../../MCPGameProject/Plugins/UnrealMCP/Source/UnrealMCP/Private/Commands/UnrealMCPNiagaraCommands.cpp)：
+- [Niagara命令](../../../MCPGameProject/Plugins/UnrealMCP/Source/UnrealMCP/Private/Commands/UnrealMCPNiagaraCommands.cpp)：
   Emitter固定字段、Renderer属性反射、自动保存、按名字定位模块。
-- [Asset写入约束](../../MCPGameProject/Plugins/UnrealMCP/Source/UnrealMCP/Private/Commands/UnrealMCPAssetProperties.cpp)：
+- [Asset写入约束](../../../MCPGameProject/Plugins/UnrealMCP/Source/UnrealMCP/Private/Commands/UnrealMCPAssetProperties.cpp)：
   DataAsset创建／set目标类别，不能借用它写EffectType／NS。
-- [Python Niagara工具](../../Python/tools/niagara_tools.py)：实际schema与grouped operation。
+- [Python Niagara工具](../../../Python/tools/niagara_tools.py)：实际schema与grouped operation。
 
 NF侧报告：
 `C:\04_unrealProjects\NodeFall\Docs\AI\ZZ_AI_self_workingDir\MCPNiagaraScalabilityAuthoring140.md`。
@@ -160,7 +160,7 @@ Platforms、Effect Type设置行及Age/Distance/None子对象；不开放任意U
 默认dry_run=true/save=false，已有dirty拒绝、identity/content baseline过期拒绝，事务Undo、
 脚本编译status/events和真实modified/compiled/saved/after回执；保存失败不回滚或重试。
 
-详细合同见[工具文档](../Tools/niagara_tools.md#guarded-niagara-authoring)。
+详细合同见[工具文档](../../Tools/niagara_tools.md#guarded-niagara-authoring)。
 新增MCP参数使用具体类型，无Any/Optional/Union参数；列表默认None在函数体内处理。
 
 - Python完整回归80项通过；grouped仍74/readonly31，direct155/readonly45，Niagara33项。

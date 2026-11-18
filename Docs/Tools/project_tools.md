@@ -25,6 +25,106 @@ do not create a second Legacy mapping as an Enhanced Input workaround.
 - `key` (string) - Key or axis to bind (e.g. "SpaceBar", "Gamepad_FaceButton_Bottom")
 - `input_type` (string, optional) - `"Action"` or `"Axis"` (default: `"Action"`)
 
+## Native DataTables
+
+**2026-11-18: fully built/deployed to NF and SkillTest.** Maintenance and both target
+DLL authoring/independent cold-load, real grouped create/read/import and final file
+protection acceptance passed. Reconnect existing MCP services; Python discovery
+alone is not evidence of a matching DLL or GUI-client trust approval.
+
+All three operations belong to **Asset**, independently of Project. Discover
+`asset_search(tool="read_data_table")` (or the exact writer name), then use the
+returned read/write endpoint. Read-only exposes only the reader. New native
+`data_table_contract=1` is required; no DataAsset/StringTable or raw-script fallback.
+
+### read_data_table
+
+Required `asset_path`: exact `/Game` ordinary UDataTable package, not an inline
+object/CDO, redirector, Composite or Mirror table. Reads actual `RowMap` memory,
+not only reflected metadata. Initial scope is compiled/loaded native
+`FTableRowBase` children without a custom native serializer.
+
+`row_names=[]` selects all rows; explicit names must exist and be unique. `offset=0`,
+`limit=128` (1..256) paginate stable RowName order. `row_count` is the actual full
+count; selected/returned counts, `has_more`, `next_offset`, `selection_complete`
+and whole-table `complete` distinguish pagination from unsupported data. Compare
+the whole-table baseline across pages to detect changes. Bounds: 4096 rows, 8MiB
+binary witness, 65536 values, depth8, arrays1024. Unsupported fields/row layouts
+must be explicit and suppress the write baseline; no false zero/default rows.
+
+Returns exact RowStruct path, typed fields, ImportKeyField/import-source filenames,
+dirty state and rows. FText adds display, native history, source/namespace/key and
+String Table identity when present; never use display text as an identity oracle.
+Soft class paths retain their property class constraints. Reader values are a typed
+diagnostic shape, not an alternate DataTable import format. No compile/save/write.
+
+### create_data_table
+
+Required `asset_path`, `row_struct_path` (exact already compiled and loaded
+`/Script/Module.RowType`). Existing destination packages/objects never overwrite.
+Defaults `dry_run=true`, `save=false`; absent/empty `source={}` creates an empty
+table. Optional source is `{ "format": "csv" | "json", "text": "<native document>" }`.
+The structured envelope keeps JSON text out of the SDK's top-level string parser.
+Initial rows are staged before the native DataTable factory creates any target.
+
+### import_data_table
+
+Required `asset_path`, fresh `expected_baseline`, and `source` envelope above.
+`mode="merge"` retains unspecified rows; `mode="replace"` is explicit whole-table
+row replacement. `allow_missing_fields=false` requires all native top-level columns.
+When true, missing existing columns are preserved by copying only submitted native
+parsed columns into the staged old rows; new rows receive native defaults. The UE
+JSON importer itself clears rows, so parsing is isolated from merge. A provided
+struct/array column is a complete native column value,
+not a generic nested-leaf patch. Exact reflected column names are required.
+
+`delete_rows=[]` names existing rows disjoint from imported rows. Explicit deletion
+and replacement that drops rows require `allow_delete=true`. JSON `[]` can carry
+delete-only/empty-table intentions. Defaults `dry_run=true`, `save=false`.
+
+Parsing first validates duplicate row/column identities and source shape, then uses
+UE's native CSV/JSON importer on an isolated transient table. All native import
+problems, invalid rows, incompatible soft class/object references and unsupported
+values refuse before target mutation; skipping bad rows is not success. Do not
+hand-edit binary assets, mutate RowStruct definitions or import directly into the
+formal table as a workaround. Native row callbacks/validation are engine behavior,
+not a general sandbox for arbitrary game C++.
+
+Writers require idle editor mode and a clean, complete, fresh target. Merge checks
+unsubmitted columns/rows after staging. An actual edit uses one transaction with
+formal table notifications and target readback. Save is optional and target-only;
+no-op does not save. Failures preserve real modified/saved/stage/after; a failed
+save can leave a dirty applied draft. Timeout means unknown execution, never a blind
+retry. Large receipts spill full JSON while preserving actual state/count metadata.
+
+Native import syntax governs enum/FText/soft-class values. Keep true FText history,
+not current translated display strings; this is not a new localization format.
+Temporary parsed tables use a stable target name and isolated package text namespace;
+native package text copying retains keys so save does not silently re-key staged
+texts. Existing tables without a stable text namespace may refuse new localizable
+text until saved through the editor. String Table and culture-invariant identities
+are not converted to plain strings. All row witnesses are rechecked after save.
+NF Wave/Subwave business integration and real Map1 scheduling require separate
+authorization/acceptance. The present work does not create NF production tables.
+
+Maintenance tests: 113 Python regressions; real CSV creation and JSON merge, strict
+duplicate/missing/unknown field and wrong-soft-class rejection, explicit deletion,
+dirty/stale/no-op, Undo/Redo, injected save failure retaining disk bytes, text identity
+and same-text CSV no-op passed. Two native-row tables were saved and read from an
+independent process with exact baselines/row witnesses, FText identity and typed
+runtime lookups. Tests used `/Game/__Dev/DataTable_*`, not NF business row classes.
+
+Both targets passed original-profile grouped new-table preview/apply/save, actual
+row/pagination reads, JSON merge and explicit CSV replace, invalid-last-row atomic
+rejection, stale/no-op, preserved text/soft-class/unspecified rows and context/drafts0.
+SkillTest15608/NF5972 original Content/Config/project Source/uproject/client files
+kept SHA256; local plugin customizations stayed byte-identical outside four feature
+files. Each target added just two native fixtures and one public fixture, all under
+`__Dev`. Complete old plugins and acceptance receipts remain under
+`Saved/UnrealMCPBackups/DataTable_20261118_113029` and
+`Saved/UnrealMCPDeployment/DataTable_20261118_113029`.
+This did not create formal NF Wave tables or validate Map1 scheduling/gameplay.
+
 ## Typed Property Paths
 
 Four operations share one reflected path resolver, value codec, condition checker

@@ -1,7 +1,7 @@
 # DataAsset FText：String Table引用的受控作者缺口
 
 日期：2026-11-03。状态：**维护侧已修复；NF已部署并通过真实身份读取／同值预览／stale拒绝验收。SkillTest未部署。NF三处用户手动引用已复核，本次未改写。**
-[问题索引](README.md)
+[问题索引](../README.md)
 
 ## 1. 实际需求
 
@@ -139,7 +139,7 @@ modified／saved／package_dirty／stage；失败不伪造回滚，超时未知�
 原生夹具`/Game/__Dev/AssetText_B102C43B44B87107AA9417A776E78202`及
 `Saved/StringTableLocalization/AssetText_B102C43B44B87107AA9417A776E78202/receipt.json`；
 公开回执`Saved/AssetTextPublic/f1756113d7db416b9ed6fdcc64f1d3a1/receipt.json`。
-完整合同见[DataAsset Text References](../Tools/project_tools.md#dataasset-text-references)。
+完整合同见[DataAsset Text References](../../Tools/project_tools.md#dataasset-text-references)。
 
 **此次仅维护仓库源码与隔离验收，不部署NF／SkillTest，不改NF业务DataAsset／
 String Table／翻译，不接管用户手动绑定，不创建NF测试或FT。**

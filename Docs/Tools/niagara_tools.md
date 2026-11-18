@@ -164,7 +164,7 @@ particle sampling or visual reconstruction. Reconnect existing MCP services.
 
 Legacy `list_module_inputs` and all existing input writers retain their four-stage
 scope; use this operation for event/simulation-stage reads, not guessed inline
-UObject paths. See the [feedback and acceptance record](../reported-issues/particle-system-inspection-event-ribbon-preview.md).
+UObject paths. See the [feedback and acceptance record](../reported-issues/fixed/particle-system-inspection-event-ribbon-preview.md).
 
 ### `set_niagara_emitter_solo`
 
@@ -286,7 +286,7 @@ identity, three actual Effect Type associations, signed masks and saved
 were unchanged. These are saved settings, not proof of runtime spawn scaling.
 Existing clients need reconnecting; Claude project approval remains user-controlled.
 
-See the [resolution record](../reported-issues/niagara-scalability-reading.md)
+See the [resolution record](../reported-issues/fixed/niagara-scalability-reading.md)
 and [repeatable acceptance script](../../Python/scripts/niagara/verify_scalability_read.py).
 
 ## Guarded Niagara Authoring

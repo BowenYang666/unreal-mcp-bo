@@ -2,7 +2,7 @@
 
 日期：2026-11-03。状态：**有限专用合同已实现，已部署 SkillTest／NF；隔离作者验收与 NF 只读烟测通过，NF生产配置与游戏侧接入仍 Open。**
 来源：NodeFall UE5.7.4的T3 Cannon Lv0／A正式接入。
-[问题索引](README.md)
+[问题索引](../README.md)
 
 ## 1. 业务目标与边界
 
@@ -157,7 +157,7 @@ NF的A蓄力能力、正式塔／GA／DA、数值及实战装配仍是独立未�
 本节为仓库实现时状态；后续双项目部署见第 8 节。
 
 以上保留 NF 原始现场事实。本节不代表原项目已加载新 DLL 或动画已经配置。
-用户授权实现后新增三个直接 Asset 工具，完整参数见 [Animation Assets](../Tools/project_tools.md#animation-assets)：
+用户授权实现后新增三个直接 Asset 工具，完整参数见 [Animation Assets](../../Tools/project_tools.md#animation-assets)：
 
 - `read_animation_asset`：明确的 Sequence／Montage 作者 scope、Skeleton／源 DataModel 身份、
   Additive／采样范围、Slot／Segments／Sections／Blend、轨道及通知有序行、GUID、Link／偏移／
