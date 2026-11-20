@@ -1,6 +1,6 @@
 # 问题报告与修复汇总
 
-更新日期：2026-11-18。
+更新日期：2026-11-20。
 
 本文件汇总本目录的问题、修复、验证和遗留事项，作为代码提交与后续维护的统一入口。
 详细报告保留原始复现经过及当时状态；阅读时以各报告最新的维护记录和续作反馈为准，
@@ -10,6 +10,7 @@
 
 | 问题 | 当前状态 | 结论边界 |
 | --- | --- | --- |
+| [DataTable JSON 整数强制转换](datatable-json-integer-coercion.md) | 已修复并部署，2026-11-20 | 数字值和字符串路径均已修复；NF／SkillTest 通过原生作者、独立冷读和绑定 MCP 验收。未对生产表试写 |
 | [DataTable原生行创建／导入／读取](fixed/datatable-native-row-authoring.md) | 有限合同已完整构建部署NF／SkillTest，2026-11-18 | 三项Asset操作、113 Python、双项目作者／独立冷读与真实公开创建／读取／导入通过，FText／软类／Undo／故障保护及15608／5972原文件保持；未创建正式Wave业务表或验收Map1调度 |
 | [Particle System事件／Ribbon／预览诊断读取](fixed/particle-system-inspection-event-ribbon-preview.md) | 只读诊断及后续受控Solo均已完整部署SkillTest／NF，2026-11-17 | 111 Python、双项目原生及实际Solo预检／应用／stale拒绝／恢复通过；14913／5915原文件保持，原Converted事件证据保留；Solo会影响同资产场景实例，需显式恢复，不修改生产Solo，逐粒子快照及视觉复原未完成 |
 | [Montage自定义Notify参数作者缺口](fixed/montage-custom-notify-property-authoring.md) | 有限合同已验收并构建部署NF／SkillTest，2026-11-13 | 104项Python、维护实际作者／回调传参／独立冷读与公开MCP、新DLL回归及双项目绑定只读烟测通过；未重放NF四层视觉或写业务配置，旧partial及Add限制保留 |

@@ -99,6 +99,14 @@ retry. Large receipts spill full JSON while preserving actual state/count metada
 
 Native import syntax governs enum/FText/soft-class values. Keep true FText history,
 not current translated display strings; this is not a new localization format.
+The [JSON integer guard](../reported-issues/datatable-json-integer-coercion.md)
+checks original values before native conversion in both create and import.
+Integer fields must be mathematically integral, fit the native property, and stay
+within the safe JSON integer range (±9007199254740991). For ordinary integer
+columns, quoted values are accepted only when UE's integer parser returns the
+same value: `"12"` is accepted, but `"1e2"` is rejected; use `100` or `1e2`
+as a JSON number instead. Rejections identify the row and field path without
+modifying the target. CSV, enum names and floating-point import are unchanged.
 Temporary parsed tables use a stable target name and isolated package text namespace;
 native package text copying retains keys so save does not silently re-key staged
 texts. Existing tables without a stable text namespace may refuse new localizable

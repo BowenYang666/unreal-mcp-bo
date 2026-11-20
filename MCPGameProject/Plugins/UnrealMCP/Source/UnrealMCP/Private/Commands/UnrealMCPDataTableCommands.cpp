@@ -271,6 +271,116 @@ bool RehomeText(FProperty* Property, void* Address, UPackage* Package, FString& 
     return true;
 }
 
+bool ExactJsonInteger(const FString& Token, int64& Value, FString& Reason)
+{
+    constexpr int64 MaxExactInteger = 9007199254740991LL;
+    const auto IsDigit = [](TCHAR Character) { return Character >= TEXT('0') && Character <= TEXT('9'); };
+    const bool Negative = Token.StartsWith(TEXT("-"));
+    int32 Index = Negative || Token.StartsWith(TEXT("+")) ? 1 : 0;
+    FString Digits;
+    int32 FractionDigits = 0;
+    bool Fraction = false, HasDigit = false;
+    for (; Index < Token.Len(); ++Index)
+    {
+        const TCHAR Character = Token[Index];
+        if (Character == TEXT('.') && !Fraction) { Fraction = true; continue; }
+        if (!IsDigit(Character)) break;
+        HasDigit = true;
+        if (!Digits.IsEmpty() || Character != TEXT('0')) Digits.AppendChar(Character);
+        if (Fraction) ++FractionDigits;
+    }
+    Reason = TEXT("expected an exact integer without rounding");
+    if (!HasDigit) return false;
+
+    int32 Exponent = 0;
+    if (Index < Token.Len() && (Token[Index] == TEXT('e') || Token[Index] == TEXT('E')))
+    {
+        ++Index;
+        const bool NegativeExponent = Index < Token.Len() && Token[Index] == TEXT('-');
+        if (Index < Token.Len() && (NegativeExponent || Token[Index] == TEXT('+'))) ++Index;
+        if (Index == Token.Len() || !IsDigit(Token[Index])) return false;
+        const int32 ExponentLimit = Token.Len() + 16;
+        for (; Index < Token.Len() && IsDigit(Token[Index]); ++Index)
+            Exponent = FMath::Min(ExponentLimit, Exponent * 10 + Token[Index] - TEXT('0'));
+        if (NegativeExponent) Exponent = -Exponent;
+    }
+    if (Index != Token.Len()) return false;
+    if (Digits.IsEmpty()) { Value = 0; return true; }
+
+    int32 Scale = Exponent - FractionDigits;
+    int32 SignificantDigits = Digits.Len();
+    while (Scale < 0 && SignificantDigits > 0 && Digits[SignificantDigits - 1] == TEXT('0'))
+    { --SignificantDigits; ++Scale; }
+    if (Scale < 0) return false;
+    Reason = TEXT("integer exceeds the exact JSON range (+/-9007199254740991)");
+    if (SignificantDigits + Scale > 16) return false;
+    int64 Magnitude = 0;
+    for (int32 Digit = 0; Digit < SignificantDigits; ++Digit) Magnitude = Magnitude * 10 + Digits[Digit] - TEXT('0');
+    for (int32 Zero = 0; Zero < Scale; ++Zero) Magnitude *= 10;
+    if (Magnitude > MaxExactInteger) return false;
+    Value = Negative ? -Magnitude : Magnitude;
+    return true;
+}
+
+bool ValidateJsonIntegers(const FJsonObject& Object, const UStruct* Struct, const FString& Path, FString& Error);
+
+bool ValidateJsonIntegerValue(const FJsonValue& Value, FProperty* Property, const FString& Path, FString& Error, bool StaticElement = false)
+{
+    if (const auto* Array = CastField<FArrayProperty>(Property); Array || (Property->ArrayDim > 1 && !StaticElement))
+    {
+        const TArray<TSharedPtr<FJsonValue>>* Elements;
+        if (Value.TryGetArray(Elements))
+            for (int32 Index = 0; Index < Elements->Num(); ++Index)
+                if (!ValidateJsonIntegerValue(*(*Elements)[Index], Array ? Array->Inner : Property,
+                    FString::Printf(TEXT("%s[%d]"), *Path, Index), Error, !Array)) return false;
+        return true;
+    }
+    if (const auto* Struct = CastField<FStructProperty>(Property))
+    {
+        const TSharedPtr<FJsonObject>* Object;
+        return !Value.TryGetObject(Object) || ValidateJsonIntegers(**Object, Struct->Struct, Path, Error);
+    }
+
+    const auto* Enum = CastField<FEnumProperty>(Property);
+    const auto* Number = Enum ? Enum->GetUnderlyingProperty() : CastField<FNumericProperty>(Property);
+    if (!Number || !Number->IsInteger() || (Value.Type == EJson::String && (Enum || Number->IsEnum()))) return true;
+
+    FString Token, Reason;
+    int64 Exact = 0;
+    if ((Value.Type != EJson::Number && Value.Type != EJson::String) || !Value.TryGetString(Token)) Reason = TEXT("expected an exact integer");
+    else if (ExactJsonInteger(Token, Exact, Reason))
+    {
+        if (!Number->CanHoldValue(Exact)) Reason = TEXT("integer is out of range for ") + Number->GetCPPType();
+        else if (Value.Type == EJson::String)
+        {
+            int64 NativeInteger = 0;
+            if (Value.TryGetNumber(NativeInteger) && NativeInteger == Exact) return true;
+            Reason = TEXT("native JSON string conversion would change the integer; use a JSON number or a lossless integer string");
+        }
+        else if (FPlatformString::Atod(*Token) != static_cast<double>(Exact)) Reason = TEXT("native JSON conversion would change the integer");
+        else return true;
+    }
+    Error = Path + TEXT(": ") + Reason;
+    return false;
+}
+
+bool ValidateJsonIntegers(const FJsonObject& Object, const UStruct* Struct, const FString& Path, FString& Error)
+{
+    TArray<FString> ImportNames;
+    for (TFieldIterator<FProperty> Field(Struct); Field; ++Field)
+    {
+        DataTableUtils::GetPropertyImportNames(*Field, ImportNames);
+        for (const FString& Name : ImportNames)
+        {
+            const auto Value = Object.TryGetField(Name);
+            if (!Value.IsValid()) continue;
+            if (!ValidateJsonIntegerValue(*Value, *Field, Path + TEXT(".") + Field->GetName(), Error)) return false;
+            break;
+        }
+    }
+    return true;
+}
+
 bool Document(const TSharedPtr<FJsonObject>& Source, UDataTable* Stage, FImportDocument& Out, bool Missing, FString& Error)
 {
     if (!Only(Source, {TEXT("format"), TEXT("text")}) || !Source->TryGetStringField(TEXT("format"), Out.Format) || !Source->TryGetStringField(TEXT("text"), Out.Text) || Out.Text.Len() > 262144)
@@ -339,12 +449,14 @@ bool Document(const TSharedPtr<FJsonObject>& Source, UDataTable* Stage, FImportD
             { if (Objects.Num() >= 16) { Error = TEXT("JSON nesting exceeds 16 levels"); return false; } Objects.Add(Notation == EJsonNotation::ObjectStart); Keys.Add({}); }
         }
         TArray<TSharedPtr<FJsonValue>> Rows; auto JsonReader = TJsonReaderFactory<>::Create(Out.Text);
-        if (!FJsonSerializer::Deserialize(JsonReader, Rows) || Rows.Num() > MaxRows) { Error = TEXT("JSON must be an array of bounded native row objects"); return false; }
+        if (!FJsonSerializer::Deserialize(JsonReader, Rows, FJsonSerializer::EFlags::StoreNumbersAsStrings) || Rows.Num() > MaxRows) { Error = TEXT("JSON must be an array of bounded native row objects"); return false; }
         for (const auto& Row : Rows)
         {
             const auto Object = Row->Type == EJson::Object ? Row->AsObject() : nullptr; FString Name;
-            if (!Object || !Object->TryGetStringField(Key, Name)) { Error = TEXT("JSON row requires string Name/key field"); return false; }
+            const auto RowKey = Object ? Object->TryGetField(Key) : nullptr;
+            if (!RowKey || RowKey->Type != EJson::String || !RowKey->TryGetString(Name)) { Error = TEXT("JSON row requires string Name/key field"); return false; }
             TArray<FString> Columns; Object->Values.GetKeys(Columns); if (!Add(Name, Columns)) return false;
+            if (!ValidateJsonIntegers(*Object, Stage->GetRowStruct(), Name, Error)) return false;
         }
     }
     else { Error = TEXT("source.format must be csv or json"); return false; }
@@ -584,12 +696,62 @@ bool FMCPDataTableAuthoringTest::RunTest(const FString& Parameters)
     Reject(TEXT("[{\"Name\":\"Wave1\",\"Count\":6},{\"Name\":\"wave1\",\"Count\":7}]"), TEXT("Duplicate native RowName refuses"));
     Reject(TEXT("[{\"Name\":\"Wave1\",\"WrongColumn\":6}]"), TEXT("Unknown field refuses"));
     Reject(TEXT("[{\"Name\":\"Wave1\",\"Count\":0}]"), TEXT("Invalid count refuses"));
+    auto InvalidCreate = MakeShared<FJsonObject>(*Params);
+    const FString InvalidPath = Root / TEXT("DT_InvalidInteger");
+    InvalidCreate->SetStringField(TEXT("asset_path"), InvalidPath);
+    InvalidCreate->SetObjectField(TEXT("source"), Json);
+    Json->SetStringField(TEXT("format"), TEXT("json"));
+    const auto CheckIntegerFailure = [&](const TSharedPtr<FJsonObject>& Result, const TCHAR* Reason)
+    {
+        TestFalse(TEXT("Bad integer rejected"), Result->GetBoolField(TEXT("success")));
+        TestFalse(TEXT("Bad integer never modifies or saves"), Result->GetBoolField(TEXT("modified")) || Result->GetBoolField(TEXT("saved")));
+        TestTrue(TEXT("Error identifies original row, field and reason"), Result->GetStringField(TEXT("error")).StartsWith(TEXT("Wave1.Count: ")) && Result->GetStringField(TEXT("error")).Contains(Reason));
+    };
+    for (const bool DryRun : {true, false})
+    {
+        Write->SetBoolField(TEXT("dry_run"), DryRun);
+        InvalidCreate->SetBoolField(TEXT("dry_run"), DryRun);
+        for (const auto& Case : {TPair<const TCHAR*, const TCHAR*>(TEXT("1.4"), TEXT("without rounding")),
+            {TEXT("4294967297"), TEXT("out of range")}, {TEXT("1.00000000000000001"), TEXT("without rounding")},
+            {TEXT("1e-400"), TEXT("without rounding")}, {TEXT("9007199254740993"), TEXT("exact JSON range")},
+            {TEXT("\"1e2\""), TEXT("string conversion would change")}, {TEXT("\"1.2e2\""), TEXT("string conversion would change")}})
+        {
+            Json->SetStringField(TEXT("text"), FString::Printf(TEXT("[{\"Name\":\"Wave1\",\"Count\":%s,\"Delay\":0,\"Enemy\":\"None\",\"Label\":\"Test\"}]"), Case.Key));
+            CheckIntegerFailure(Import(Write), Case.Value);
+            CheckIntegerFailure(Create(InvalidCreate), Case.Value);
+        }
+    }
+    TestFalse(TEXT("Invalid creation leaves no package"), FindPackage(nullptr, *InvalidPath) != nullptr || FPackageName::DoesPackageExist(InvalidPath));
+    TestFalse(TEXT("Integer rejection preserves clean target"), Table->GetPackage()->IsDirty());
+    TestTrue(TEXT("Integer rejection preserves target disk bytes"), FMD5Hash::HashFile(*File) == DiskBefore);
+    TestEqual(TEXT("Integer rejection preserves all existing values"), Snapshot(Table)->GetStringField(TEXT("baseline")), InitialSavedBaseline);
+
+    auto NumericCases = MakeShared<FJsonObject>();
+    FString IntegerError;
+    NumericCases->SetField(TEXT("Byte"), MakeShared<FJsonValueNumberString>(FString(TEXT("255"))));
+    TestTrue(TEXT("uint8 max accepted"), ValidateJsonIntegers(*NumericCases, UMCPAssetPropertyTestAsset::StaticClass(), TEXT("Bounds"), IntegerError));
+    for (const TCHAR* InvalidByte : {TEXT("256"), TEXT("-1")})
+    {
+        NumericCases->SetField(TEXT("Byte"), MakeShared<FJsonValueNumberString>(FString(InvalidByte)));
+        TestFalse(TEXT("Unsigned bounds checked before conversion"), ValidateJsonIntegers(*NumericCases, UMCPAssetPropertyTestAsset::StaticClass(), TEXT("Bounds"), IntegerError));
+        TestTrue(TEXT("Unsigned error identifies field"), IntegerError.StartsWith(TEXT("Bounds.Byte: ")));
+    }
+    NumericCases->RemoveField(TEXT("Byte"));
+    auto Nested = MakeShared<FJsonObject>(); Nested->SetField(TEXT("Health"), MakeShared<FJsonValueNumberString>(FString(TEXT("1.25"))));
+    NumericCases->SetArrayField(TEXT("Attacks"), {MakeShared<FJsonValueObject>(Nested)});
+    TestFalse(TEXT("Nested array integer rejects fractional raw input"), ValidateJsonIntegers(*NumericCases, UMCPAssetPropertyTestAsset::StaticClass(), TEXT("Bounds"), IntegerError));
+    TestTrue(TEXT("Nested error identifies indexed field"), IntegerError.StartsWith(TEXT("Bounds.Attacks[0].Health: ")));
+    int64 Exact = 0;
+    TestTrue(TEXT("Upper exact JSON integer preserved"), ExactJsonInteger(TEXT("9007199254740991"), Exact, IntegerError));
+    TestEqual(TEXT("Upper boundary value"), Exact, 9007199254740991LL);
+    TestFalse(TEXT("Beyond exact JSON integer range refused"), ExactJsonInteger(TEXT("9007199254740992"), Exact, IntegerError));
+    Write->SetBoolField(TEXT("dry_run"), false);
     Reject(TEXT("[{\"Name\":\"Wave1\",\"Enemy\":\"/Script/Engine.Texture2D\"}]"), TEXT("Wrong soft class constraint refuses"));
     Write->SetBoolField(TEXT("allow_missing_fields"), false);
     Reject(TEXT("[{\"Name\":\"Wave1\",\"Count\":6}]"), TEXT("Missing required field refuses")); Write->SetBoolField(TEXT("allow_missing_fields"), true);
     Json->SetStringField(TEXT("text"), TEXT("[]")); Write->SetStringField(TEXT("mode"), TEXT("replace"));
     TestFalse(TEXT("Replace deletion needs explicit permission"), Import(Write)->GetBoolField(TEXT("success"))); Write->SetStringField(TEXT("mode"), TEXT("merge"));
-    Json->SetStringField(TEXT("text"), TEXT("[{\"Name\":\"Wave1\",\"Count\":8}]")); Write->SetBoolField(TEXT("save"), false);
+    Json->SetStringField(TEXT("text"), TEXT("[{\"Name\":\"Wave1\",\"Count\":\"8\"}]")); Write->SetBoolField(TEXT("save"), false);
     const auto UndoEdit = Import(Write); TestTrue(TEXT("Draft import applies"), UndoEdit->GetBoolField(TEXT("success")));
     TestEqual(TEXT("Draft runtime lookup"), Table->FindRow<FMCPDataTableTestRow>(TEXT("Wave1"), TEXT("Test"))->Count, 8);
     GEditor->UndoTransaction(); TestEqual(TEXT("Undo restores row"), Table->FindRow<FMCPDataTableTestRow>(TEXT("Wave1"), TEXT("Test"))->Count, 5);
@@ -616,6 +778,21 @@ bool FMCPDataTableAuthoringTest::RunTest(const FString& Parameters)
     auto* Spawns = Cast<UDataTable>(UEditorAssetLibrary::LoadAsset(SpawnsPath));
     if (!TestNotNull(TEXT("Second table loaded"), Spawns)) return false;
     TestEqual(TEXT("Soft class type retained"), Spawns->FindRow<FMCPDataTableTestRow>(TEXT("Spawn1"), TEXT("Test"))->Enemy.Get(), AActor::StaticClass());
+    Write->SetStringField(TEXT("asset_path"), SpawnsPath);
+    Write->SetStringField(TEXT("expected_baseline"), Snapshot(Spawns)->GetStringField(TEXT("baseline")));
+    Write->RemoveField(TEXT("delete_rows"));
+    Json->SetStringField(TEXT("text"), TEXT("[{\"Name\":\"Spawn1\",\"Count\":2.147483647e9,\"Delay\":2.25}]"));
+    Write->SetBoolField(TEXT("dry_run"), true);
+    const auto UpperPreview = Import(Write);
+    if (!TestTrue(TEXT("Exact int32 upper bound and fractional float preview"), UpperPreview->GetBoolField(TEXT("success")))) { AddError(UpperPreview->GetStringField(TEXT("error"))); return false; }
+    TestEqual(TEXT("Preview retains original runtime value"), Spawns->FindRow<FMCPDataTableTestRow>(TEXT("Spawn1"), TEXT("Test"))->Count, 4);
+    const auto UpperValues = UpperPreview->GetObjectField(TEXT("proposed"))->GetArrayField(TEXT("rows"))[0]->AsObject()->GetObjectField(TEXT("values"));
+    TestEqual(TEXT("Preview reports exact upper bound"), UpperValues->GetNumberField(TEXT("Count")), static_cast<double>(MAX_int32));
+    Write->SetBoolField(TEXT("dry_run"), false);
+    const auto UpperApplied = Import(Write);
+    if (!TestTrue(TEXT("Exact int32 upper bound applies and saves"), UpperApplied->GetBoolField(TEXT("success")) && UpperApplied->GetBoolField(TEXT("saved")))) { AddError(UpperApplied->GetStringField(TEXT("error"))); return false; }
+    TestEqual(TEXT("Runtime int32 upper bound"), Spawns->FindRow<FMCPDataTableTestRow>(TEXT("Spawn1"), TEXT("Test"))->Count, MAX_int32);
+    TestEqual(TEXT("Fractional float unchanged"), Spawns->FindRow<FMCPDataTableTestRow>(TEXT("Spawn1"), TEXT("Test"))->Delay, 2.25f);
     auto Oracle = MakeShared<FJsonObject>(); Oracle->SetObjectField(TEXT("waves"), Snapshot(Table)); Oracle->SetObjectField(TEXT("spawns"), Snapshot(Spawns));
     FString Serialized; auto Writer = TJsonWriterFactory<>::Create(&Serialized); FJsonSerializer::Serialize(Oracle, Writer);
     const FString OracleFile = FPaths::ProjectSavedDir() / TEXT("DataTableAcceptance") / (FPackageName::GetShortName(Root) + TEXT(".json"));
@@ -638,7 +815,9 @@ bool FMCPDataTableColdTest::RunTest(const FString& Parameters)
         TestEqual(TEXT("Cold row bytes exact"), Actual->GetStringField(TEXT("rows_hash")), Oracle->GetObjectField(Pair.Key)->GetStringField(TEXT("rows_hash")));
         TestFalse(TEXT("Cold load did not dirty"), Table->GetPackage()->IsDirty());
         const auto* Row = Table->FindRow<FMCPDataTableTestRow>(Pair.Key == TEXT("waves") ? TEXT("Wave1") : TEXT("Spawn1"), TEXT("ColdTest"));
-        TestEqual(TEXT("Runtime cold count"), Row->Count, Pair.Key == TEXT("waves") ? 9 : 4);
+        const auto ExpectedValues = Oracle->GetObjectField(Pair.Key)->GetArrayField(TEXT("rows"))[0]->AsObject()->GetObjectField(TEXT("values"));
+        TestEqual(TEXT("Runtime cold count"), Row->Count, static_cast<int32>(ExpectedValues->GetNumberField(TEXT("Count"))));
+        TestEqual(TEXT("Runtime cold delay"), Row->Delay, static_cast<float>(ExpectedValues->GetNumberField(TEXT("Delay"))));
         if (Pair.Key == TEXT("waves")) TestEqual(TEXT("FText namespace survives"), TextNamespaceUtil::StripPackageNamespace(FTextInspector::GetNamespace(Row->Label).GetValue()), FString(TEXT("MCPDataTableTest")));
         else TestEqual(TEXT("Soft class cold lookup"), Row->Enemy.LoadSynchronous(), AActor::StaticClass());
     }
