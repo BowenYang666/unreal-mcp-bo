@@ -266,9 +266,12 @@ nonempty `settings`. Optional: `dry_run=true`, `save=false`.
 Only `mesh`, `animation_mode`, `anim_class` are writable; unspecified values are
 retained and the whole merged combination is validated. Mesh accepts a canonical
 SkeletalMesh package/object path, Anim Class an actual compiled AnimBlueprint
-generated-class object path (not an ABP asset or guessed `_C`). Both references
-must be valid together, or explicitly cleared together with JSON null. First
-contract requires an editable exact component **already in AnimationBlueprint
+generated-class object path (not an ABP asset or guessed `_C`). With the updated
+native plugin, `settings: {"mesh": "/Game/Meshes/SKM_Tower"}` can set the mesh on
+a component whose Anim Class is empty. `settings: {"anim_class": null}` clears
+the class without clearing the mesh. An Anim Class still requires a mesh;
+clear both with JSON null to remove both references. The contract requires an
+editable exact component **already in AnimationBlueprint
 mode**, and retains that mode; SingleNode/custom animation-data transitions and
 arbitrary native AnimInstance classes are not offered. Mesh/AnimBP must use the
 same exact Skeleton, not inferred compatible-skeleton/retarget resolution.

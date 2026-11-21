@@ -316,9 +316,11 @@ namespace UnrealMCPComponentDefaults
             }
         }
         if (!AnimBlueprint && AnimClass) AnimBlueprint = Cast<UAnimBlueprint>(AnimClass->ClassGeneratedBy);
-        if ((Mesh == nullptr) != (AnimClass == nullptr)) return Failure(TEXT("Mesh and Anim Class must both be valid or explicitly cleared together"));
+        if (AnimClass && !Mesh) return Failure(TEXT("Anim Class requires a Skeletal Mesh; clear Anim Class explicitly to remove the Mesh"));
+        if (Mesh && (!Mesh->GetSkeleton() || Mesh->GetPackage()->IsDirty() || Mesh->GetSkeleton()->GetPackage()->IsDirty()))
+            return Failure(TEXT("Require a clean Skeletal Mesh and Skeleton"));
         auto* AnimGenerated = Cast<UAnimBlueprintGeneratedClass>(AnimClass);
-        if (Mesh && (!Mesh->GetSkeleton() || Mesh->GetPackage()->IsDirty() || Mesh->GetSkeleton()->GetPackage()->IsDirty() || !AnimGenerated || !AnimClass->IsChildOf(UAnimInstance::StaticClass())
+        if (AnimClass && (!AnimGenerated || !AnimClass->IsChildOf(UAnimInstance::StaticClass())
             || AnimClass->HasAnyClassFlags(CLASS_Abstract | CLASS_Deprecated | CLASS_NewerVersionExists) || AnimGenerated->GetTargetSkeleton() != Mesh->GetSkeleton()
             || !AnimBlueprint || AnimBlueprint->GetPackage()->IsDirty() || AnimBlueprint->bBeingCompiled || (AnimBlueprint->Status != BS_UpToDate && AnimBlueprint->Status != BS_UpToDateWithWarnings)))
             return Failure(TEXT("Require clean Mesh/Skeleton/compiled AnimBlueprint with exact same Skeleton and concrete UAnimInstance class"));
@@ -494,8 +496,20 @@ bool FMCPComponentDefaultsWriteTest::RunTest(const FString& Parameters)
     };
     auto Native = SelectorFor(TEXT("cpp_inherited")); auto Inherited = SelectorFor(TEXT("inherited_scs")); auto LocalKey = SelectorFor(TEXT("local_scs"));
     if (!TestTrue(TEXT("Three precise selectors"), Native.IsValid() && Inherited.IsValid() && LocalKey.IsValid())) return false;
-    auto Settings = MakeShared<FJsonObject>(); Settings->SetStringField(TEXT("mesh"), Alternate->GetPathName()); Settings->SetStringField(TEXT("anim_class"), Anim->GeneratedClass->GetPathName()); Settings->SetStringField(TEXT("animation_mode"), TEXT("AnimationBlueprint"));
+    auto Settings = MakeShared<FJsonObject>(); Settings->SetStringField(TEXT("mesh"), Alternate->GetPathName());
     Params->SetObjectField(TEXT("settings"), Settings); Params->SetObjectField(TEXT("component"), Native);
+    const auto EmptyDisk = FileHash(Grandchild); const auto MeshOnlyPreview = Write(Params);
+    if (!TestTrue(TEXT("Native mesh-only preview valid"), MeshOnlyPreview->GetBoolField(TEXT("success")))) { AddError(Json(MeshOnlyPreview)); return false; }
+    TestTrue(TEXT("Mesh-only preview leaves Anim Class null"), MeshOnlyPreview->GetObjectField(TEXT("proposed_defaults"))->HasTypedField<EJson::Null>(TEXT("anim_class")));
+    TestTrue(TEXT("Mesh-only preview does not edit or save"), MeshOnlyPreview->GetBoolField(TEXT("would_modify")) && !MeshOnlyPreview->GetBoolField(TEXT("modified")) && !MeshOnlyPreview->GetBoolField(TEXT("saved")) && !Grandchild->GetPackage()->IsDirty());
+    TestEqual(TEXT("Mesh-only preview leaves disk unchanged"), FileHash(Grandchild), EmptyDisk);
+    Params->SetBoolField(TEXT("dry_run"), false); Params->SetBoolField(TEXT("save"), true);
+    const auto MeshOnlySaved = Write(Params);
+    if (!TestTrue(TEXT("Native mesh-only default compiled and saved"), MeshOnlySaved->GetBoolField(TEXT("success")) && MeshOnlySaved->GetBoolField(TEXT("compiled")) && MeshOnlySaved->GetBoolField(TEXT("saved")))) { AddError(Json(MeshOnlySaved)); return false; }
+    TestEqual(TEXT("Mesh-only default uses requested mesh"), ResolveFor(Grandchild, Native)->GetSkeletalMeshAsset(), Alternate);
+    TestNull(TEXT("Mesh-only default has no Anim Class"), ResolveFor(Grandchild, Native)->GetAnimClass());
+    Refresh(); Settings->RemoveField(TEXT("mesh")); Settings->SetStringField(TEXT("anim_class"), Anim->GeneratedClass->GetPathName());
+    Params->RemoveField(TEXT("dry_run")); Params->SetBoolField(TEXT("save"), false);
     const auto DiskBefore = FileHash(Grandchild); const auto Preview = Write(Params);
     if (!TestTrue(TEXT("Native preview valid"), Preview->GetBoolField(TEXT("success")))) { AddError(Json(Preview)); return false; }
     TestFalse(TEXT("Preview unchanged"), Preview->GetBoolField(TEXT("modified"))); TestEqual(TEXT("Preview file unchanged"), FileHash(Grandchild), DiskBefore);
@@ -508,9 +522,10 @@ bool FMCPComponentDefaultsWriteTest::RunTest(const FString& Parameters)
     GEditor->UndoTransaction(); FKismetEditorUtilities::CompileBlueprint(Grandchild);
     auto* Undone = ResolveFor(Grandchild, Native);
     if (!TestNotNull(TEXT("Native identity resolves after Undo/recompile"), Undone)) { AddError(Json(Snapshot(Grandchild))); return false; }
-    TestNull(TEXT("Native Undo restores null mesh"), Undone->GetSkeletalMeshAsset());
+    TestEqual(TEXT("Native Undo retains mesh-only default"), Undone->GetSkeletalMeshAsset(), Alternate);
+    TestNull(TEXT("Native Undo restores null Anim Class"), Undone->GetAnimClass());
     GEditor->RedoTransaction(); FKismetEditorUtilities::CompileBlueprint(Grandchild);
-    TestEqual(TEXT("Native Redo mesh"), ResolveFor(Grandchild, Native)->GetSkeletalMeshAsset(), Alternate);
+    TestEqual(TEXT("Native Redo binds Anim Class"), ResolveFor(Grandchild, Native)->GetAnimClass(), Anim->GeneratedClass.Get());
     GEditor->UndoTransaction(); FKismetEditorUtilities::CompileBlueprint(Grandchild); Grandchild->GetPackage()->SetDirtyFlag(false); Refresh(); Params->SetBoolField(TEXT("save"), true);
     FailSaveForTest = true; const auto Failed = Write(Params); FailSaveForTest = false;
     TestTrue(TEXT("Save failure retains modified/compiled"), !Failed->GetBoolField(TEXT("success")) && Failed->GetBoolField(TEXT("modified")) && Failed->GetBoolField(TEXT("compiled")) && !Failed->GetBoolField(TEXT("saved")));
@@ -518,6 +533,7 @@ bool FMCPComponentDefaultsWriteTest::RunTest(const FString& Parameters)
     GEditor->UndoTransaction(); FKismetEditorUtilities::CompileBlueprint(Grandchild); Grandchild->GetPackage()->SetDirtyFlag(false); Refresh();
     const auto SavedNative = Write(Params); if (!TestTrue(TEXT("Native target-only saved"), SavedNative->GetBoolField(TEXT("success")) && SavedNative->GetBoolField(TEXT("saved")))) { AddError(Json(SavedNative)); return false; }
     Refresh(); const auto Repeat = Write(Params); TestTrue(TEXT("Same native values no-op"), Repeat->GetBoolField(TEXT("success")) && !Repeat->GetBoolField(TEXT("modified")) && !Repeat->GetBoolField(TEXT("compiled")) && !Repeat->GetBoolField(TEXT("saved")));
+    Settings->SetStringField(TEXT("mesh"), Alternate->GetPathName());
     Params->SetObjectField(TEXT("component"), Inherited); Refresh();
     Params->SetBoolField(TEXT("dry_run"), true);
     const auto InheritedPreview = Write(Params); TestFalse(TEXT("Inherited preview no override creation"), RowFor(Snapshot(Grandchild), FComponent{TEXT("inherited_scs"), Inherited->GetStringField(TEXT("name")), Node->GetSCS()->GetOwnerClass(), Node, Node->ComponentTemplate, false})->GetBoolField(TEXT("target_owns_override")));
@@ -547,14 +563,23 @@ bool FMCPComponentDefaultsWriteTest::RunTest(const FString& Parameters)
     }
     OtherSkeleton->MergeAllBonesToBoneTree(WrongMesh); UEditorAssetLibrary::SaveLoadedAsset(OtherSkeleton, false);
     WrongMesh->SetSkeleton(OtherSkeleton); TArray<UObject*> WrongReady{WrongMesh}; FAssetCompilingManager::Get().FinishCompilationForObjects(WrongReady); UEditorAssetLibrary::SaveLoadedAsset(WrongMesh, false);
-    Settings->SetStringField(TEXT("mesh"), WrongMesh->GetPathName()); TestFalse(TEXT("Different Skeleton refused"), Write(Params)->GetBoolField(TEXT("success"))); Settings->SetStringField(TEXT("mesh"), Alternate->GetPathName());
+    Settings->RemoveField(TEXT("anim_class")); Settings->SetStringField(TEXT("mesh"), WrongMesh->GetPathName());
+    TestFalse(TEXT("Different Skeleton refused with retained Anim Class"), Write(Params)->GetBoolField(TEXT("success")));
+    Params->SetObjectField(TEXT("component"), Native); Settings->SetStringField(TEXT("mesh"), Mesh->GetPathName()); Refresh();
+    const auto Swap = Write(Params);
+    if (!TestTrue(TEXT("Compatible mesh-only request preserves existing Anim Class"), Swap->GetBoolField(TEXT("success")) && Swap->GetBoolField(TEXT("saved")))) { AddError(Json(Swap)); return false; }
+    TestEqual(TEXT("Compatible swap keeps current Anim Class"), ResolveFor(Grandchild, Native)->GetAnimClass(), Anim->GeneratedClass.Get());
+    Settings->RemoveField(TEXT("mesh")); Settings->SetField(TEXT("anim_class"), MakeShared<FJsonValueNull>()); Refresh();
+    const auto ClearAnim = Write(Params);
+    if (!TestTrue(TEXT("Explicit Anim Class clear saved without clearing mesh"), ClearAnim->GetBoolField(TEXT("success")) && ClearAnim->GetBoolField(TEXT("saved")))) { AddError(Json(ClearAnim)); return false; }
     TestEqual(TEXT("Parent unchanged"), Json(Snapshot(Parent)), ParentBefore); TestEqual(TEXT("Intermediate parent unchanged"), Json(Snapshot(Child)), ChildBefore); TestEqual(TEXT("Sibling unchanged"), Json(Snapshot(Sibling)), SiblingBefore);
     auto* World = UWorld::CreateWorld(EWorldType::Game, false);
     auto* Actor = World->SpawnActor<AActor>(Grandchild->GeneratedClass);
     if (TestNotNull(TEXT("Actual spawn"), Actor))
     {
         TInlineComponentArray<USkeletalMeshComponent*> Spawned; Actor->GetComponents(Spawned); TestEqual(TEXT("No duplicate components created"), Spawned.Num(), 3);
-        for (auto* Component : Spawned) { TestEqual(TEXT("Spawned effective Mesh"), Component->GetSkeletalMeshAsset(), Alternate); TestEqual(TEXT("Spawned effective Anim Class"), Component->GetAnimClass(), Anim->GeneratedClass.Get()); }
+        const auto* NativeMesh = CastChecked<ACharacter>(Actor)->GetMesh();
+        for (auto* Component : Spawned) { TestEqual(TEXT("Spawned effective Mesh"), Component->GetSkeletalMeshAsset(), Component == NativeMesh ? Mesh : Alternate); TestEqual(TEXT("Spawned effective Anim Class"), Component->GetAnimClass(), Component == NativeMesh ? nullptr : Anim->GeneratedClass.Get()); }
         Actor->Destroy();
     }
     World->DestroyWorld(false);
@@ -575,12 +600,14 @@ bool FMCPComponentDefaultsReloadTest::RunTest(const FString& Parameters)
     if (!TestNotNull(TEXT("Saved target loads"), Blueprint)) return false;
     TestEqual(TEXT("Complete source/default/ownership scope cold identical"), Json(Snapshot(Blueprint)), Expected);
     auto* Mesh = Cast<USkeletalMesh>(UEditorAssetLibrary::LoadAsset(Root + TEXT("/SKM_Alternate"))); auto* Anim = Cast<UAnimBlueprint>(UEditorAssetLibrary::LoadAsset(Root + TEXT("/ABP_Test")));
-    TArray<UObject*> Ready{Mesh, Anim}; FAssetCompilingManager::Get().FinishCompilationForObjects(Ready);
+    auto* NativeMeshAsset = Cast<USkeletalMesh>(UEditorAssetLibrary::LoadAsset(Root + TEXT("/SKM_Test")));
+    TArray<UObject*> Ready{Mesh, Anim, NativeMeshAsset}; FAssetCompilingManager::Get().FinishCompilationForObjects(Ready);
     auto* World = UWorld::CreateWorld(EWorldType::Game, false); auto* Actor = World->SpawnActor<AActor>(Blueprint->GeneratedClass);
     if (TestNotNull(TEXT("Cold actual spawned actor"), Actor))
     {
         TInlineComponentArray<USkeletalMeshComponent*> Components; Actor->GetComponents(Components); TestEqual(TEXT("Cold component count"), Components.Num(), 3);
-        for (auto* Component : Components) { TestEqual(TEXT("Cold spawned Mesh"), Component->GetSkeletalMeshAsset(), Mesh); TestEqual(TEXT("Cold spawned Anim Class"), Component->GetAnimClass(), Anim->GeneratedClass.Get()); }
+        const auto* NativeMesh = CastChecked<ACharacter>(Actor)->GetMesh();
+        for (auto* Component : Components) { TestEqual(TEXT("Cold spawned Mesh"), Component->GetSkeletalMeshAsset(), Component == NativeMesh ? NativeMeshAsset : Mesh); TestEqual(TEXT("Cold spawned Anim Class"), Component->GetAnimClass(), Component == NativeMesh ? nullptr : Anim->GeneratedClass.Get()); }
         Actor->Destroy();
     }
     World->DestroyWorld(false); TestFalse(TEXT("Cold target stays clean"), Blueprint->GetPackage()->IsDirty()); return !HasAnyErrors();

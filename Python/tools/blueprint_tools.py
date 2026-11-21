@@ -99,11 +99,12 @@ def register_blueprint_tools(mcp: FastMCP):
         selector>, expected_baseline=<complete read>, settings={'mesh':'/Game/Meshes/SKM_Tower',
         'animation_mode':'AnimationBlueprint','anim_class':'/Game/Anims/ABP_Tower.ABP_Tower_C'}.
         Only mesh, animation_mode, anim_class accepted. Merge retains unspecified fields.
-        First contract supports AnimationBlueprint mode only, existing exact editable
-        USkeletalMeshComponent templates and matching concrete AnimBlueprint generated
-        classes with the SAME exact Skeleton. Mesh and Anim Class must both be valid
-        or explicitly cleared together; no SingleNode/custom animation transitions,
-        retargeting, arbitrary native classes or arbitrary instanced property paths.
+        Requires an existing exact editable USkeletalMeshComponent template in
+        AnimationBlueprint mode. Updated native plugins accept mesh without Anim Class;
+        settings={'anim_class': None} clears the class and retains the current mesh.
+        A non-null Anim Class requires a mesh and a concrete compiled AnimBlueprint
+        generated class with the SAME exact Skeleton. No SingleNode/custom animation
+        transitions, retargeting, arbitrary native classes or instanced property paths.
         Dirty target/parents/relevant assets, stale/partial/ambiguous identity, wrong
         class/mesh/skeleton/mode or busy compilation reject before mutation. No global
         compilation finish, parent save or implicit draft save. Defaults dry-run/no save.
